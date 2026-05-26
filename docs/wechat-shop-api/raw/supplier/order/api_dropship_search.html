@@ -1,0 +1,1278 @@
+<!DOCTYPE html>
+<html lang="cn">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>搜索代发单 | 微信开放文档</title>
+    <meta name="description" content="微信开发者平台文档">
+    <meta name="msapplication-TileColor" content="#ffffff">
+  <meta name="theme-color" content="#ffffff">
+  <meta name="keywords" content="微信官方文档">
+  <link rel="shortcut icon" type="image/x-icon" href="https://res.wx.qq.com/a/wx_fed/assets/res/NTI4MWU5.ico">
+  <link rel="mask-icon" color="#4C4C4C" href="https://res.wx.qq.com/a/wx_fed/assets/res/MjliNWVm.svg">
+  <link rel="apple-touch-icon-precomposed" href="https://res.wx.qq.com/a/wx_fed/assets/res/OTE0YTAw.png">
+  <script>
+(function () {
+  'use strict';
+
+  const SCRIPT_URLs = [
+      'https://dldir1.qq.com/WechatWebDev/devPlatform/px.min.js',
+      'https://dev.weixin.qq.com/platform-console/proxy/assets/tel/px.min.js',
+  ];
+  const param = {
+      maskMode: 'no-mask', // 隐私策略, all-mask 或 no-mask, 详见：https://dev.weixin.qq.com/docs/analysis/sdk/docs.html
+      recordCanvas: false,  // 若要采集canvas, 设为true
+      projectId: 'wxef34f91ddab0c534-0HLdQNKAk-dzsFsA', // 项目 ID，需替换为体验分析项目 ID
+      iframe: false, // 是否采集 iframe 页面
+      console: true, // 是否采集 console 输出的错误日志
+      network: true, // 是否采集网络错误
+  };
+  function loadScript(url) {
+      return new Promise((resolve, reject) => {
+          const scriptEle = document.createElement('script');
+          scriptEle.type = 'text/javascript';
+          scriptEle.async = true;
+          scriptEle.src = url;
+          scriptEle.onload = () => {
+              resolve(url);
+          };
+          scriptEle.onerror = () => {
+              reject(new Error('Script load error'));
+          };
+          document.head.appendChild(scriptEle);
+      });
+  }
+  async function main() {
+      try {
+          sessionStorage.setItem('wxobs_start_timestamp', String(Date.now()));
+          const fastestUrl = await Promise.race(SCRIPT_URLs.map(url => loadScript(url)));
+          window.__startPX && window.__startPX(param);
+      }
+      catch (error) {
+          console.error('Error loading scripts:', error);
+      }
+  }
+  main();
+
+})();
+        </script>
+    
+    <link rel="preload" href="https://res.wx.qq.com/wxdoc/dist/assets/css/0.styles.97ed3c17.css" as="style"><link rel="preload" href="https://res.wx.qq.com/wxdoc/dist/assets/js/app.e95ac419.js" as="script"><link rel="preload" href="https://res.wx.qq.com/wxdoc/dist/assets/js/232.b5b58c8c.js" as="script">
+    <link rel="stylesheet" href="https://res.wx.qq.com/wxdoc/dist/assets/css/0.styles.97ed3c17.css">
+  </head>
+  <body>
+    <div id="app" data-server-rendered="true"><div class="theme-container wxshop-theme"><div class="theme-container"><header class="navbar navbar_with-link"><div class="navbar__left"><a href="/doc/" class="home-link router-link-active"><div class="logo__wrp"><span class="logo__icon"></span></div></a> <span class="dot"></span> <div class="dropdown-wrapper"><a class="dropdown-title"><span class="title">微信小店</span> <span class="arrow right"></span></a> <ul class="nav-dropdown" style="display:none;"><li class="dropdown-item"><!----> <a href="/miniprogram/dev/framework/" class="nav-link external">
+  小程序
+</a></li><li class="dropdown-item"><!----> <a href="/minigame/introduction/" class="nav-link external">
+  小游戏
+</a></li><li class="dropdown-item"><!----> <a href="/doc/subscription/guide/" class="nav-link external">
+  公众号
+</a></li><li class="dropdown-item"><!----> <a href="/doc/service/guide/" class="nav-link external">
+  服务号
+</a></li><li class="dropdown-item"><!----> <a href="/doc/oplatform/open/intro.html" class="nav-link external">
+  开放平台
+</a></li><li class="dropdown-item"><!----> <a href="https://work.weixin.qq.com/api/doc" class="nav-link external">
+  企业微信
+</a></li><li class="dropdown-item"><!----> <a href="https://pay.weixin.qq.com/doc/v3/merchant/4012062524" class="nav-link external">
+  微信支付
+</a></li><li class="dropdown-item"><!----> <a href="/doc/channels/" class="nav-link external">
+  视频号
+</a></li><li class="dropdown-item selected"><!----> <a href="/doc/store/shop/" class="nav-link external">
+  微信小店
+</a></li><li class="dropdown-item"><!----> <a href="/doc/aispeech/platform/INTRODUCTION.html" class="nav-link external">
+  智能对话
+</a></li><li class="dropdown-item"><!----> <a href="/doc/xwei/xiaowei-introduction/Introduction.html" class="nav-link external">
+  腾讯小微
+</a></li><li class="dropdown-item"><!----> <a href="/doc/edu/introduction.html" class="nav-link external">
+  教育平台
+</a></li></ul></div></div> <div class="navbar__center"><!----></div> <div class="navbar__right"><nav class="nav-links"><div class="nav-item community-item"><a href="https://developers.weixin.qq.com/community/minihome/mixflow/1929579418541178884" target="_blank" class="nav-link external">
+  社区
+</a></div><div class="nav-item community-item"><a href="https://developers.weixin.qq.com/community/business" target="_blank" class="nav-link external">
+  学堂
+</a></div></nav> <ul class="lang-tab"><li class="lang-tab__icon"><img src="https://res.wx.qq.com/t/components/icons/base/translate_regular.svg"></li></ul> <div class="search__wrp-flex"><div class="search__input"><div class="weui-desktop-search"><button class="weui-desktop-icon-btn weui-desktop-search__btn weui-desktop-icon-btn__width"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M15.4529 16.4014C14.2428 17.4001 12.6915 18 11 18C7.134 18 4 14.866 4 11C4 7.134 7.134 4 11 4C14.866 4 18 7.134 18 11C18 12.7425 17.3633 14.3363 16.3099 15.5614L20.4243 19.6757L19.5757 20.5243L15.4529 16.4014ZM16.8 11C16.8 14.2033 14.2033 16.8 11 16.8C7.79674 16.8 5.2 14.2033 5.2 11C5.2 7.79676 7.79674 5.20001 11 5.20001C14.2033 5.20001 16.8 7.79676 16.8 11Z" fill="black"></path></svg></button></div> <a href="javascript:;" class="search-back__btn">取消</a></div> <div class="reco-list__wrp" style="display:none;"><ul class="reco__list"></ul> <div class="show-more"><a href="/doc/search?source=more&amp;query=&amp;doc_type=store&amp;jumpbackUrl=%2Fdoc%2F" class="reco-item__link">查看更多 </a></div></div> <div class="reco-list__wrp" style="display:none;"><div class="show-more"><a href="/doc/search?source=more&amp;query=&amp;doc_type=store&amp;jumpbackUrl=%2Fdoc%2F" class="reco-item__link"></a></div></div></div></div></header> <div class="subnavbar"><ul class="subnavbar__list"><li class="subnavbar__item selected" style="display:;"><div class="dropdown-subnavbar-title"><a href="/doc/store/shop/" target="_self" class="router-link-active">
+          微信小店
+          </a> <!----></div> <!----></li><li class="subnavbar__item" style="display:;"><div class="dropdown-subnavbar-title"><a href="/doc/store/leagueheadsupplier/" target="_self">
+          联盟带货机构
+          </a> <!----></div> <!----></li><li class="subnavbar__item" style="display:;"><div class="dropdown-subnavbar-title"><a href="/doc/store/talent/" target="_self">
+          带货助手
+          </a> <!----></div> <!----></li><li class="subnavbar__item" style="display:;"><div class="dropdown-subnavbar-title"><a href="/doc/store/supplier/" target="_self">
+          供货商
+          </a> <!----></div> <!----></li></ul></div> <div class="mobile-links__wrp"><div class="mobile-links_mobile"><a href="javascript:;" class="mobile-links__btn">中文</a></div> <div class="mobile-links__panel"><div class="links-panel__bd"><!----></div> <div class="links-panel__ft"><ul class="lang-tab"><li class="lang-tab__icon"><img src="https://res.wx.qq.com/t/components/icons/base/translate_regular.svg"></li></ul></div></div> <div><div class="weui-mask" style="display:none;"></div> <div class="weui-actionsheet "><!----> <div class="weui-actionsheet__menu"><div class="weui-actionsheet__cell">中文</div><div class="weui-actionsheet__cell">EN</div></div> <div class="weui-actionsheet__action"><div class="weui-actionsheet__cell">取消</div></div></div></div></div> <a href="javascript:;" class="mobile-search-btn"></a> <div class="main-container" style="margin-top:144px;"><div class="main-contontaier__bd" style="min-height:0px;"><div class="sidebar__wrp"><div class="sidebar-cell_mobile"><li class="subnavbar__item selected"><a href="javascript:;" target="_self">微信小店</a></li></div> <aside class="sidebar" style="top:144px;"> <div class="TreeNavigation"><div class="NavigationLevel NavigationLevel--level-0"><ul><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/" class="NavigationItem__router-link router-link-active">
+      微信小店介绍
+    <!----></a> <!----> <!----></span></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-1"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/dev_before/guide.html" class="NavigationItem__router-link">
+      开发须知
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/dev_before/guide.html" class="NavigationItem__router-link">
+      开发者使用指南
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/dev_before/UnionID.html" class="NavigationItem__router-link">
+      UnionID 机制说明
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/dev_before/message_push.html" class="NavigationItem__router-link">
+      消息通知（回调）说明
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/dev_before/bindOpen.html" class="NavigationItem__router-link">
+      小店绑定开放平台账号
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/dev_before/third_party_platforms.html" class="NavigationItem__router-link">
+      第三方服务商调用模式介绍
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/dev_before/ipbaimingdan.html" class="NavigationItem__router-link">
+      IP 白名单设置
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/dev_before/commErrCode.html" class="NavigationItem__router-link">
+      公共错误码
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/dev_before/downloadResource.html" class="NavigationItem__router-link">
+      资源下载
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-1"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/product/develop_guide.html" class="NavigationItem__router-link">
+      开发指南
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/product/aftersale/aftersale_status_graph.html" class="NavigationItem__router-link">
+      售后管理
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/product/aftersale/aftersale_status_graph.html" class="NavigationItem__router-link">
+      售后状态流转图
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/product/merchant/freightTemplate.html" class="NavigationItem__router-link">
+      物流发货
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/product/merchant/freightTemplate.html" class="NavigationItem__router-link">
+      运费模板定义
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/product/wxamember/shop_wxa_vip_dev.html" class="NavigationItem__router-link">
+      小程序会员服务
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/product/wxamember/shop_wxa_vip_faq.html" class="NavigationItem__router-link">
+      常见问题FAQ
+    <!----></a> <!----> <!----></span></li></ul></div></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-1"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/catalog/category.html" class="NavigationItem__router-link">
+      开发指南（新）
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/catalog/category.html" class="NavigationItem__router-link">
+      商品与类目
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/catalog/category.html" class="NavigationItem__router-link">
+      类目管理
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/catalog/brand.html" class="NavigationItem__router-link">
+      品牌资质
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/catalog/product.html" class="NavigationItem__router-link">
+      商品管理
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/trade/order.html" class="NavigationItem__router-link">
+      交易与订单
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/trade/order.html" class="NavigationItem__router-link">
+      订单管理
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/trade/qic.html" class="NavigationItem__router-link">
+      质检管理
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/trade/aftersale.html" class="NavigationItem__router-link">
+      售后管理
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/trade/complaint.html" class="NavigationItem__router-link">
+      纠纷管理
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/trade/guarantee.html" class="NavigationItem__router-link">
+      服务保障
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/trade/funds.html" class="NavigationItem__router-link">
+      资金结算
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/trade/subsidy.html" class="NavigationItem__router-link">
+      国补管理
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/logistics/warehouse.html" class="NavigationItem__router-link">
+      物流与仓储
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/logistics/warehouse.html" class="NavigationItem__router-link">
+      库存管理
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/logistics/delivery.html" class="NavigationItem__router-link">
+      物流发货
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/logistics/ewaybill.html" class="NavigationItem__router-link">
+      电子面单打印
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/logistics/dropship.html" class="NavigationItem__router-link">
+      代发管理
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/marketing/coupon.html" class="NavigationItem__router-link">
+      营销与会员
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/marketing/coupon.html" class="NavigationItem__router-link">
+      营销管理
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/marketing/vip.html" class="NavigationItem__router-link">
+      小店会员
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/marketing/miniprogram_vip.html" class="NavigationItem__router-link">
+      小程序会员
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/operation/shop.html" class="NavigationItem__router-link">
+      店铺与经营
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/operation/shop.html" class="NavigationItem__router-link">
+      店铺管理
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/operation/analytics.html" class="NavigationItem__router-link">
+      数据分析
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/connect/miniprogram.html" class="NavigationItem__router-link">
+      连接与服务
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/connect/miniprogram.html" class="NavigationItem__router-link">
+      小程序连接小店
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/connect/league.html" class="NavigationItem__router-link">
+      优选联盟
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/connect/kf.html" class="NavigationItem__router-link">
+      商家客服
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/guide/connect/platformkf.html" class="NavigationItem__router-link">
+      客诉工单
+    <!----></a> <!----> <!----></span></li></ul></div></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-1"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/linkstore/miniprogram_connection/miniprogram_desc.html" class="NavigationItem__router-link">
+      连接小店
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/linkstore/miniprogram_connection/miniprogram_desc.html" class="NavigationItem__router-link">
+      小程序连接小店
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/linkstore/miniprogram_connection/miniprogram_desc.html" class="NavigationItem__router-link">
+      小程序连接小店介绍
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/linkstore/miniprogram_connection/cooperation.html" class="NavigationItem__router-link">
+      小程序连接小店-合作账号
+    <!----></a> <!----> <!----></span></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/linkstore/miniprogram_connection/miniprogram_callback/Order_notification.html" class="NavigationItem__router-link">
+      事件通知
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/linkstore/miniprogram_connection/miniprogram_callback/Order_notification.html" class="NavigationItem__router-link">
+      订单通知
+    <!----></a> <!----> <!----></span></li></ul></div></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/linkstore/official_connection/official_desc.html" class="NavigationItem__router-link">
+      公众号连接小店
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/linkstore/official_connection/official_desc.html" class="NavigationItem__router-link">
+      公众号连接小店介绍
+    <!----></a> <!----> <!----></span></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/linkstore/official_connection/official_openapi.html" class="NavigationItem__router-link">
+      公众号服务端接口
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <!----> <!----> <a href="https://developers.weixin.qq.com/doc/service/api/draftbox/shop/api_ecsgetproductcardinfo.html" target="_blank" class="NavigationItem__external-link">获取商品卡片的DOM结构</a></span></li></ul></div></li></ul></div></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-1"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/" class="NavigationItem__router-link router-link-active">
+      API 接口
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/apimgnt/" class="NavigationItem__router-link">
+      通用
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/apimgnt/common/api_getaccesstoken.html" class="NavigationItem__router-link">
+      获取接口调用凭据
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/apimgnt/common/api_getstableaccesstoken.html" class="NavigationItem__router-link">
+      获取稳定版接口调用凭据
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/apimgnt/common/api_getapiquota.html" class="NavigationItem__router-link">
+      查询API调用额度
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/apimgnt/common/api_getridinfo.html" class="NavigationItem__router-link">
+      查询rid信息
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/apimgnt/common/api_clearquota.html" class="NavigationItem__router-link">
+      重置API调用次数
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/apimgnt/common/api_clearapiquota.html" class="NavigationItem__router-link">
+      重置指定API调用次数
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/apimgnt/common/api_clearquotabyappsecret.html" class="NavigationItem__router-link">
+      使用AppSecret重置API调用次数
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/apimgnt/common/api_callbackcheck.html" class="NavigationItem__router-link">
+      网络通信检测
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/apimgnt/common/api_getapidomainip.html" class="NavigationItem__router-link">
+      获取微信API服务器IP
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/apimgnt/common/api_getcallbackip.html" class="NavigationItem__router-link">
+      获取微信推送服务器IP
+    <!----></a> <!----> <!----></span></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/apimgnt/resource/" class="NavigationItem__router-link">
+      资源管理
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/apimgnt/resource/api_img_upload.html" class="NavigationItem__router-link">
+      上传图片
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/apimgnt/resource/api_getdatabymediaid.html" class="NavigationItem__router-link">
+      通过mediaid获取数据
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/apimgnt/resource/api_qualificationupload.html" class="NavigationItem__router-link">
+      上传资质图片
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/apimgnt/resource/api_video_initupload.html" class="NavigationItem__router-link">
+      申请上传视频
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/apimgnt/resource/api_video_uploadpart.html" class="NavigationItem__router-link">
+      上传视频数据分块
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/apimgnt/resource/api_video_finishupload.html" class="NavigationItem__router-link">
+      完成视频上传
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/apimgnt/resource/api_video_getplayinfo.html" class="NavigationItem__router-link">
+      获取上传后的视频临时URL
+    <!----></a> <!----> <!----></span></li></ul></div></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/storemanage/" class="NavigationItem__router-link">
+      店铺管理
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/storemanage/api_mmecapi_basicinfo.html" class="NavigationItem__router-link">
+      获取店铺基本信息
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/storemanage/api_getshoph5url.html" class="NavigationItem__router-link">
+      获取店铺H5链接
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/storemanage/api_getshopqrcode.html" class="NavigationItem__router-link">
+      获取店铺二维码
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/storemanage/api_getshoptaglink.html" class="NavigationItem__router-link">
+      获取店铺口令
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/homepage/" class="NavigationItem__router-link">
+      主页管理
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/homepage/storewindow/" class="NavigationItem__router-link">
+      商品排序
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/homepage/storewindow/api_getstorewindowproductlist.html" class="NavigationItem__router-link">
+      获取主页展示商品列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/homepage/storewindow/api_reorderstorewindowproduct.html" class="NavigationItem__router-link">
+      重新排序主页展示商品
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/homepage/storewindow/api_hidestorewindowproduct.html" class="NavigationItem__router-link">
+      隐藏小店主页商品
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/homepage/storewindow/api_settopstorewindowproduct.html" class="NavigationItem__router-link">
+      置顶小店主页商品
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/homepage/background/" class="NavigationItem__router-link">
+      主页背景图
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/homepage/background/api_submitbackgroundapply.html" class="NavigationItem__router-link">
+      提交背景图申请
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/homepage/background/api_getbackground.html" class="NavigationItem__router-link">
+      查询背景图
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/homepage/background/api_removebackground.html" class="NavigationItem__router-link">
+      清空主页背景图并撤销流程中的申请
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/homepage/background/api_cancelbackgroundapply.html" class="NavigationItem__router-link">
+      撤销主页背景图申请
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/homepage/banner/" class="NavigationItem__router-link">
+      精选展示位
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/homepage/banner/api_submitbannerapply.html" class="NavigationItem__router-link">
+      提交精选展示位申请
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/homepage/banner/api_getbanner.html" class="NavigationItem__router-link">
+      查询精选展示位
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/homepage/banner/api_removebanner.html" class="NavigationItem__router-link">
+      清空精选展示位并撤销流程中的申请
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/homepage/banner/api_cancelbannerapply.html" class="NavigationItem__router-link">
+      撤销精选展示位申请
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/homepage/shoptype/" class="NavigationItem__router-link">
+      商品分类
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/homepage/shoptype/api_getclassificationtree.html" class="NavigationItem__router-link">
+      获取在店铺主页展示的商品分类
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/homepage/shoptype/api_getclassificationproductlist.html" class="NavigationItem__router-link">
+      获取分类关联的商品ID列表
+    <!----></a> <!----> <!----></span></li></ul></div></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/" class="NavigationItem__router-link">
+      商品管理
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/shop/api_addproduct.html" class="NavigationItem__router-link">
+      添加商品
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/shop/api_deleteproduct.html" class="NavigationItem__router-link">
+      删除商品
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/shop/api_getproduct.html" class="NavigationItem__router-link">
+      获取商品
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/shop/api_getproductlist.html" class="NavigationItem__router-link">
+      获取商品列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/shop/api_updateproduct.html" class="NavigationItem__router-link">
+      更新商品
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/shop/api_updateproductauditfree.html" class="NavigationItem__router-link">
+      免审更新商品
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/shop/api_listingproduct.html" class="NavigationItem__router-link">
+      上架商品
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/shop/api_delistingproduct.html" class="NavigationItem__router-link">
+      下架商品
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/shop/api_cancelauditproduct.html" class="NavigationItem__router-link">
+      撤回商品审核
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/shop/api_getproducth5url.html" class="NavigationItem__router-link">
+      获取商品H5短链
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/shop/api_getproducttaglink.html" class="NavigationItem__router-link">
+      获取商品口令
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/shop/api_getproductqrcode.html" class="NavigationItem__router-link">
+      获取商品二维码
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/shop/api_getproductscheme.html" class="NavigationItem__router-link">
+      获取商品的移动应用跳转scheme码
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/shop/api_product_classify.html" class="NavigationItem__router-link">
+      类目推荐
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/shop/api_begintimingsale.html" class="NavigationItem__router-link">
+      商品立即开售
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/shop/api_canceltimingsale.html" class="NavigationItem__router-link">
+      取消商品开售
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/shop/api_externalproductmapping.html" class="NavigationItem__router-link">
+      站内外商品属性映射
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/shop/api_categoryprecheck.html" class="NavigationItem__router-link">
+      发品前校验
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/shop/api_getproductauditstrategy.html" class="NavigationItem__router-link">
+      获取商品上架策略
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/shop/api_setproductauditstrategy.html" class="NavigationItem__router-link">
+      设置商品上架策略
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/shop/api_getproductauditquota.html" class="NavigationItem__router-link">
+      获取商品提审限额
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/shop/api_externalproductmappingnew.html" class="NavigationItem__router-link">
+      商品属性映射及推荐
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/shop/api_productbrandrecommend.html" class="NavigationItem__router-link">
+      商品品牌推荐
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/shop/mmecapi_addproductthirdpartysource.html" class="NavigationItem__router-link">
+      新增第三方货源信息
+    <!----></a> <!----> <!----></span></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/stock/" class="NavigationItem__router-link">
+      库存
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/stock/api_getstock.html" class="NavigationItem__router-link">
+      获取库存
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/stock/api_batchgetstock.html" class="NavigationItem__router-link">
+      批量获取库存信息
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/stock/api_getstockflow.html" class="NavigationItem__router-link">
+      获取库存流水
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/stock/api_updatestock.html" class="NavigationItem__router-link">
+      快速更新库存
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/gift/" class="NavigationItem__router-link">
+      赠品
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/gift/api_addgiftproduct.html" class="NavigationItem__router-link">
+      添加非卖商品
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/gift/api_updategiftproduct.html" class="NavigationItem__router-link">
+      更新非卖商品
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/gift/api_setproductasgift.html" class="NavigationItem__router-link">
+      在售商品转赠品
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/gift/api_getgiftproduct.html" class="NavigationItem__router-link">
+      获取赠品
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/gift/api_getgiftproductlist.html" class="NavigationItem__router-link">
+      获取赠品列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/gift/api_updategiftstock.html" class="NavigationItem__router-link">
+      更新赠品库存
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/giftactivity/" class="NavigationItem__router-link">
+      买赠活动
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/giftactivity/api_addgiftactivity.html" class="NavigationItem__router-link">
+      创建赠品活动
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/giftactivity/api_deletegiftactivity.html" class="NavigationItem__router-link">
+      删除赠品活动
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/giftactivity/api_stopgiftactivity.html" class="NavigationItem__router-link">
+      停止赠品活动
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/limiteddiscounttask/" class="NavigationItem__router-link">
+      商品限时抢购
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/limiteddiscounttask/api_addlimiteddiscounttask.html" class="NavigationItem__router-link">
+      添加限时抢购任务
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/limiteddiscounttask/api_getlimiteddiscounttasklist.html" class="NavigationItem__router-link">
+      获取限时抢购任务列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/limiteddiscounttask/api_stoplimiteddiscounttask.html" class="NavigationItem__router-link">
+      停止限时抢购任务
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/limiteddiscounttask/api_deletelimiteddiscounttask.html" class="NavigationItem__router-link">
+      删除限时抢购任务
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-product/limiteddiscounttask/api_updatelimiteddiscounttask.html" class="NavigationItem__router-link">
+      更新限时抢购任务
+    <!----></a> <!----> <!----></span></li></ul></div></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/favorite/" class="NavigationItem__router-link">
+      收藏管理
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/favorite/shopfavorite/" class="NavigationItem__router-link">
+      店铺收藏
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/favorite/shopfavorite/api_getfavoritescount.html" class="NavigationItem__router-link">
+      获取店铺收藏的人数
+    <!----></a> <!----> <!----></span></li></ul></div></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-category/" class="NavigationItem__router-link">
+      类目管理
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-category/api_getallcategory.html" class="NavigationItem__router-link">
+      获取所有类目
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-category/api_getcategorydetail.html" class="NavigationItem__router-link">
+      获取类目信息
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-category/api_addcategory.html" class="NavigationItem__router-link">
+      申请类目
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-category/api_getbizcatflowlist.html" class="NavigationItem__router-link">
+      获取店铺的类目审核单列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-category/api_getbizcatflowdetail.html" class="NavigationItem__router-link">
+      获取店铺的类目审核单详情
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-category/api_getcategoryrelationlist.html" class="NavigationItem__router-link">
+      获取店铺的类目权限列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-category/api_getcategoryrelationdetail.html" class="NavigationItem__router-link">
+      获取店铺的类目权限详情
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-category/api_cancelauditcategory.html" class="NavigationItem__router-link">
+      撤销类目审核
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/category-rule/" class="NavigationItem__router-link">
+      类目规则
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/category-rule/api_get_category_rule.html" class="NavigationItem__router-link">
+      获取保证金类目规则
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/category-rule/api_get_delivery_method_category_rule.html" class="NavigationItem__router-link">
+      获取发货方式类目规则
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/category-rule/api_getcategoryproductrule.html" class="NavigationItem__router-link">
+      获取类目下商品发布规则
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-order/" class="NavigationItem__router-link">
+      订单管理
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-order/api_getorderlist.html" class="NavigationItem__router-link">
+      获取订单列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-order/api_getorder.html" class="NavigationItem__router-link">
+      获取订单详情
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-order/api_searchorder.html" class="NavigationItem__router-link">
+      订单搜索
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-order/api_changeorderprice.html" class="NavigationItem__router-link">
+      修改订单价格
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-order/api_changemerchantnotes.html" class="NavigationItem__router-link">
+      修改订单备注
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-order/api_changeorderaddress.html" class="NavigationItem__router-link">
+      修改订单地址
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-order/api_changedeliveryinfo.html" class="NavigationItem__router-link">
+      修改物流信息
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-order/api_acceptorderaddressmodifyapply.html" class="NavigationItem__router-link">
+      同意用户修改收货地址申请
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-order/api_rejectorderaddressmodifyapply.html" class="NavigationItem__router-link">
+      拒绝用户修改收货地址申请
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-order/api_submitfreshinspectinfo.html" class="NavigationItem__router-link">
+      上传生鲜质检信息
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-order/api_presentnote.html" class="NavigationItem__router-link">
+      礼物订单新增备注信息
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-order/api_getpresentsuborder.html" class="NavigationItem__router-link">
+      获取礼物单的子单列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-order/api_getpreshipmentchangeskuwaithandlelist.html" class="NavigationItem__router-link">
+      获取所有待发货前更换sku待处理请求
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-order/api_approvepreshipmentchangesku.html" class="NavigationItem__router-link">
+      同意待发货前更换sku请求
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-order/api_rejectpreshipmentchangesku.html" class="NavigationItem__router-link">
+      拒绝待发货前更换sku请求
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-order/api_decodesensitiveinfo.html" class="NavigationItem__router-link">
+      解密订单中的详细收货信息
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-order/api_applyrealnumber.html" class="NavigationItem__router-link">
+      申请查看订单真实号码
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-order/api_getrealnumberviewaudit.html" class="NavigationItem__router-link">
+      查看订单真实号审核状态
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-order/api_applyvirtualnumberagain.html" class="NavigationItem__router-link">
+      订单再次申请虚拟号
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-order/api_delayvirtualnumber.html" class="NavigationItem__router-link">
+      订单虚拟号延期
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-order/api_privatenumberaddphone.html" class="NavigationItem__router-link">
+      添加待认证的手机号
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-order/api_privatenumbersendverifycode.html" class="NavigationItem__router-link">
+      获取短信验证码
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-order/api_privatenumbergetshopphone.html" class="NavigationItem__router-link">
+      获取小店手机号认证状态
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/funds/" class="NavigationItem__router-link">
+      资金结算
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/funds/funds/" class="NavigationItem__router-link">
+      资金账户
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/funds/funds/api_getbalance.html" class="NavigationItem__router-link">
+      获取账户余额
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/funds/funds/api_getbankacct.html" class="NavigationItem__router-link">
+      获取结算账户
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/funds/funds/api_getfundsflowdetail.html" class="NavigationItem__router-link">
+      获取资金流水详情
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/funds/funds/api_getfundsflowlist.html" class="NavigationItem__router-link">
+      获取资金流水列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/funds/funds/api_getwithdrawdetail.html" class="NavigationItem__router-link">
+      获取提现记录
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/funds/funds/api_getwithdrawlist.html" class="NavigationItem__router-link">
+      获取提现记录列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/funds/funds/api_setbankacct.html" class="NavigationItem__router-link">
+      修改结算账户
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/funds/funds/api_submitwithdraw.html" class="NavigationItem__router-link">
+      商户提现
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/funds/funds/api_listorderflow.html" class="NavigationItem__router-link">
+      查询订单流水列表
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/funds/bank/" class="NavigationItem__router-link">
+      银行卡
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/funds/bank/api_ecgetbankbynum.html" class="NavigationItem__router-link">
+      根据卡号查银行信息
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/funds/bank/api_ecgetbanklist.html" class="NavigationItem__router-link">
+      搜索银行列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/funds/bank/api_ecgetcity.html" class="NavigationItem__router-link">
+      查询城市列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/funds/bank/api_ecgetprovince.html" class="NavigationItem__router-link">
+      查询大陆银行省份列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/funds/bank/api_ecgetsubbranch.html" class="NavigationItem__router-link">
+      查询支行列表
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/funds/qrcode/" class="NavigationItem__router-link">
+      资金二维码
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/funds/qrcode/api_ecgetqrcode.html" class="NavigationItem__router-link">
+      获取二维码
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/funds/qrcode/api_eccheckqrcode.html" class="NavigationItem__router-link">
+      查询扫码状态
+    <!----></a> <!----> <!----></span></li></ul></div></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/coupon/" class="NavigationItem__router-link">
+      营销管理
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/coupon/api_createcoupon.html" class="NavigationItem__router-link">
+      创建优惠券
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/coupon/api_getcoupon.html" class="NavigationItem__router-link">
+      获取优惠券详情
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/coupon/api_getcouponlist.html" class="NavigationItem__router-link">
+      获取优惠券ID列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/coupon/api_getusercoupon.html" class="NavigationItem__router-link">
+      获取用户优惠券详情
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/coupon/api_getusercouponlist.html" class="NavigationItem__router-link">
+      获取用户优惠券ID列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/coupon/api_updatecoupon.html" class="NavigationItem__router-link">
+      更新优惠券内容
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/coupon/api_updatecouponstatus.html" class="NavigationItem__router-link">
+      更新优惠券状态
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-aftersale/" class="NavigationItem__router-link">
+      售后管理
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-aftersale/aftersale/api_getaftersaleorder.html" class="NavigationItem__router-link">
+      获取售后单
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-aftersale/aftersale/api_acceptapply.html" class="NavigationItem__router-link">
+      同意售后
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-aftersale/aftersale/api_acceptexchangereship.html" class="NavigationItem__router-link">
+      换货发货
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-aftersale/aftersale/api_applyvirtualtelnum.html" class="NavigationItem__router-link">
+      售后单兑换虚拟号
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-aftersale/aftersale/api_genaftersaleorder.html" class="NavigationItem__router-link">
+      代用户发起售后
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-aftersale/aftersale/api_getaftersalelist.html" class="NavigationItem__router-link">
+      获取售后单列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-aftersale/aftersale/api_merchantupdateaftersale.html" class="NavigationItem__router-link">
+      商家协商
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-aftersale/aftersale/api_getaftersalereason.html" class="NavigationItem__router-link">
+      获取全量售后原因
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-aftersale/aftersale/api_rejectapply.html" class="NavigationItem__router-link">
+      拒绝售后
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-aftersale/aftersale/api_rejectexchangereship.html" class="NavigationItem__router-link">
+      换货拒绝发货
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-aftersale/aftersale/api_getaftersalerejectreason.html" class="NavigationItem__router-link">
+      获取拒绝售后原因
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-aftersale/aftersale/api_uploadrefundcertificate.html" class="NavigationItem__router-link">
+      上传退款凭证
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-aftersale/aftersale/api_refundpricediff.html" class="NavigationItem__router-link">
+      代用户发起退差价
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-aftersale/aftersale/api_handlefastexchangereceipt.html" class="NavigationItem__router-link">
+      商家处理极速换货用户退货
+    <!----></a> <!----> <!----></span></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-aftersale/complaint/api_addcomplaintmaterial.html" class="NavigationItem__router-link">
+      纠纷单
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-aftersale/complaint/api_addcomplaintmaterial.html" class="NavigationItem__router-link">
+      商家补充纠纷单留言
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-aftersale/complaint/api_addcomplaintproof.html" class="NavigationItem__router-link">
+      商家举证
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-aftersale/complaint/api_getcomplaintorder.html" class="NavigationItem__router-link">
+      获取纠纷单
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-aftersale/complaint/api_mmecapi_syncworkorder.html" class="NavigationItem__router-link">
+      同步工单
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-aftersale/guarantee/api_getguaranteeorder.html" class="NavigationItem__router-link">
+      保障单
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-aftersale/guarantee/api_getguaranteeorder.html" class="NavigationItem__router-link">
+      获取保障单详情
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-aftersale/guarantee/api_merchantacceptguarantee.html" class="NavigationItem__router-link">
+      商家同意保障单申请
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-aftersale/guarantee/api_merchantmodifyguarantee.html" class="NavigationItem__router-link">
+      商家协商保障单
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-aftersale/guarantee/api_merchantproofguarantee.html" class="NavigationItem__router-link">
+      商家举证保障单
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-aftersale/guarantee/api_merchantrefuseguarantee.html" class="NavigationItem__router-link">
+      商家拒绝保障单申请
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-aftersale/guarantee/api_searchguaranteeorder.html" class="NavigationItem__router-link">
+      商家获取保障单列表
+    <!----></a> <!----> <!----></span></li></ul></div></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/kf/" class="NavigationItem__router-link">
+      商家客服
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/kf/api_cosupload.html" class="NavigationItem__router-link">
+      上传多媒体资源
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/kf/api_sendmsg.html" class="NavigationItem__router-link">
+      发送消息
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/qic/" class="NavigationItem__router-link">
+      质检管理
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/qic/api_getinspectconfig.html" class="NavigationItem__router-link">
+      查询质检仓配置
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/qic/api_getinspectsubmitconfig.html" class="NavigationItem__router-link">
+      查询送检配置模板信息
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/qic/api_printinspectcode.html" class="NavigationItem__router-link">
+      打印质检码
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/qic/api_submitinspectinfo.html" class="NavigationItem__router-link">
+      绑定送检信息
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/qic/api_registerlogistics.html" class="NavigationItem__router-link">
+      自寄快递送检
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/" class="NavigationItem__router-link">
+      物流发货
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/address/" class="NavigationItem__router-link">
+      地址管理
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/address/api_addaddress.html" class="NavigationItem__router-link">
+      添加地址
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/address/api_getaddresslist.html" class="NavigationItem__router-link">
+      获取地址列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/address/api_getaddress.html" class="NavigationItem__router-link">
+      获取地址详情
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/address/api_updateaddress.html" class="NavigationItem__router-link">
+      更新地址
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/address/api_deleteaddress.html" class="NavigationItem__router-link">
+      删除地址
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/merchant/" class="NavigationItem__router-link">
+      运费模板
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/merchant/api_addfreighttemplate.html" class="NavigationItem__router-link">
+      增加运费模版
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/merchant/api_getfreighttemplatedetail.html" class="NavigationItem__router-link">
+      查询运费模版
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/merchant/api_getfreighttemplatelist.html" class="NavigationItem__router-link">
+      获取运费模板列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/merchant/api_updatefreighttemplate.html" class="NavigationItem__router-link">
+      更新运费模版
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/ewaybill/" class="NavigationItem__router-link">
+      电子面单
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/ewaybill/api_ewaybill_get_template_config.html" class="NavigationItem__router-link">
+      获取面单标准模板
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/ewaybill/api_ewaybill_createtemplate.html" class="NavigationItem__router-link">
+      新增面单模板
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/ewaybill/api_ewaybill_deltemplate.html" class="NavigationItem__router-link">
+      删除面单模版
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/ewaybill/api_ewaybill_updatetemplate.html" class="NavigationItem__router-link">
+      更新面单模版
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/ewaybill/api_ewaybill_gettemplate.html" class="NavigationItem__router-link">
+      获取面单模板信息
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/ewaybill/api_ewaybill_gettemplatebyid.html" class="NavigationItem__router-link">
+      根据模板ID获取面单模板信息
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/ewaybill/api_ewaybill_getacct.html" class="NavigationItem__router-link">
+      查询开通的电子面单网点/账号信息
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/ewaybill/api_ewaybill_getdeliverylist.html" class="NavigationItem__router-link">
+      查询开通的快递公司列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/ewaybill/api_ewaybill_precreateorder.html" class="NavigationItem__router-link">
+      电子面单预取号
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/ewaybill/api_ewaybill_createorder.html" class="NavigationItem__router-link">
+      电子面单取号
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/ewaybill/api_ewaybill_addsuborder.html" class="NavigationItem__router-link">
+      电子面单子件追加
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/ewaybill/api_ewaybill_cancelorder.html" class="NavigationItem__router-link">
+      电子面单取消下单
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/ewaybill/api_ewaybill_getorder.html" class="NavigationItem__router-link">
+      查询面单详情
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/ewaybill/api_get_print_content.html" class="NavigationItem__router-link">
+      获取打印报文
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/ewaybill/api_ewaybill_printorder.html" class="NavigationItem__router-link">
+      打印成功通知
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/ewaybill/api_ewaybill_batchprintorder.html" class="NavigationItem__router-link">
+      批量打印通知
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/delivery/" class="NavigationItem__router-link">
+      发货
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/delivery/api_senddelivery.html" class="NavigationItem__router-link">
+      订单发货
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/delivery/api_delivery_compensation.html" class="NavigationItem__router-link">
+      订单补发货
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/delivery/api_getdeliverycompanylistnew.html" class="NavigationItem__router-link">
+      获取快递公司列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/channels-shop-delivery/delivery/api_getdeliverycompanylist.html" class="NavigationItem__router-link">
+      获取快递公司列表-旧
+    <!----></a> <!----> <!----></span></li></ul></div></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/warehouse/" class="NavigationItem__router-link">
+      区域仓库
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/warehouse/api_createwarehouse.html" class="NavigationItem__router-link">
+      创建区域仓库
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/warehouse/api_getwarehouselist.html" class="NavigationItem__router-link">
+      查询区域仓库列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/warehouse/api_getwarehouse.html" class="NavigationItem__router-link">
+      获取区域仓库
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/warehouse/api_updatewarehousedetail.html" class="NavigationItem__router-link">
+      修改区域仓库详情
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/warehouse/api_addcoverlocations.html" class="NavigationItem__router-link">
+      批量增加覆盖区域
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/warehouse/api_delcoverlocations.html" class="NavigationItem__router-link">
+      批量删除覆盖区域
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/warehouse/api_getaddressprioritysort.html" class="NavigationItem__router-link">
+      获取指定地址下区域仓库的优先级
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/warehouse/api_setaddressprioritysort.html" class="NavigationItem__router-link">
+      设置指定地址下区域仓库的优先级
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/warehouse/api_updatewarehousestock.html" class="NavigationItem__router-link">
+      更新区域仓库存数量
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/warehouse/api_getwarehousestock.html" class="NavigationItem__router-link">
+      获取区域仓库存数量
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/warehouse/api_getaddresscode.html" class="NavigationItem__router-link">
+      获取地址行政编码
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/league/" class="NavigationItem__router-link">
+      优选联盟
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/league/promoter/" class="NavigationItem__router-link">
+      带货者操作
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/league/promoter/api_getpromoter.html" class="NavigationItem__router-link">
+      获取带货者详情信息
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/league/promoter/api_getpromoterlist.html" class="NavigationItem__router-link">
+      获取带货者列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/league/promoter/api_gettalentproductdata.html" class="NavigationItem__router-link">
+      获取带货者商品数据列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/league/promoter/api_updatetalent.html" class="NavigationItem__router-link">
+      编辑带货者
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/league/item/" class="NavigationItem__router-link">
+      商品操作
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/league/item/api_batchadditem.html" class="NavigationItem__router-link">
+      批量新增联盟商品
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/league/item/api_deleteitem.html" class="NavigationItem__router-link">
+      删除联盟商品
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/league/item/api_getitem.html" class="NavigationItem__router-link">
+      获取联盟商品详情
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/league/item/api_batchaddheadsupplieritem.html" class="NavigationItem__router-link">
+      批量新增联盟机构推广
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/league/item/api_getitemlist.html" class="NavigationItem__router-link">
+      获取联盟商品推广列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/league/item/api_upditem.html" class="NavigationItem__router-link">
+      更新联盟商品信息
+    <!----></a> <!----> <!----></span></li></ul></div></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/brand/" class="NavigationItem__router-link">
+      品牌资质
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/brand/api_addbrandlogic.html" class="NavigationItem__router-link">
+      新增品牌资质
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/brand/api_getallbrandslogic.html" class="NavigationItem__router-link">
+      获取品牌库列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/brand/api_cancelauditbrandlogic.html" class="NavigationItem__router-link">
+      撤回品牌资质审核
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/brand/api_deletebrandlogic.html" class="NavigationItem__router-link">
+      删除品牌资质
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/brand/api_getbrandlogic.html" class="NavigationItem__router-link">
+      获取品牌资质申请详情
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/brand/api_getbrandlistlogic.html" class="NavigationItem__router-link">
+      获取品牌资质申请列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/brand/api_updatebrandlogic.html" class="NavigationItem__router-link">
+      更新品牌资质
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/brand/api_getvalidbrandlistlogic.html" class="NavigationItem__router-link">
+      获取生效中的品牌资质列表
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/supplier/" class="NavigationItem__router-link router-link-active">
+      代发管理
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/supplier/relation/" class="NavigationItem__router-link">
+      关联供货商
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/supplier/relation/api_get_supplier_list.html" class="NavigationItem__router-link">
+      获取供货商列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/supplier/relation/api_invite_supplier.html" class="NavigationItem__router-link">
+      申请关联供货商
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/supplier/auto/" class="NavigationItem__router-link">
+      自动分配设置
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/supplier/auto/api_get_distribution.html" class="NavigationItem__router-link">
+      获取分配方式
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/supplier/auto/api_set_manually_distribution.html" class="NavigationItem__router-link">
+      设置全店订单手动分配
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/supplier/auto/api_set_all_distribution.html" class="NavigationItem__router-link">
+      设置全店订单自动分配
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/supplier/auto/api_set_product_distribution.html" class="NavigationItem__router-link">
+      设置按商品自动分配
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/supplier/auto/api_get_product_default_distribution.html" class="NavigationItem__router-link">
+      获取商品对应的自动分配供货商
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/supplier/auto/api_get_product_list.html" class="NavigationItem__router-link">
+      获取按商品自动分配的商品列表
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/supplier/order/" class="NavigationItem__router-link router-link-active">
+      代发单管理
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/supplier/order/api_dropship_assign.html" class="NavigationItem__router-link">
+      分配订单代发
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/supplier/order/api_dropship_cancel.html" class="NavigationItem__router-link">
+      取消分配代发单
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/supplier/order/api_dropship_get.html" class="NavigationItem__router-link">
+      查询代发单详情
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/supplier/order/api_dropship_list.html" class="NavigationItem__router-link">
+      拉取代发单列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/supplier/order/api_dropship_search.html" aria-current="page" class="NavigationItem__router-link router-link-exact-active router-link-active">
+      搜索代发单
+    <!----></a> <!----> <!----></span></li></ul></div></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/wecom/" class="NavigationItem__router-link">
+      企业微信
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/wecom/api_shop_get_wecom_openid.html" class="NavigationItem__router-link">
+      获取关联账号企微id
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/miniandstore/" class="NavigationItem__router-link">
+      连接小程序
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/miniandstore/basic/api_getdownloadurl.html" class="NavigationItem__router-link">
+      获取文件下载链接
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/miniandstore/basic/api_uploadec.html" class="NavigationItem__router-link">
+      上传资料
+    <!----></a> <!----> <!----></span></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/miniandstore/cooperation_gift/" class="NavigationItem__router-link">
+      合作商家为小程序发放礼物
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/miniandstore/cooperation_gift/api_list_present_activity.html" class="NavigationItem__router-link">
+      查询小店礼物活动列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/miniandstore/cooperation_gift/api_get_activity.html" class="NavigationItem__router-link">
+      查询礼物活动详情
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/miniandstore/cooperation_gift/api_set_present_receiver.html" class="NavigationItem__router-link">
+      指定礼物收礼者
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/miniandstore/cooperation_gift/api_create_present_order.html" class="NavigationItem__router-link">
+      创建并发送礼物
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/miniandstore/cooperation_gift/api_get_present_list.html" class="NavigationItem__router-link">
+      查询礼物订单列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/miniandstore/cooperation_gift/api_get_receiver_order_list.html" class="NavigationItem__router-link">
+      查询收礼者订单列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/miniandstore/cooperation_gift/api_get_present.html" class="NavigationItem__router-link">
+      查询礼物订单详情
+    <!----></a> <!----> <!----></span></li></ul></div></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/compass/" class="NavigationItem__router-link">
+      罗盘商家版
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/compass/api_getshopfinderauthorizationlist.html" class="NavigationItem__router-link">
+      获取授权视频号列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/compass/api_getshopfinderlist.html" class="NavigationItem__router-link">
+      获取带货达人列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/compass/api_getshopfinderoverall.html" class="NavigationItem__router-link">
+      获取带货数据概览
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/compass/api_getshopfinderproductlist.html" class="NavigationItem__router-link">
+      获取带货达人商品列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/compass/api_getshopfinderproductoverall.html" class="NavigationItem__router-link">
+      获取带货达人详情
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/compass/api_getshoplivelist.html" class="NavigationItem__router-link">
+      获取店铺开播列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/compass/api_getshopoverall.html" class="NavigationItem__router-link">
+      获取电商数据概览
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/compass/api_getshopproductdata.html" class="NavigationItem__router-link">
+      获取商品详细信息
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/compass/api_getshopproductlist.html" class="NavigationItem__router-link">
+      获取商品列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/compass/api_getshopsaleprofiledata.html" class="NavigationItem__router-link">
+      获取店铺人群数据
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/vip/" class="NavigationItem__router-link">
+      小店会员
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/vip/api_getvipuserscore.html" class="NavigationItem__router-link">
+      获取用户积分
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/vip/api_getuserinfo.html" class="NavigationItem__router-link">
+      获取用户信息
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/vip/api_getuserlist.html" class="NavigationItem__router-link">
+      获取用户列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/vip/api_getuserscoreflowrecord.html" class="NavigationItem__router-link">
+      获取用户积分流水
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/wxamember/" class="NavigationItem__router-link">
+      小程序会员服务
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/wxamember/shop/" class="NavigationItem__router-link">
+      小店相关
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/wxamember/shop/api_v3_getwxainfo.html" class="NavigationItem__router-link">
+      小店获取关联小程序信息
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/wxamember/wxa/" class="NavigationItem__router-link">
+      小程序相关
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/wxamember/wxa/api_v3_wxa_adduserinfo.html" class="NavigationItem__router-link">
+      新增小程序会员信息
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/wxamember/wxa/api_v3_wxa_updateuserinfo.html" class="NavigationItem__router-link">
+      更新小程序会员信息
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/wxamember/wxa/api_v3_wxa_getuserinfo.html" class="NavigationItem__router-link">
+      获取小程序会员信息
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/wxamember/wxa/api_v3_wxa_getuserlist.html" class="NavigationItem__router-link">
+      获取小程序会员列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/wxamember/wxa/api_v3_wxa_deluserinfo.html" class="NavigationItem__router-link">
+      删除小程序会员信息
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/wxamember/wxa/api_v3_wxa_getshoplist.html" class="NavigationItem__router-link">
+      获取小程序已关联小店列表
+    <!----></a> <!----> <!----></span></li></ul></div></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/subsidy/" class="NavigationItem__router-link">
+      国补管理
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-3"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/subsidy/invoicing/" class="NavigationItem__router-link">
+      发票管理
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/subsidy/invoicing/api_query_invoicing_info.html" class="NavigationItem__router-link">
+      获取国补订单开票信息
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/subsidy/invoicing/api_upload_invoice_info.html" class="NavigationItem__router-link">
+      上传国补订单发票信息
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/subsidy/invoicing/api_upload_invoice_file.html" class="NavigationItem__router-link">
+      上传国补订单发票文件
+    <!----></a> <!----> <!----></span></li></ul></div></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/API/platformkf/api_getticketclassconfig.html" class="NavigationItem__router-link">
+      客诉工单
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/platformkf/api_getticketclassconfig.html" class="NavigationItem__router-link">
+      查询工单分类配置
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/platformkf/api_getmchticketlist.html" class="NavigationItem__router-link">
+      获取商家工单列表
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/platformkf/api_getmchticketdetail.html" class="NavigationItem__router-link">
+      查询工单详情
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/API/platformkf/api_operatemchticket.html" class="NavigationItem__router-link">
+      商户处理商家工单
+    <!----></a> <!----> <!----></span></li></ul></div></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-1"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/" class="NavigationItem__router-link">
+      事件通知
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/common_callback/" class="NavigationItem__router-link">
+      通用
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/common_callback/API_change_log_callback.html" class="NavigationItem__router-link">
+       API 变更日志回调
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/storebasics_callback/" class="NavigationItem__router-link">
+      店铺管理
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/storebasics_callback/channels_ec_basic_change_status.html" class="NavigationItem__router-link">
+      小店状态变更回调事件
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/storebasics_callback/channels_ec_basic_close_store.html" class="NavigationItem__router-link">
+      小店最终注销回调事件
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/storebasics_callback/set_shop_nickname.html" class="NavigationItem__router-link">
+      小店修改名称回调事件
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/product_callback/" class="NavigationItem__router-link">
+      商品管理
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/product_callback/ProductSpuAudit.html" class="NavigationItem__router-link">
+      商品审核
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/product_callback/ProductSpuListing.html" class="NavigationItem__router-link">
+      商品上下架
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/product_callback/ProductSpuUpdate.html" class="NavigationItem__router-link">
+      商品更新
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/category_callback/" class="NavigationItem__router-link">
+      类目管理
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/category_callback/ProductCategoryAudit.html" class="NavigationItem__router-link">
+      类目审核结果通知
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/order_callback/" class="NavigationItem__router-link">
+      订单管理
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/order_callback/channels_ec_order_new.html" class="NavigationItem__router-link">
+      订单下单
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/order_callback/channels_ec_order_cancel.html" class="NavigationItem__router-link">
+      订单取消
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/order_callback/channels_ec_order_pay.html" class="NavigationItem__router-link">
+      订单支付成功
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/order_callback/channels_ec_order_wait_shipping.html" class="NavigationItem__router-link">
+      订单待发货
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/order_callback/channels_ec_order_deliver.html" class="NavigationItem__router-link">
+      订单发货
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/order_callback/channels_ec_order_confirm.html" class="NavigationItem__router-link">
+      订单确认收货
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/order_callback/channels_ec_order_settle.html" class="NavigationItem__router-link">
+      订单结算成功
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/order_callback/channels_ec_order_ext_info.html" class="NavigationItem__router-link">
+      订单其他信息更新
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/funds_callback/" class="NavigationItem__router-link">
+      资金结算
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/funds_callback/channels_ec_acct_notify.html" class="NavigationItem__router-link">
+      结算账户变更回调
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/funds_callback/channels_ec_withdraw_notify.html" class="NavigationItem__router-link">
+      提现回调
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/funds_callback/qrcode_status.html" class="NavigationItem__router-link">
+      提现二维码回调
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/coupon_callback/" class="NavigationItem__router-link">
+      营销管理
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/coupon_callback/channels_ec_coupon_receive.html" class="NavigationItem__router-link">
+      领取优惠券通知
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/coupon_callback/channels_ec_coupon_create.html" class="NavigationItem__router-link">
+      创建优惠券通知
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/coupon_callback/channels_ec_coupon_delete.html" class="NavigationItem__router-link">
+      删除优惠券通知
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/coupon_callback/channels_ec_coupon_expire.html" class="NavigationItem__router-link">
+      优惠券过期通知
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/coupon_callback/channels_ec_coupon_info_change.html" class="NavigationItem__router-link">
+      优惠券信息更新通知
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/coupon_callback/channels_ec_coupon_invalid.html" class="NavigationItem__router-link">
+      作废优惠券通知
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/coupon_callback/channels_ec_user_coupon_expire.html" class="NavigationItem__router-link">
+      用户优惠券过期通知
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/coupon_callback/channels_ec_user_coupon_unuse.html" class="NavigationItem__router-link">
+      优惠券返还通知
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/coupon_callback/channels_ec_user_coupon_use.html" class="NavigationItem__router-link">
+      优惠券核销通知
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/aftersale_callback/" class="NavigationItem__router-link">
+      售后管理
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/aftersale_callback/channels_ec_aftersale_update.html" class="NavigationItem__router-link">
+      售后单更新通知
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/aftersale_callback/channels_ec_complaint_update.html" class="NavigationItem__router-link">
+      纠纷单更新通知
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/aftersale_callback/channels_ec_guarantee_update.html" class="NavigationItem__router-link">
+      保障单更新通知
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/kf_callback/" class="NavigationItem__router-link">
+      商家客服
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/kf_callback/kf_msg_event.html" class="NavigationItem__router-link">
+      客服消息事件
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/merchant_callback/" class="NavigationItem__router-link">
+      物流发货
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/merchant_callback/ewaybill_push_path.html" class="NavigationItem__router-link">
+      物流轨迹推送通知
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/brand_callback/" class="NavigationItem__router-link">
+      品牌资质
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/brand_callback/brand_event.html" class="NavigationItem__router-link">
+      品牌资质事件通知
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/wxa_callback/" class="NavigationItem__router-link">
+      小程序会员服务
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/wxa_callback/channels_ec_vip_user_info_get.html" class="NavigationItem__router-link">
+      静默关联时获取小程序会员信息
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/wxa_callback/channels_ec_vip_user_auto_add.html" class="NavigationItem__router-link">
+      用户静默关联小店会员通知
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/wxa_callback/channels_ec_gen_order_info_init.html" class="NavigationItem__router-link">
+      用户进入下单页获取默认会员权益
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/wxa_callback/channels_ec_order_use_vip_discount.html" class="NavigationItem__router-link">
+      用户下单使用会员权益
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/wxa_callback/channels_ec_order_unuse_vip_discount.html" class="NavigationItem__router-link">
+      用户取消使用会员权益
+    <!----></a> <!----> <!----></span></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/platformkf/ec_platform_kf_create_mch_ticket.html" class="NavigationItem__router-link">
+      客诉工单
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/platformkf/ec_platform_kf_create_mch_ticket.html" class="NavigationItem__router-link">
+      工单创建通知
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/notify/platformkf/ec_platform_kf_ticket_timeout.html" class="NavigationItem__router-link">
+      工单超时通知
+    <!----></a> <!----> <!----></span></li></ul></div></li></ul></div></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-1"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Submit_Business_license.html" class="NavigationItem__router-link">
+      资质执照示例说明
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Submit_Business_license.html" class="NavigationItem__router-link">
+      提交营业执照
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/business_unit.html" class="NavigationItem__router-link">
+      事业单位法人证书
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Settlement_Account_information.html" class="NavigationItem__router-link">
+      结算账户信息
+    <!----></a> <!----> <!----></span></li><li><div class="NavigationLevel NavigationLevel--closed NavigationLevel--level-2"><div class="NavigationLevel__parent"><span class="NavigationToggle NavigationToggle--closed"><span class="NavigationToggle__icon NavigationToggle__icon--closed"></span></span> <span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Trade_mark_registration_certificate.html" class="NavigationItem__router-link">
+      其他资质执照示例
+    <!----></a> <!----> <!----></span></div> <ul class="NavigationLevel__children"><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Trade_mark_registration_certificate.html" class="NavigationItem__router-link">
+      《商标注册证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Notice_of_acceptance_of_trademark_registration_application.html" class="NavigationItem__router-link">
+      《商标注册申请受理通知书》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Certificate_of_Trademark_change.html" class="NavigationItem__router-link">
+      《商标变更证明》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Certificate_of_trademark_renewal.html" class="NavigationItem__router-link">
+      《商标续展证明》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Trademark_assignment_certificate.html" class="NavigationItem__router-link">
+      《商标转让证明》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Enterprise_information_change_record.html" class="NavigationItem__router-link">
+      《企业信息变更备案》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/The_3c_mark.html" class="NavigationItem__router-link">
+      《3C标识》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Entry-exit_inspection_and_quarantine_certificate_or_health_certificate.html" class="NavigationItem__router-link">
+      《出入境检验检疫证明或卫生证书》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Network_access_license_for_telecommunication_equipment.html" class="NavigationItem__router-link">
+      《电信设备进网许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Animal_Epidemic_Prevention_Certificate.html" class="NavigationItem__router-link">
+      《动物防疫条件合格证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Animal_inspection_certificate.html" class="NavigationItem__router-link">
+      《动物检验合格证书》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Measures_for_the_Administration_of_single-purpose_Commercial_Prepaid_cards.html" class="NavigationItem__router-link">
+      《单用途商业预付卡管理办法（试行）》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Fertilizer_registration_management.html" class="NavigationItem__router-link">
+      《肥料登记管理办法》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Domestic_non-special_purpose_cosmetics_information_filing.html" class="NavigationItem__router-link">
+      《国产非特殊用途化妆品信息备案》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Domestic_special_purpose_cosmetics_hygiene_license.html" class="NavigationItem__router-link">
+      《国产特殊用途化妆品卫生许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/National_compulsory_product_certification_certificate.html" class="NavigationItem__router-link">
+      《国家强制性产品认证证书》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Mandatory_certification_products_comply_with_self-declaration.html" class="NavigationItem__router-link">
+      《强制性认证产品符合自我声明》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Cosmetics_Production_License.html" class="NavigationItem__router-link">
+      《化妆品生产许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Filing_of_non-special_purpose_cosmetics.html" class="NavigationItem__router-link">
+      《非特殊用途化妆品的备案》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Importer's_import_and_export_trade_qualification_certificate.html" class="NavigationItem__router-link">
+      《进口商的进出口贸易资格证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Registration_qualification_for_imported_veterinary_drugs.html" class="NavigationItem__router-link">
+      《进口兽药注册资格》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Import_feed_registration_certificate.html" class="NavigationItem__router-link">
+      《进口饲料登记证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Measures_for_the_administration_of_Certificates_for_the_use_of_green_food_marks.html" class="NavigationItem__router-link">
+      《绿色食品标志使用证书管理办法》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Lawyer_practice_qualification_Certificate.html" class="NavigationItem__router-link">
+      《律师执业资格证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Registration_certificate_of_geographical_indication_of_agricultural_products.html" class="NavigationItem__router-link">
+      《农产品地理标志登记证书》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Pesticide_registration_Certificate.html" class="NavigationItem__router-link">
+      《农药登记证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Pesticide_Management_License.html" class="NavigationItem__router-link">
+      《农药经营许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Pesticide_Production_License.html" class="NavigationItem__router-link">
+      《农药生产许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Crop_seed_production_license.html" class="NavigationItem__router-link">
+      《农作物种子生产许可证》/《林木种子生产许可证》/《种子经营许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Halal_food_production_and_operation_qualification.html" class="NavigationItem__router-link">
+      《清真食品生产经营资质》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/National_Industrial_Product_Production_license.html" class="NavigationItem__router-link">
+      《全国工业产品生产许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Regulations_on_the_Administration_of_Live_Pig_Slaughter.html" class="NavigationItem__router-link">
+      《生猪屠宰管理条例（修订草案征求意见稿）》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Measures_for_the_Administration_of_Food_Business_License.html" class="NavigationItem__router-link">
+      《食品经营许可管理办法》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Food_production_license.html" class="NavigationItem__router-link">
+      《食品生产许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Administrative_Measures_for_the_approval_Document_Number_of_veterinary.html" class="NavigationItem__router-link">
+      《兽药产品批准文号管理办法》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Veterinary_medicine_Production_license.html" class="NavigationItem__router-link">
+      《兽药生产许可证》或《兽药经营许可证》、兽药_GMP_证书
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Feed_production_license.html" class="NavigationItem__router-link">
+      《饲料生产许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Feed_additive_production_license.html" class="NavigationItem__router-link">
+      《饲料添加剂生产许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Pollution-free_agricultural_products_certification.html" class="NavigationItem__router-link">
+      《无公害农产品认证证书》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Approval_and_certification_of_radio_transmitting_equipment.html" class="NavigationItem__router-link">
+      《无线电发射设备核准认证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Sanitary_license_for_enterprises_producing_disinfection_products.html" class="NavigationItem__router-link">
+      《消毒产品生产企业卫生许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Yangcheng_Lake_hairy_crab_native_area_protection_product_franchise_certificate.html" class="NavigationItem__router-link">
+      《阳澄湖大闸蟹原产地域保护产品专营证书》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Approval_of_sanitary_license_for_products_involving_drinking_water_sanitary_safety.html" class="NavigationItem__router-link">
+      《涉及饮用水卫生安全产品卫生许可批件》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Certificate_of_organic_product_certification.html" class="NavigationItem__router-link">
+      《有机产品认证证书》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Online_sales_and_real-name_system_authorization.html" class="NavigationItem__router-link">
+      《网络销售与实名制授权书》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Animal_Medical_Treatment_Permit.html" class="NavigationItem__router-link">
+      《动物诊疗许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Registration_Certificate_of_charitable_organization.html" class="NavigationItem__router-link">
+      《慈善组织登记证书》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Qualification_certificate_for_public_fundraising_of_charitable_organizations.html" class="NavigationItem__router-link">
+      《慈善组织公开募捐资质证书》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Interior_decoration_enterprise_qualification_grade_certificate.html" class="NavigationItem__router-link">
+      《室内装饰企业资质等级证书》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Engineering_design_and_construction_qualification_corresponding_grade_certificate.html" class="NavigationItem__router-link">
+      《工程设计与施工资质相应等级证书》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Construction_Enterprise_qualification_Certificate.html" class="NavigationItem__router-link">
+      《建筑业企业资质证书》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/School-running_license_of_a_privately-run_school.html" class="NavigationItem__router-link">
+      《民办学校办学许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/ICP_for_the_record.html" class="NavigationItem__router-link">
+      《ICP备案或_ICP_许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Intangible_certification.html" class="NavigationItem__router-link">
+      《非遗认证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Travel_agency_business_license.html" class="NavigationItem__router-link">
+      《旅行社业务经营许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Pre-packaged_food_sales_record_vouchers.html" class="NavigationItem__router-link">
+      《预包装食品销售备案凭证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Commercial_performance_Permit.html" class="NavigationItem__router-link">
+      《营业性演出许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Film_distribution_and_operation_License.html" class="NavigationItem__router-link">
+      《电影发行经营许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Film_Screening_Permit.html" class="NavigationItem__router-link">
+      《电影放映许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Health_permit.html" class="NavigationItem__router-link">
+      《卫生许可证_》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Special_Trade_License.html" class="NavigationItem__router-link">
+      《特种行业许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Travel_agency_liability_policy.html" class="NavigationItem__router-link">
+      《旅行社责任险保险单》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Branch_record_registration_certificate.html" class="NavigationItem__router-link">
+      《分社备案登记证明》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Certificate_of_Quality_rating_of_tourist_attraction.html" class="NavigationItem__router-link">
+      《旅游景区质量等级证书》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Tourist_Bureau_scenic_spot_grade_assessment.html" class="NavigationItem__router-link">
+      《旅游局景区等级评定》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Vehicle_maintenance_and_operation_record_certificate.html" class="NavigationItem__router-link">
+      《机动车维修经营备案证明》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Ministry.html" class="NavigationItem__router-link">
+      《工信部道路机动车辆生产企业准入许可》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Operation_License_of_public_air_transport_enterprise.html" class="NavigationItem__router-link">
+      《公共航空运输企业经营许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Real_estate_development_Qualification.html" class="NavigationItem__router-link">
+      《房地产开发资质》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Legal_person_license_of_insurance_company.html" class="NavigationItem__router-link">
+      《保险公司法人许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Insurance_business_license.html" class="NavigationItem__router-link">
+      《经营保险业务许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Operating_insurance_agency_business.html" class="NavigationItem__router-link">
+      《经营保险代理业务许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/aaa.html" class="NavigationItem__router-link">
+      《经营保险经纪业务许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Insurance_valuation_business_license.html" class="NavigationItem__router-link">
+      《经营保险公估业务许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Operating_insurance_appraisal_business_for_filing.html" class="NavigationItem__router-link">
+      《经营保险公估业务备案》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Insurance_part-time_agent_business_license.html" class="NavigationItem__router-link">
+      《保险兼业代理业务许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Publication_Operation_License.html" class="NavigationItem__router-link">
+      《出版物经营许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Newspaper_Publishing_license.html" class="NavigationItem__router-link">
+      《报纸出版许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Quality_inspection_report.html" class="NavigationItem__router-link">
+      《质检报告》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Network_booking_taxi_operating_license.html" class="NavigationItem__router-link">
+      《网络预约出租汽车经营许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Road_transport_operation_license.html" class="NavigationItem__router-link">
+      《道路运输经营许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Import_customs_declaration_document.html" class="NavigationItem__router-link">
+      《进口报关单据》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Journal_Publishing_License.html" class="NavigationItem__router-link">
+      《期刊出版许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Telecommunications_business_license.html" class="NavigationItem__router-link">
+      《电信业务经营许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Registration_Certificate_for_small_food_shop.html" class="NavigationItem__router-link">
+      《食品小经营店登记证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Food_small_store_food_sales_record_certificate.html" class="NavigationItem__router-link">
+      《食品小经营店（食品销售）备案证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Beijing_small_grocery_store_record_card_certificate.html" class="NavigationItem__router-link">
+      《北京市小食杂店备案卡/证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Food_and_drug_distribution_license.html" class="NavigationItem__router-link">
+      《食品药品经营许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Food_production_and_marketing_registration_certificate.html" class="NavigationItem__router-link">
+      《食品生产经营登记证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Small_catering_information_public_card.html" class="NavigationItem__router-link">
+      《小餐饮信息公示卡》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Food_stall_information_publicity_card.html" class="NavigationItem__router-link">
+      《食品摊点信息公示卡》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Small_restaurant_registration_certificate.html" class="NavigationItem__router-link">
+      《小餐饮登记证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Registration_of_small_food_production_and_processing_workshops.html" class="NavigationItem__router-link">
+      《食品生产加工小作坊登记》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Statement_on_the_relationship.html" class="NavigationItem__router-link">
+      《餐饮平台与门店管理关系声明》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Operation_qualification_statemen.html" class="NavigationItem__router-link">
+      《微信小店餐饮门店运营资质说明及承诺函》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Food_Circulation_Permit.html" class="NavigationItem__router-link">
+      《食品流通许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Registration_Certificate_of_small_food_workshop.html" class="NavigationItem__router-link">
+      《食品小作坊登记证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Commercial_housing_pre-sale_permit.html" class="NavigationItem__router-link">
+      《商品房预售许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Commercial_housing_sales_license.html" class="NavigationItem__router-link">
+      《商品房销售许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Breeding_prove.html" class="NavigationItem__router-link">
+      《养殖证明》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Letter_of_credit_commitment_of_the_electricity_selling_company.html" class="NavigationItem__router-link">
+      《售电公司信用承诺书》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Engineering_supervision_qualification_Certificate.html" class="NavigationItem__router-link">
+      《工程监理资质证书》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Practicing_license_of_law_firm.html" class="NavigationItem__router-link">
+      《律师事务所执业许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Permit_of_insurance.html" class="NavigationItem__router-link">
+      《保险许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Insurance_intermediary_license.html" class="NavigationItem__router-link">
+      《保险中介许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Timber_appraisal_certificate.html" class="NavigationItem__router-link">
+      《木材鉴定证书》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Product_Operation_Specification.html" class="NavigationItem__router-link">
+      《产品经营说明书》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Internet.html" class="NavigationItem__router-link">
+      《互联网出版许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Computer_software_works.html" class="NavigationItem__router-link">
+      《计算机软件著作权登记证书》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/High_risk_sports_operation_license.html" class="NavigationItem__router-link">
+      《高危险性体育项目经营许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Health_permit_for_public_places.html" class="NavigationItem__router-link">
+      《公共场所卫生许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Entertainment_Business_License.html" class="NavigationItem__router-link">
+      《娱乐经营许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/egistration_certificate_of_private_non-enterprise_unit.html" class="NavigationItem__router-link">
+      《民办非企业单位登记证书》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Travel_agency_branch_record_registration_certificate.html" class="NavigationItem__router-link">
+      《旅行社分社备案登记证明》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Vehicle_operation_certificate.html" class="NavigationItem__router-link">
+      《车辆营运证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Value-added_telecommunications_service_license.html" class="NavigationItem__router-link">
+      《增值电信业务许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Printing_business_License.html" class="NavigationItem__router-link">
+      《印刷经营许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Motor_vehicle_driving_training_license.html" class="NavigationItem__router-link">
+      《机动车驾驶培训许可证》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Food_safety_enterprise_standard_record_registration_form.html" class="NavigationItem__router-link">
+      《食品安全企业标准备案登记表》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Approval_Certificate_of_formula_food_for_special_Medical_use.html" class="NavigationItem__router-link">
+      《特殊医学用途配方食品批准证书》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Infant_formula_Powder_Registration_Certificate.html" class="NavigationItem__router-link">
+      《婴儿配方乳粉注册证书》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Occupational_qualification_Certificate_for_optometry_personnel.html" class="NavigationItem__router-link">
+      《验光人员职业资格证书》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Annual_certification_of_the_optometer.html" class="NavigationItem__router-link">
+      《验光仪的年度检定证书》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Three_certificates_in_one.html" class="NavigationItem__router-link">
+      《三证合一事业单位法人证书》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/common_business.html" class="NavigationItem__router-link">
+      《普通事业单位法人证书》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Education_mobile_application_filing.html" class="NavigationItem__router-link">
+      《教育移动应用备案》
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/Example_description_of_Qualification_license/Examples_of_other_qualification_licenses/Proof_Of_Association.html" class="NavigationItem__router-link">
+      《关联关系证明》
+    <!----></a> <!----> <!----></span></li></ul></div></li></ul></div></li><li><span class="NavigationItem"><!----> <a href="/doc/store/shop/changelog.html" class="NavigationItem__router-link">
+      接口变更日志
+    <!----></a> <!----> <!----></span></li><li><span class="NavigationItem"><!----> <!----> <!----> <a href="https://store.weixin.qq.com/chengzhang/rule/shop/home/1" target="_blank" class="NavigationItem__external-link">运营规则变更日志</a></span></li></ul></div></div> </aside></div> <div class="page__wrp"><main class="page"><div class="page-inner" style="min-height:0px;"> <div id="docContent"><div class="Breadcrumb"></div> <div class="content custom" data-v-b8039924><h1 id="搜索代发单" data-v-b8039924><a href="#搜索代发单" class="header-anchor" data-v-b8039924>#</a> 搜索代发单</h1> <blockquote data-v-b8039924><p data-v-b8039924>接口应在服务器端调用，不可在前端（小程序、网页、APP等）直接调用，具体可参考<a href="https://developers.weixin.qq.com/doc/oplatform/developers/dev/guide" target="_blank" data-v-b8039924>接口调用指南</a>。</p></blockquote> <p data-v-b8039924>接口英文名：dropship_search</p> <p data-v-b8039924>该接口用于搜索代发单</p> <p data-v-b8039924><span id="apicalltype" class="header-anchor" data-v-b8039924></span></p> <h2 id="_1-调用方式" data-v-b8039924><a href="#_1-调用方式" class="header-anchor" data-v-b8039924>#</a> 1. 调用方式</h2> <h3 id="HTTPS-调用" data-v-b8039924><a href="#HTTPS-调用" class="header-anchor" data-v-b8039924>#</a> HTTPS 调用</h3> <div class="language-bash extra-class" data-v-b8039924><pre class="language-bash" data-v-b8039924><code data-v-b8039924>POST https://api.weixin.qq.com/channels/ec/order/dropship/search?access_token<span class="token operator" data-v-b8039924>=</span>ACCESS_TOKEN
+</code></pre></div><h3 id="云调用" data-v-b8039924><a href="#云调用" class="header-anchor" data-v-b8039924>#</a> 云调用</h3> <ul data-v-b8039924><li data-v-b8039924>本接口不支持云调用。</li></ul> <h3 id="第三方调用" data-v-b8039924><a href="#第三方调用" class="header-anchor" data-v-b8039924>#</a> 第三方调用</h3> <ul data-v-b8039924><li data-v-b8039924><p data-v-b8039924>本接口支持第三方平台代微信小店商家调用。<a href="../../../dev_before/third_party_platforms" target="_blank" data-v-b8039924>第三方服务商调用模式介绍</a></p></li> <li data-v-b8039924><p data-v-b8039924>该接口所属的权限集 id 为：131</p></li> <li data-v-b8039924><p data-v-b8039924>服务商获得其中之一权限集授权后，可通过使用 <a href="https://developers.weixin.qq.com/doc/oplatform/developers/dev/AuthorizerAccessToken" target="_blank" data-v-b8039924>authorizer_access_token</a> 代微信小店商家进行调用，具体可查看 <a href="https://developers.weixin.qq.com/doc/oplatform/Third-party_Platforms/2.0/api/Before_Develop/call_interface.html" target="_blank" rel="noopener noreferrer" data-v-b8039924>第三方调用<span data-v-b8039924 data-v-b8039924></span></a> 说明文档。</p></li></ul> <p data-v-b8039924><span id="apirequest" class="header-anchor" data-v-b8039924></span></p> <h2 id="_2-请求参数" data-v-b8039924><a href="#_2-请求参数" class="header-anchor" data-v-b8039924>#</a> 2. 请求参数</h2> <h3 id="查询参数-Query-String-Parameters" data-v-b8039924><a href="#查询参数-Query-String-Parameters" class="header-anchor" data-v-b8039924>#</a> 查询参数 <code data-v-b8039924>Query String Parameters</code></h3> <table data-v-b8039924><tr data-v-b8039924><th data-v-b8039924>参数名</th><th data-v-b8039924>类型</th><th data-v-b8039924>必填</th><th data-v-b8039924>示例</th><th data-v-b8039924>说明</th></tr> <tr data-v-b8039924><td data-v-b8039924>access_token</td><td data-v-b8039924>string</td><td data-v-b8039924>是</td><td data-v-b8039924>ACCESS_TOKEN</td><td data-v-b8039924>接口调用凭证，可使用 <a href="../../apimgnt/common/api_getaccesstoken" target="_blank" data-v-b8039924>access_token</a>（微信小店商家）、<a href="https://developers.weixin.qq.com/doc/oplatform/openApi/ticket-token/api_getauthorizeraccesstoken" target="_blank" data-v-b8039924>authorizer_access_token</a>（服务商代调用）</td></tr></table> <h3 id="请求体-Request-Payload" data-v-b8039924><a href="#请求体-Request-Payload" class="header-anchor" data-v-b8039924>#</a> 请求体 <code data-v-b8039924>Request Payload</code></h3> <table data-v-b8039924><tr data-v-b8039924><th data-v-b8039924>参数名</th><th data-v-b8039924>类型</th><th data-v-b8039924>必填</th><th data-v-b8039924>说明</th></tr> <tr data-v-b8039924><td data-v-b8039924>search_condition</td><td data-v-b8039924><a href="#Body__search_condition" data-v-b8039924>object</a></td><td data-v-b8039924>是</td><td data-v-b8039924>搜索条件</td></tr> <tr data-v-b8039924><td data-v-b8039924>page_info</td><td data-v-b8039924><a href="#Body__page_info" data-v-b8039924>object</a></td><td data-v-b8039924>否</td><td data-v-b8039924>	分页参数，上一页请求返回</td></tr></table> <p data-v-b8039924><span id="Body__search_condition" class="header-anchor" data-v-b8039924></span></p> <h3 id="Body-search-condition-Object-Payload" data-v-b8039924><a href="#Body-search-condition-Object-Payload" class="header-anchor" data-v-b8039924>#</a> Body.search_condition <code data-v-b8039924>Object Payload</code></h3> <p data-v-b8039924>搜索条件</p> <table data-v-b8039924><tr data-v-b8039924><th data-v-b8039924>参数名</th><th data-v-b8039924>类型</th><th data-v-b8039924>必填</th><th data-v-b8039924>说明</th><th data-v-b8039924>枚举</th></tr> <tr data-v-b8039924><td data-v-b8039924>order_id</td><td data-v-b8039924>number</td><td data-v-b8039924>否</td><td data-v-b8039924>订单号，非必填，可根据订单号反查代发单</td><td data-v-b8039924>-</td></tr> <tr data-v-b8039924><td data-v-b8039924>supplier_appid</td><td data-v-b8039924>string</td><td data-v-b8039924>否</td><td data-v-b8039924>供货商appid</td><td data-v-b8039924>-</td></tr> <tr data-v-b8039924><td data-v-b8039924>status</td><td data-v-b8039924>number</td><td data-v-b8039924>否</td><td data-v-b8039924>代发单状态</td><td data-v-b8039924><a href="#Enum_Body__search_condition__status" data-v-b8039924>枚举值</a></td></tr> <tr data-v-b8039924><td data-v-b8039924>create_time_range</td><td data-v-b8039924><a href="#Body__search_condition__create_time_range" data-v-b8039924>object</a></td><td data-v-b8039924>否</td><td data-v-b8039924>代发单创建时间范围</td><td data-v-b8039924>-</td></tr> <tr data-v-b8039924><td data-v-b8039924>waybill_id</td><td data-v-b8039924>string</td><td data-v-b8039924>否</td><td data-v-b8039924>运单号，只可独立查询</td><td data-v-b8039924>-</td></tr> <tr data-v-b8039924><td data-v-b8039924>order_create_time_range</td><td data-v-b8039924><a href="#Body__search_condition__order_create_time_range" data-v-b8039924>object</a></td><td data-v-b8039924>否</td><td data-v-b8039924>订单下单时间范围</td><td data-v-b8039924>-</td></tr> <tr data-v-b8039924><td data-v-b8039924>product_code</td><td data-v-b8039924>string</td><td data-v-b8039924>否</td><td data-v-b8039924>商品编码</td><td data-v-b8039924>-</td></tr> <tr data-v-b8039924><td data-v-b8039924>spu_name</td><td data-v-b8039924>string</td><td data-v-b8039924>否</td><td data-v-b8039924>商品名称</td><td data-v-b8039924>-</td></tr> <tr data-v-b8039924><td data-v-b8039924>supplier_appname</td><td data-v-b8039924>string</td><td data-v-b8039924>否</td><td data-v-b8039924>供货商名称</td><td data-v-b8039924>-</td></tr> <tr data-v-b8039924><td data-v-b8039924>merchant_notes</td><td data-v-b8039924>string</td><td data-v-b8039924>否</td><td data-v-b8039924>商家备注</td><td data-v-b8039924>-</td></tr> <tr data-v-b8039924><td data-v-b8039924>update_time_range</td><td data-v-b8039924><a href="#Body__search_condition__update_time_range" data-v-b8039924>object</a></td><td data-v-b8039924>否</td><td data-v-b8039924>代发单更新时间范围</td><td data-v-b8039924>-</td></tr></table> <p data-v-b8039924><span id="Body__page_info" class="header-anchor" data-v-b8039924></span></p> <h3 id="Body-page-info-Object-Payload" data-v-b8039924><a href="#Body-page-info-Object-Payload" class="header-anchor" data-v-b8039924>#</a> Body.page_info <code data-v-b8039924>Object Payload</code></h3> <pre data-v-b8039924><code data-v-b8039924>分页参数，上一页请求返回
+</code></pre> <table data-v-b8039924><tr data-v-b8039924><th data-v-b8039924>参数名</th><th data-v-b8039924>类型</th><th data-v-b8039924>必填</th><th data-v-b8039924>说明</th></tr> <tr data-v-b8039924><td data-v-b8039924>offset</td><td data-v-b8039924>number</td><td data-v-b8039924>否</td><td data-v-b8039924>游标，从0开始</td></tr> <tr data-v-b8039924><td data-v-b8039924>limit</td><td data-v-b8039924>number</td><td data-v-b8039924>是</td><td data-v-b8039924>分页大小，&lt;= 10</td></tr> <tr data-v-b8039924><td data-v-b8039924>next_key</td><td data-v-b8039924>string</td><td data-v-b8039924>否</td><td data-v-b8039924>分页标识，代替offset，分页性能更优</td></tr></table> <p data-v-b8039924><span id="Body__search_condition__create_time_range" class="header-anchor" data-v-b8039924></span></p> <h3 id="Body-search-condition-create-time-range-Object-Payload" data-v-b8039924><a href="#Body-search-condition-create-time-range-Object-Payload" class="header-anchor" data-v-b8039924>#</a> Body.search_condition.create_time_range <code data-v-b8039924>Object Payload</code></h3> <p data-v-b8039924>代发单创建时间范围</p> <table data-v-b8039924><tr data-v-b8039924><th data-v-b8039924>参数名</th><th data-v-b8039924>类型</th><th data-v-b8039924>必填</th><th data-v-b8039924>说明</th></tr> <tr data-v-b8039924><td data-v-b8039924>start_time</td><td data-v-b8039924>number</td><td data-v-b8039924>是</td><td data-v-b8039924>秒级时间戳（距离end_time不可超过7天）</td></tr> <tr data-v-b8039924><td data-v-b8039924>end_time</td><td data-v-b8039924>number</td><td data-v-b8039924>是</td><td data-v-b8039924>秒级时间戳（距离start_time不可超过7天）</td></tr></table> <p data-v-b8039924><span id="Body__search_condition__order_create_time_range" class="header-anchor" data-v-b8039924></span></p> <h3 id="Body-search-condition-order-create-time-range-Object-Payload" data-v-b8039924><a href="#Body-search-condition-order-create-time-range-Object-Payload" class="header-anchor" data-v-b8039924>#</a> Body.search_condition.order_create_time_range <code data-v-b8039924>Object Payload</code></h3> <p data-v-b8039924>订单下单时间范围</p> <table data-v-b8039924><tr data-v-b8039924><th data-v-b8039924>参数名</th><th data-v-b8039924>类型</th><th data-v-b8039924>必填</th><th data-v-b8039924>说明</th></tr> <tr data-v-b8039924><td data-v-b8039924>start_time</td><td data-v-b8039924>number</td><td data-v-b8039924>是</td><td data-v-b8039924>秒级时间戳（距离end_time不可超过7天）</td></tr> <tr data-v-b8039924><td data-v-b8039924>end_time</td><td data-v-b8039924>number</td><td data-v-b8039924>是</td><td data-v-b8039924>秒级时间戳（距离start_time不可超过7天）</td></tr></table> <p data-v-b8039924><span id="Body__search_condition__update_time_range" class="header-anchor" data-v-b8039924></span></p> <h3 id="Body-search-condition-update-time-range-Object-Payload" data-v-b8039924><a href="#Body-search-condition-update-time-range-Object-Payload" class="header-anchor" data-v-b8039924>#</a> Body.search_condition.update_time_range <code data-v-b8039924>Object Payload</code></h3> <p data-v-b8039924>代发单更新时间范围</p> <table data-v-b8039924><tr data-v-b8039924><th data-v-b8039924>参数名</th><th data-v-b8039924>类型</th><th data-v-b8039924>必填</th><th data-v-b8039924>说明</th></tr> <tr data-v-b8039924><td data-v-b8039924>start_time</td><td data-v-b8039924>number</td><td data-v-b8039924>是</td><td data-v-b8039924>秒级时间戳（距离end_time不可超过7天）</td></tr> <tr data-v-b8039924><td data-v-b8039924>end_time</td><td data-v-b8039924>number</td><td data-v-b8039924>是</td><td data-v-b8039924>秒级时间戳（距离start_time不可超过7天）</td></tr></table> <p data-v-b8039924><span id="apiresponse" class="header-anchor" data-v-b8039924></span></p> <h2 id="_3-返回参数" data-v-b8039924><a href="#_3-返回参数" class="header-anchor" data-v-b8039924>#</a> 3. 返回参数</h2> <h3 id="返回体-Response-Payload" data-v-b8039924><a href="#返回体-Response-Payload" class="header-anchor" data-v-b8039924>#</a> 返回体 <code data-v-b8039924>Response Payload</code></h3> <table data-v-b8039924><tr data-v-b8039924><th data-v-b8039924>参数名</th><th data-v-b8039924>类型</th><th data-v-b8039924>说明</th></tr> <tr data-v-b8039924><td data-v-b8039924>errcode</td><td data-v-b8039924>number</td><td data-v-b8039924><a href="#apierrcode" data-v-b8039924>错误码</a></td></tr> <tr data-v-b8039924><td data-v-b8039924>errmsg</td><td data-v-b8039924>string</td><td data-v-b8039924><a href="#apierrcode" data-v-b8039924>错误信息</a></td></tr> <tr data-v-b8039924><td data-v-b8039924>ds_order_id_list</td><td data-v-b8039924>array</td><td data-v-b8039924>代发单号列表</td></tr> <tr data-v-b8039924><td data-v-b8039924>next_page</td><td data-v-b8039924><a href="#Res__next_page" data-v-b8039924>object</a></td><td data-v-b8039924>分页参数，下一页请求返回</td></tr> <tr data-v-b8039924><td data-v-b8039924>total</td><td data-v-b8039924>number</td><td data-v-b8039924>总数</td></tr> <tr data-v-b8039924><td data-v-b8039924>has_more</td><td data-v-b8039924>boolean</td><td data-v-b8039924>是否还有下一页, true:有下一页；false:已经结束，没有下一页。</td></tr></table> <p data-v-b8039924><span id="Res__next_page" class="header-anchor" data-v-b8039924></span></p> <h3 id="Res-next-page-Object-Payload" data-v-b8039924><a href="#Res-next-page-Object-Payload" class="header-anchor" data-v-b8039924>#</a> Res.next_page <code data-v-b8039924>Object Payload</code></h3> <p data-v-b8039924>分页参数，下一页请求返回</p> <table data-v-b8039924><tr data-v-b8039924><th data-v-b8039924>参数名</th><th data-v-b8039924>类型</th><th data-v-b8039924>说明</th></tr> <tr data-v-b8039924><td data-v-b8039924>offset</td><td data-v-b8039924>number</td><td data-v-b8039924>游标，从0开始</td></tr> <tr data-v-b8039924><td data-v-b8039924>limit</td><td data-v-b8039924>number</td><td data-v-b8039924>分页大小，&lt;= 100</td></tr></table> <p data-v-b8039924><span id="enumlist" class="header-anchor" data-v-b8039924></span></p> <h2 id="_4-枚举信息" data-v-b8039924><a href="#_4-枚举信息" class="header-anchor" data-v-b8039924>#</a> 4. 枚举信息</h2> <p data-v-b8039924><span id="Enum_Body__search_condition__status" class="header-anchor" data-v-b8039924></span></p> <h3 id="Body-search-condition-status-Enum" data-v-b8039924><a href="#Body-search-condition-status-Enum" class="header-anchor" data-v-b8039924>#</a> Body.search_condition.status <code data-v-b8039924>Enum</code></h3> <p data-v-b8039924>代发单状态</p> <table data-v-b8039924><tr data-v-b8039924><th data-v-b8039924>枚举值</th><th data-v-b8039924>描述</th></tr> <tr data-v-b8039924><td data-v-b8039924>100</td><td data-v-b8039924>待发货</td></tr> <tr data-v-b8039924><td data-v-b8039924>199</td><td data-v-b8039924>部分发货</td></tr> <tr data-v-b8039924><td data-v-b8039924>200</td><td data-v-b8039924>已发货</td></tr> <tr data-v-b8039924><td data-v-b8039924>300</td><td data-v-b8039924>已取消</td></tr></table> <p data-v-b8039924><span id="apinotes" class="header-anchor" data-v-b8039924></span></p> <h2 id="_5-注意事项" data-v-b8039924><a href="#_5-注意事项" class="header-anchor" data-v-b8039924>#</a> 5. 注意事项</h2> <p data-v-b8039924>本接口无特殊注意事项</p> <p data-v-b8039924><span id="apiexample" class="header-anchor" data-v-b8039924></span></p> <h2 id="_6-代码示例" data-v-b8039924><a href="#_6-代码示例" class="header-anchor" data-v-b8039924>#</a> 6. 代码示例</h2> <p data-v-b8039924>请求示例</p> <div class="language-json extra-class" data-v-b8039924><pre class="language-json" data-v-b8039924><code data-v-b8039924><span class="token punctuation" data-v-b8039924>{</span>
+    <span class="token property" data-v-b8039924>&quot;search_condition&quot;</span><span class="token operator" data-v-b8039924>:</span> <span class="token punctuation" data-v-b8039924>{</span>
+        <span class="token property" data-v-b8039924>&quot;order_id&quot;</span><span class="token operator" data-v-b8039924>:</span> <span class="token string" data-v-b8039924>&quot;37000204335323251&quot;</span><span class="token punctuation" data-v-b8039924>,</span>
+        <span class="token property" data-v-b8039924>&quot;create_time_range&quot;</span><span class="token operator" data-v-b8039924>:</span> <span class="token punctuation" data-v-b8039924>{</span>
+            <span class="token property" data-v-b8039924>&quot;start_time&quot;</span><span class="token operator" data-v-b8039924>:</span> <span class="token number" data-v-b8039924>1658505600</span><span class="token punctuation" data-v-b8039924>,</span>
+            <span class="token property" data-v-b8039924>&quot;end_time&quot;</span><span class="token operator" data-v-b8039924>:</span> <span class="token number" data-v-b8039924>1658509200</span>
+        <span class="token punctuation" data-v-b8039924>}</span><span class="token punctuation" data-v-b8039924>,</span>
+        <span class="token property" data-v-b8039924>&quot;status&quot;</span><span class="token operator" data-v-b8039924>:</span> <span class="token number" data-v-b8039924>0</span><span class="token punctuation" data-v-b8039924>,</span>
+    <span class="token punctuation" data-v-b8039924>}</span><span class="token punctuation" data-v-b8039924>,</span>
+    <span class="token property" data-v-b8039924>&quot;page_info&quot;</span><span class="token operator" data-v-b8039924>:</span> <span class="token punctuation" data-v-b8039924>{</span>
+        <span class="token property" data-v-b8039924>&quot;offset&quot;</span><span class="token operator" data-v-b8039924>:</span> <span class="token number" data-v-b8039924>0</span><span class="token punctuation" data-v-b8039924>,</span>
+        <span class="token property" data-v-b8039924>&quot;limit&quot;</span><span class="token operator" data-v-b8039924>:</span> <span class="token number" data-v-b8039924>10</span>
+    <span class="token punctuation" data-v-b8039924>}</span>
+<span class="token punctuation" data-v-b8039924>}</span>
+</code></pre></div><p data-v-b8039924>返回示例</p> <div class="language-json extra-class" data-v-b8039924><pre class="language-json" data-v-b8039924><code data-v-b8039924><span class="token punctuation" data-v-b8039924>{</span>
+    <span class="token property" data-v-b8039924>&quot;errcode&quot;</span><span class="token operator" data-v-b8039924>:</span> <span class="token number" data-v-b8039924>0</span><span class="token punctuation" data-v-b8039924>,</span>
+    <span class="token property" data-v-b8039924>&quot;errmsg&quot;</span><span class="token operator" data-v-b8039924>:</span> <span class="token string" data-v-b8039924>&quot;ok&quot;</span><span class="token punctuation" data-v-b8039924>,</span>
+    <span class="token property" data-v-b8039924>&quot;ds_order_id_list&quot;</span><span class="token operator" data-v-b8039924>:</span> <span class="token punctuation" data-v-b8039924>[</span>
+        <span class="token string" data-v-b8039924>&quot;4404612354559743232&quot;</span><span class="token punctuation" data-v-b8039924>,</span>
+        <span class="token string" data-v-b8039924>&quot;4404849110714209536&quot;</span>
+    <span class="token punctuation" data-v-b8039924>]</span><span class="token punctuation" data-v-b8039924>,</span>
+    <span class="token property" data-v-b8039924>&quot;next_page&quot;</span><span class="token operator" data-v-b8039924>:</span> <span class="token punctuation" data-v-b8039924>{</span>
+        <span class="token property" data-v-b8039924>&quot;offset&quot;</span><span class="token operator" data-v-b8039924>:</span> <span class="token number" data-v-b8039924>10</span><span class="token punctuation" data-v-b8039924>,</span>
+        <span class="token property" data-v-b8039924>&quot;limit&quot;</span><span class="token operator" data-v-b8039924>:</span> <span class="token number" data-v-b8039924>10</span>
+    <span class="token punctuation" data-v-b8039924>}</span><span class="token punctuation" data-v-b8039924>,</span>
+    <span class="token property" data-v-b8039924>&quot;total&quot;</span><span class="token operator" data-v-b8039924>:</span> <span class="token number" data-v-b8039924>100</span>
+<span class="token punctuation" data-v-b8039924>}</span>
+</code></pre></div><p data-v-b8039924><span id="apierrcode" class="header-anchor" data-v-b8039924></span></p> <h2 id="_7-错误码" data-v-b8039924><a href="#_7-错误码" class="header-anchor" data-v-b8039924>#</a> 7. 错误码</h2> <p data-v-b8039924>以下是本接口的错误码列表，其他错误码可参考 <a href="../../../dev_before/commErrCode" target="_blank" data-v-b8039924>通用错误码</a>；调用接口遇到报错，可使用官方提供的 <a href="https://developers.weixin.qq.com/console/devtools/debug?utm_source=api_errcode" target="_blank" rel="noopener noreferrer" data-v-b8039924>API 诊断工具<span data-v-b8039924 data-v-b8039924></span></a> 辅助定位和分析问题。</p> <table data-v-b8039924><tr data-v-b8039924><th data-v-b8039924>错误码</th><th data-v-b8039924>错误描述</th></tr> <tr data-v-b8039924><td data-v-b8039924>40097</td><td data-v-b8039924>请求体参数不正确，请检查各个参数是否按规范填写，具体原因查看errmsg</td></tr> <tr data-v-b8039924><td data-v-b8039924>47001</td><td data-v-b8039924>请求体格式不正确，请检查请求体中各个参数的类型是否正确</td></tr></table> <p data-v-b8039924><span id="apiauthtips" class="header-anchor" data-v-b8039924></span></p> <h2 id="_8-适用范围" data-v-b8039924><a href="#_8-适用范围" class="header-anchor" data-v-b8039924>#</a> 8. 适用范围</h2> <p data-v-b8039924>本接口支持「微信小店」账号类型调用。其他账号类型如无特殊说明，均不可调用。</p> <div class="changelog" data-v-b8039924><div class="changelog-header" data-v-b8039924><img src="https://res8.wxqcloud.qq.com.cn/wxdoc/56617deb-b17d-4cf1-bccd-71d2c41ccc76.svg" data-v-b8039924>接口变更日志（3条）</div><div class="changelog-content" data-v-b8039924><div class="logtext" data-v-b8039924><div class="time" data-v-b8039924>2025 年 12 月 25 日</div><div class="content" data-v-b8039924>新增  <code data-v-b8039924>update_time_range</code>  字段</div></div> <div class="logtext" data-v-b8039924><div class="time" data-v-b8039924>2025 年 12 月 15 日</div><div class="content" data-v-b8039924>支持按代发单更新时间搜索</div></div> <div class="logtext" data-v-b8039924><div class="time" data-v-b8039924>2025 年 11 月 04 日</div><div class="content" data-v-b8039924>代发单搜索增加筛选条件</div></div></div></div></div> <div class="fixed-translate" style="display:none;"><span>The translations are provided by WeChat Translation and are for reference only. In case of any inconsistency and discrepancy between the Chinese version and the English version, the Chinese version shall prevail.Incorrect translation. <a href="javascript:;" class="fixed-translate-btn">Tap to report.</a></span></div></div> <!----> <div class="related"><!----> <!----></div> <footer class="page-edit"><!----></footer>  <footer class="footer"><ul class="footer-links"><li class="footer-link"><a href="http://www.tencent.com/zh-cn/index.shtml" target="_blank">关于腾讯</a></li> <li class="footer-link"><a href="https://mp.weixin.qq.com/debug/wxadoc/introduction/index.html?t=1484641676" target="_blank">文档中心</a></li> <li class="footer-link"><a href="https://kf.qq.com/faq/17030722muuu170307MFBny2.html" target="_blank">辟谣中心</a></li> <li class="footer-link"><a href="http://kf.qq.com/faq/120911VrYVrA1509086vyumm.html" target="_blank">客服中心</a></li></ul> <p class="copyright">Copyright © 2012-<span>2026</span> Tencent. All Rights Reserved.</p></footer></div></main></div> <!----></div></div> <div id="popoverWrapId" class="pop-links__wrp popover_hide"><ul class="pop-links__list"><li class="pop-links__item"><button class="pop-link">复制</button></li> <li class="pop-links__item"><button class="pop-link">问题反馈</button></li></ul></div> <div class="fixed-btns"><a href="javascript:;" class="fixed-btn fixed-btn__feedback"><div class="fixed-btn__inner"><span class="fixed-btn__icon"></span> <span class="fixed-btn__text">反馈</span></div></a> <a href="javascript:;" class="fixed-btn fixed-btn__top" style="display:none;"><div class="fixed-btn__inner"><span class="fixed-btn__icon"></span></div></a></div></div></div></div>
+    <script src="https://res.wx.qq.com/wxdoc/dist/assets/js/app.e95ac419.js" defer></script><script src="https://res.wx.qq.com/wxdoc/dist/assets/js/232.b5b58c8c.js" defer></script>
+  </body>
+</html>

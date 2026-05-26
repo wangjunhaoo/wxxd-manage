@@ -1,0 +1,739 @@
+# 功能设计清单
+
+## 1. 当前设计结论
+
+本清单基于业务问答沉淀，作为后续实现功能边界的基线。
+
+产品形态：
+
+- Tauri 桌面端，两人内部使用。
+- 一台电脑可作为主控机长期运行本地任务。
+- 重点不是在微信小店内选品，而是接收外部系统商品，批量铺货到微信小店。
+
+核心优先级：
+
+- 第一优先级：大量铺货、外部铺货 API、按商品查看失败原因。
+- 第一优先级：订单同步、待处理订单、自动生成采购任务、人工物流回填、自动微信发货。
+- 第二优先级：批量改价。
+- 后续能力：供应商下单 agent/skill、外部平台自动采购、物流自动抓取。
+
+首页第一屏：
+
+- 待处理订单数量。
+- 异常店铺数量。
+- 铺货任务失败和部分失败提醒。
+- 任务积压和主控机运行状态。
+
+## 2. 功能模块总览
+
+| 模块 | 必做 | 暂不做 |
+| --- | --- | --- |
+| 店铺管理 | 店铺接入、店铺组、异常状态、主控机同步 | 服务商授权 |
+| 外部铺货 API | 定义 API 格式、创建铺货任务、返回 `task_id` | webhook 回调 |
+| 批量铺货 | 自动类目/属性补齐、素材处理、自动定价、任务状态 | 更新已有商品 |
+| AI 属性建议 | 可配置 OpenAI-compatible provider、加密保存 API Key、按失败项生成候选值、人工确认/批量采纳 | 自动绕过审核、伪造资质 |
+| 铺货策略 | 简单定价、重复判断、失败状态、素材规则 | 店铺组差异化策略、默认节流 |
+| 订单履约 | 自动同步订单、自动生成采购任务、拆采购任务 | 自动下单 agent |
+| 发货 | 人工录入物流、开关控制自动微信发货 | 自动抓取物流 |
+| 采购 | 导出采购表、缺货通知、利润核算 | 自动换供应商 |
+| 售后 | 同步售后、进入待处理订单 | 深度自动处理售后 |
+| 动销 | 真实订单/库存/售后基础分析 | 刷单、虚假动销 |
+
+## 3. 外部铺货 API
+
+外部系统按本系统定义的商品格式推送，不直接按微信 `addproduct` 字段提交。微信类目、属性、素材上传、价格、发货方式和服务配置由本系统生成。
+
+### 3.0 本地主控 HTTP API
+
+当前本地主控 HTTP API 已落地：
+
+- 默认监听：`http://127.0.0.1:17890`
+- 健康检查：`GET /health`
+- 认证方式：`x-wx-xd-api-key: <API Key>`，也支持 `Authorization: Bearer <API Key>`。
+- API Key 通过桌面端“外部铺货 API”页面生成或重置；只展示一次，重置后旧 Key 立即失效。
+- 未生成 API Key 时，业务接口返回 `LOCAL_API_KEY_NOT_CONFIGURED`。
+- 所有长耗时动作仍通过任务队列推进，HTTP API 只负责创建任务、查询任务和触发单批 runner。
+- 已提供 `POST /api/runners/operations`，供本机自动化脚本触发一轮安全编排。
+- 已提供 `POST /api/runners/publish-ai-attributes`，供本机自动化脚本触发一批 AI 属性建议生成。
+- 已提供采购任务本地接口，供后续供应商下单 agent/skill 查询非敏采购任务、回填供应商物流或标记供应商异常。
+- 已提供售后处理本地接口，供人工或受控脚本查询售后、同步拒绝原因、记录责任归因、提交同意/拒绝并保留动作结果；不进入自动推进 runner。
+- 已提供纠纷/保障单本地接口，供人工或受控脚本查询纠纷、同步详情、记录本地跟进、责任归因和供应商赔付；不调用微信纠纷处理或凭证上传接口。
+- 已提供售后/纠纷本地凭证资料包接口，供人工或受控脚本记录凭证标题、说明、本地文件路径和来源链接，更新本地整理状态，并按单据查看本地凭证数量、按筛选或按单据导出 `md/json/jsonl` 元数据清单；只保存资料元数据，不读取文件内容、不上传微信。
+- 已提供订单利润本地接口，供人工或受控脚本查询利润摘要和记录订单级调整项；审计摘要只记录订单 ID、调整类型、金额和是否有备注。
+- 桌面端“外部铺货 API”页已展示最近外部 API 审计日志，记录方法、路径、状态码、耗时、错误码和脱敏摘要。
+- 审计日志不保存 API Key、不保存完整请求体，铺货和改价创建只记录 `request_id`、商品数量和目标店铺数量。
+- 采购任务接口审计只记录任务 ID、异常类型、是否有物流单号/备注等脱敏摘要，不记录收件人姓名、手机号、地址或完整物流请求体。
+
+已暴露接口：
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `GET` | `/api/shop-groups` | 外部系统查询店铺组 |
+| `GET` | `/api/shops` | 外部系统查询店铺和状态 |
+| `POST` | `/api/publish-jobs` | 创建铺货任务 |
+| `GET` | `/api/publish-jobs/{task_id}` | 查询铺货任务 |
+| `POST` | `/api/price-update-jobs` | 创建批量改价任务 |
+| `GET` | `/api/price-update-jobs/{task_id}` | 查询批量改价任务 |
+| `GET` | `/api/task-runs` | 查询本地任务中心 |
+| `GET` | `/api/notifications` | 查询未读通知 |
+| `POST` | `/api/notifications/{notification_id}/read` | 标记通知已读 |
+| `GET` | `/api/purchase-tasks` | 查询采购任务，支持 `status`、`limit` |
+| `POST` | `/api/purchase-tasks/{purchase_task_id}/mapping` | 人工或受控 agent 补齐外部商品 ID/外部 SKU 映射 |
+| `POST` | `/api/purchase-tasks/{purchase_task_id}/shipment` | 回填供应商物流和采购成本 |
+| `POST` | `/api/purchase-tasks/{purchase_task_id}/issue` | 标记供应商缺货、涨价、取消、质量风险或其他异常 |
+| `GET` | `/api/aftersales` | 查询售后异常列表，支持 `status`、`limit` |
+| `GET` | `/api/aftersale-reject-reasons` | 查询已缓存售后拒绝原因，支持 `shop_id`、`reject_scene` |
+| `POST` | `/api/aftersale-reject-reasons/sync` | 按店铺同步微信官方售后拒绝原因 |
+| `POST` | `/api/aftersales/{aftersale_id}/accept` | 人工或受控脚本提交售后同意 |
+| `POST` | `/api/aftersales/{aftersale_id}/reject` | 人工或受控脚本提交售后拒绝 |
+| `POST` | `/api/aftersales/{aftersale_id}/responsibility` | 记录售后责任方、处理备注和供应商赔付回款 |
+| `GET` | `/api/aftersale-evidence` | 查询售后/纠纷本地凭证资料包，支持目标和状态过滤 |
+| `POST` | `/api/aftersale-evidence` | 记录售后/纠纷本地凭证资料元数据，不上传微信 |
+| `POST` | `/api/aftersale-evidence/{evidence_id}/status` | 更新本地凭证整理状态，不上传微信或提交平台处理 |
+| `POST` | `/api/aftersale-evidence/export` | 导出售后/纠纷本地凭证资料元数据清单，不包含文件内容 |
+| `GET` | `/api/supplier-aftersale-followups` | 查询售后/纠纷供应商协同记录，支持目标和状态过滤 |
+| `POST` | `/api/supplier-aftersale-followups` | 记录售后/纠纷供应商协同脱敏摘要，不调用外部平台 |
+| `GET` | `/api/guarantee-orders` | 查询已缓存微信纠纷/保障单，支持 `status`、`limit` |
+| `POST` | `/api/guarantee-orders/{guarantee_order_id}/followup` | 记录纠纷本地跟进状态、责任方、备注和供应商赔付回款 |
+| `GET` | `/api/order-profits` | 查询订单利润摘要，支持订单状态或利润状态过滤 |
+| `POST` | `/api/order-profits/{order_id}/adjustments` | 记录订单级利润调整项 |
+| `GET` | `/api/inventory-risks` | 查询库存风险，支持 `status`、`limit` |
+| `GET` | `/api/product-sales-analysis` | 查询商品动销分析，支持运营状态 `status`、`limit` |
+| `GET` | `/api/delivery-settings` | 查询自动微信发货开关 |
+| `POST` | `/api/delivery-settings/auto-send` | 开启或关闭自动微信发货 |
+| `GET` | `/api/delivery-companies` | 查询已缓存微信快递公司，支持 `shop_id` |
+| `POST` | `/api/delivery-companies/sync` | 按店铺同步微信快递公司列表 |
+| `GET` | `/api/delivery-shipments` | 查询发货队列，支持 `status`、`limit` |
+| `POST` | `/api/delivery-shipments` | 录入订单级物流单，受自动发货开关控制 |
+| `POST` | `/api/delivery-shipments/{shipment_id}/retry` | 将失败或待处理物流单重新放回队列 |
+| `POST` | `/api/runners/order-sync` | 同步一批店铺待发货订单列表 |
+| `POST` | `/api/runners/order-detail-sync` | 同步一批订单详情和订单项 |
+| `POST` | `/api/runners/aftersale-sync` | 同步一批售后单并写入待处理通知 |
+| `POST` | `/api/runners/purchase-task-generation` | 从订单项生成一批采购任务 |
+| `POST` | `/api/runners/delivery-submit` | 触发一批待提交微信发货单 |
+| `POST` | `/api/runners/publish-precheck` | 触发一批铺货前置校验 |
+| `POST` | `/api/runners/publish-attribute-fill` | 触发一批必填属性补齐 |
+| `POST` | `/api/runners/publish-ai-attributes` | 触发一批 AI 属性建议生成 |
+| `POST` | `/api/runners/publish-category-precheck` | 触发一批微信类目预检 |
+| `POST` | `/api/runners/publish-assets` | 触发一批微信素材上传 |
+| `POST` | `/api/runners/publish-submit` | 触发一批微信发品提交 |
+| `POST` | `/api/runners/publish-status-sync` | 触发一批商品审核状态同步 |
+| `POST` | `/api/runners/publish-listing` | 触发一批审核通过商品上架 |
+| `POST` | `/api/runners/price-precheck` | 触发一批改价前置校验 |
+| `POST` | `/api/runners/price-submit` | 触发一批微信 `updateproduct` 改价提交 |
+| `POST` | `/api/runners/price-confirm` | 触发一批线上 SKU 价格确认 |
+| `POST` | `/api/runners/inventory-risk-scan` | 扫描库存风险并写入通知 |
+| `POST` | `/api/runners/guarantee-sync` | 同步一批微信纠纷/保障单，只展示和通知人工处理 |
+| `POST` | `/api/runners/operations` | 自动推进一轮运营队列 |
+
+### 3.1 创建铺货任务
+
+命令/API 名称：
+
+- 桌面内部命令：`create_external_publish_job`
+- 本地主控机 HTTP API：`POST /api/publish-jobs`
+
+请求示例：
+
+```json
+{
+  "request_id": "req-20260522-0001",
+  "target_shop_group_ids": ["group-main"],
+  "products": [
+    {
+      "external_product_id": "1688-123456",
+      "title": "夏季薄款防晒衣女",
+      "source_url": "https://example.com/products/123456",
+      "images": [
+        "https://example.com/images/1.jpg",
+        "https://example.com/images/2.jpg",
+        "https://example.com/images/3.jpg"
+      ],
+      "detail_images": [
+        "https://example.com/detail/1.jpg"
+      ],
+      "supplier_name": "示例供应商",
+      "supplier_product_id": "123456",
+      "category_hint": "女装/防晒衣",
+      "brand_hint": "无品牌",
+      "weight_gram": 500,
+      "skus": [
+        {
+          "external_sku_id": "sku-black-m",
+          "specs": {
+            "颜色": "黑色",
+            "尺码": "M"
+          },
+          "cost_price": 12.5,
+          "stock": 100
+        }
+      ],
+      "metadata": {}
+    }
+  ]
+}
+```
+
+必填字段：
+
+- `request_id`：外部请求幂等 ID。
+- `target_shop_group_ids` 或 `target_shop_ids`：目标店铺组或店铺。
+- `products[].external_product_id`：外部商品 ID，用于重复判断。
+- `products[].title`：原始商品标题。
+- `products[].source_url`：货源链接，后续会贯穿铺货记录、店铺商品映射和采购任务；不得包含登录态、Cookie、token、密钥或一次性私密参数。
+- `products[].images`：商品图片，至少 3 张；不足时系统进入素材处理和补齐流程，仍失败则任务项失败。
+- `products[].skus[].external_sku_id`：外部 SKU ID。
+- `products[].skus[].specs`：规格键值。
+- `products[].skus[].cost_price`：成本价，用于系统自动定价和利润核算。
+- `products[].skus[].stock`：货源库存。
+
+可选字段：
+
+- `detail_images`
+- `supplier_name`
+- `supplier_product_id`
+- `category_hint`
+- `brand_hint`
+- `weight_gram`
+- `metadata`
+
+响应示例：
+
+```json
+{
+  "task_id": "pub_20260522_000001",
+  "status": "queued",
+  "accepted_product_count": 1,
+  "target_shop_count": 12
+}
+```
+
+设计决策：
+
+- 外部系统只拿 `task_id`。
+- 暂不做 webhook。
+- 外部系统通过查询任务接口查看状态。
+- 暂不支持更新已有商品，只做新增铺货。
+
+### 3.2 批量改价任务
+
+命令/API 名称：
+
+- 桌面内部命令：`create_price_update_job`
+- 本地主控机可暴露 HTTP API：`POST /api/price-update-jobs`
+
+请求示例：
+
+```json
+{
+  "request_id": "price-20260522-000001",
+  "target_shop_group_ids": ["group-default"],
+  "products": [
+    {
+      "external_product_id": "demo-1688-10001",
+      "target_price_cents": 3290,
+      "reason": "供应商成本变化"
+    }
+  ]
+}
+```
+
+当前批量改价 MVP 已落地：
+
+- 支持创建改价任务，按目标店铺和外部商品 ID 展开到店铺商品维度。
+- 支持查询改价任务详情，查看目标价、微信商品 ID、状态和失败原因。
+- 支持执行本地改价前置校验，校验店铺状态、店铺密钥、已铺货商品和微信 `product_id`。
+- 支持执行微信 `updateproduct` 提交：先调用 `getproduct(data_type=3)` 获取完整商品数据，再批量改写 `skus[].sale_price`。
+- 支持执行改价结果确认：调用 `getproduct(data_type=3)`，只有线上 `product.skus[].sale_price` 全部匹配目标价才标记 `success`；草稿 `edit_product` 匹配但线上未生效时保持 `audit_pending`。
+- `scripts/wx_xd_local_api.py` 已支持 `price-create`、`price-get` 和 `runner price-precheck/price-submit/price-confirm`，方便外部系统或受控 agent 触发完整改价链路。
+
+### 3.3 查询店铺组
+
+API：
+
+- `GET /api/shop-groups`
+
+用途：
+
+- 外部系统先查询店铺组，再发起铺货任务。
+- 外部系统可以传店铺组 ID，由系统展开店铺。
+- `scripts/wx_xd_local_api.py shop-groups` 可直接查询本地店铺组。
+
+### 3.4 查询铺货任务
+
+API：
+
+- `GET /api/publish-jobs/{task_id}`
+
+重点展示：
+
+- 按商品聚合的失败原因。
+- 每个商品在每个店铺的状态。
+- 重复铺货、类目失败、素材失败、微信接口失败、店铺异常等原因分类。
+- 任务中心可执行一批本地前置校验，任务项通过后进入 `ready_to_publish`，等待后续真实微信发布。
+- 任务中心可执行一批必填属性补齐，处理 `CATEGORY_ATTRS_NEED_AI_FILL` 失败项，高置信补齐后回到 `ready_to_publish`。
+- AI 设置页可查看待确认/已采纳属性建议，单条或批量采纳后写回发品草稿，并重新进入类目预检前状态。
+- 铺货任务详情可按当前任务查询属性建议，并在商品折叠项里直接采纳当前商品建议。
+
+### 3.5 采购任务接口
+
+采购接口面向后续供应商下单 agent/skill，只暴露非敏字段和明确动作：
+
+- `GET /api/purchase-tasks?status=pending_purchase&limit=100`：查询采购任务，不返回收件人姓名、手机号、地址。
+- `POST /api/purchase-tasks/{purchase_task_id}/mapping`：补齐缺失的外部商品 ID 和外部 SKU，同步更新订单项映射，任务回到 `pending_purchase`，并清除缺映射通知。
+- `POST /api/purchase-tasks/{purchase_task_id}/shipment`：回填供应商物流公司、单号、发货方式和采购成本；是否自动微信发货仍由桌面端自动发货开关控制。
+- `POST /api/purchase-tasks/{purchase_task_id}/issue`：标记供应商缺货、涨价、取消、质量风险或其他异常；系统只写入异常状态和通知，不自动换供应商、不自动取消订单。
+- `scripts/wx_xd_local_api.py`：零依赖本地 API 调用器，供外部铺货/改价系统和后续供应商下单 agent/skill 复用；API Key 只从环境变量或命令参数读取，不打印。
+- 桌面端“采购任务”页：内置供应商 agent 安全桥，可导出 JSONL/JSON/Markdown 非敏采购任务，生成结果模板，粘贴外部 agent 结果并干跑或写回。
+- `scripts/wx_xd_supplier_agent.py`：供应商 agent 安全桥命令行版本，导出非敏采购任务，校验并写回 `shipment`、`issue`、`mapping` 三类结果；脚本拒绝收件信息、密钥、Cookie、未知字段和供应商平台凭证。
+- `scripts/wx_xd_local_api.py runner order-sync/order-detail-sync/purchase-task-generation/delivery-submit`：可按顺序触发订单同步、订单详情同步、采购任务生成和微信发货提交，每一步仍走本地队列、鉴权和审计。
+
+物流回填请求示例：
+
+```json
+{
+  "delivery_id": "SF",
+  "delivery_name": "顺丰速运",
+  "waybill_id": "SF1234567890",
+  "deliver_type": 1,
+  "estimated_cost": 18.8
+}
+```
+
+异常标记请求示例：
+
+```json
+{
+  "issue_type": "out_of_stock",
+  "note": "供应商反馈当前规格缺货，等待人工换源处理"
+}
+```
+- 任务中心可执行一批微信 `categoryprecheck` 预检，通过后进入 `category_prechecked`，失败保留官方原因。
+- 任务中心可执行一批微信素材上传，任务项通过后进入 `assets_ready`，等待后续 `addproduct`。
+- 任务中心可执行一批微信 `addproduct` 提交，成功后进入 `submitted` 并保存微信商品 ID。
+- 任务中心可执行一批微信 `getproduct` 状态同步，任务项进入 `audit_pending`、`audit_passed`、`success` 或 `failed`。
+- 任务中心可执行一批微信 `listingproduct` 上架，只处理 `audit_passed` 任务项，上架提交后回到 `audit_pending` 等待最终状态同步。
+- 自动推进已覆盖铺货本地校验、必填属性补齐、微信类目预检、素材上传、`addproduct`、状态同步和上架提交；每一步都有独立开关，失败步骤记录到自动推进结果和任务项。
+- 本地 HTTP API 已暴露铺货 runner：`/api/runners/publish-precheck`、`/api/runners/publish-attribute-fill`、`/api/runners/publish-category-precheck`、`/api/runners/publish-assets`、`/api/runners/publish-submit`、`/api/runners/publish-status-sync`、`/api/runners/publish-listing`。
+- `scripts/wx_xd_local_api.py` 已支持 `publish-create`、`publish-get` 和 `runner publish-*`，外部系统可用同一个调用器创建铺货任务、查询状态并推进队列。
+
+## 4. 铺货自动化规则
+
+自动化边界：
+
+- 外部传货源事实。
+- 系统自动补齐微信发品字段。
+- 系统自动处理图片素材。
+- 系统自动计算售价。
+- 系统自动创建铺货任务并执行。
+
+暂不做：
+
+- 外部 webhook。
+- 更新已有商品。
+- 店铺组差异化价格策略。
+- 默认节流。
+
+### 4.1 重复判断
+
+规则：
+
+- 以 `external_product_id` 作为商品重复判断主键。
+- 同一个 `external_product_id` 已经铺过同一店铺，再次请求时该任务项报重复失败。
+- 重复失败要在任务详情中按商品展示，不影响其他商品或其他店铺继续铺货。
+
+失败码建议：
+
+- `DUPLICATE_EXTERNAL_PRODUCT_IN_SHOP`
+
+### 4.2 类目和属性补齐
+
+流程：
+
+1. 使用 `category_hint`、标题、主图调用类目预测或本地 AI 判断类目。
+2. 拉取类目规则和属性要求。
+3. 使用 AI 补齐必填属性。
+4. 调用发品前校验。
+5. 失败则记录商品维度失败原因。
+
+失败处理：
+
+- 先使用 AI 能力自动修复。
+- 自动修复仍失败时，任务项失败。
+- 失败原因必须可读，例如“缺少必填属性：材质”“店铺无该类目权限”“保证金不足”。
+
+### 4.3 素材处理
+
+必须支持：
+
+- 下载外部图片。
+- 图片格式检查。
+- 图片去重。
+- 主图数量检查。
+- 详情图数量检查。
+- 必要时压缩和转格式。
+- 上传到微信素材接口。
+- 记录素材处理失败原因。
+
+首版不强制做复杂修图，但要把素材处理设计为独立任务阶段。
+
+当前本地 runner 已落地的前置校验：
+
+- 店铺必须为 `active` 且已保存密钥。
+- 同一 `external_product_id` 不能重复铺到同一店铺。
+- 主图至少 3 张，详情图不能为空。
+- 类目线索不能为空；正式发品还需要真实微信类目 ID，可由外部传 `metadata.wechat_category_ids` 或完整 `metadata.wechat_add_product_payload`。
+- 至少有一个 SKU 库存大于 0。
+- 系统会生成或验证微信发品参数草稿，缺少真实类目 ID、多 SKU 规格、可售价格等关键字段时按商品任务失败。
+- 通过校验只进入 `ready_to_publish`，不表示微信发品成功。
+
+当前微信类目预检阶段已落地：
+
+- 支持调用微信 `POST /channels/ec/product/categoryprecheck`，按店铺和叶子类目检查发品资质。
+- 本地已有类目详情缓存时，会校验必填商品属性和销售属性是否已经在 `metadata.wechat_attrs`、`skus[].specs` 或完整微信 payload 中补齐。
+- 类目详情缓存缺失时只记录告警，不臆造必填项；建议先到“类目规则”页同步该类目详情和发布规则。
+- 通过后任务项进入 `category_prechecked`，素材上传阶段可继续处理。
+- 未通过时任务项进入 `failed`，保留微信 `fail_reasons` 或本地缺字段原因。
+
+当前必填属性补齐阶段已落地：
+
+- `run_publish_attribute_fill_once` 只处理 `CATEGORY_ATTRS_NEED_AI_FILL` 失败项。
+- 补齐来源按安全优先级执行：外部传入 `metadata.ai_attr_suggestions`、类目详情单一可选值、SKU 规格同义词、明确标题规则。
+- 自动补齐会写回 `metadata.wechat_add_product_payload`，并把任务项退回 `ready_to_publish` 等待重新类目预检；不会直接进入素材上传或发布成功。
+- 置信度不足时写入 `publish_attribute_suggestions.prompt_json` 和通知中心，等待外部 AI 或人工确认后重试。
+
+当前素材上传阶段已落地：
+
+- 支持先下载外部图片，禁止 301/302 跳转，校验图片格式、大小和宽高。
+- 支持将 GIF、过大图片或不适合直接上传的图片压缩/转为 JPEG，并缓存到应用数据目录 `image-cache/`。
+- 支持调用微信 `img/upload` 的二进制上传模式，参数为 `upload_type=0`、`resp_type=1`，并传入图片宽高。
+- 微信返回的 `mmecimage.cn/p/` 图片链接写入 `publish_assets`。
+- 同店铺同源图片可复用历史成功上传结果。
+- 已经是 `mmecimage.cn/p/` 的图片只记录复用，不重复上传。
+- 素材失败会记录到任务项、素材表和任务日志。
+- 上传完成只进入 `assets_ready`，不表示微信商品发布成功。
+
+当前发品提交阶段已落地：
+
+- 支持调用微信 `POST /channels/ec/product/add`。
+- 任务项必须已经是 `assets_ready`。
+- 商品可直接传完整 `metadata.wechat_add_product_payload`；没有完整 payload 时，前置校验会用 `metadata.wechat_category_ids`、`wechat_attrs`、SKU 规格、成本价、定价策略、运费和服务配置生成草稿。
+- 系统不会臆造微信类目 ID、必填属性或资质；缺少这些关键字段时会失败并给出 AI/外部系统需要补齐的字段。
+- 系统会把素材表中的微信图片链接注入 `head_imgs` 和 `desc_info.imgs`。
+- 成功后保存微信 `product_id` 到 `publish_job_items.wechat_product_id` 和 `shop_products.wechat_product_id`。
+- 成功后进入 `submitted`，等待后续审核状态轮询，不直接标最终成功。
+
+当前类目规则缓存已落地：
+
+- 支持按店铺同步 `api_getallcategory` 类目树并写入 `wechat_categories`。
+- 支持按类目同步 `api_getcategorydetail`、`api_getcategoryproductrule` 和 `api_get_delivery_method_category_rule`。
+- 支持按店铺同步运费模板 ID 列表，方便外部铺货参数选择 `freight_template_id`。
+- 桌面端“类目规则”页可查看类目、属性/资质计数、规则同步状态和运费模板。
+- 后续 AI 自动补齐必须优先读取本地类目详情缓存，缓存缺失时先同步官方接口。
+
+当前审核状态同步阶段已落地：
+
+- 支持调用微信 `POST /channels/ec/product/get`，请求参数使用 `product_id` 和 `data_type=3`。
+- 任务项必须已经是 `submitted` 或 `audit_pending`，并且已经保存微信 `product_id`。
+- 同步结果会写入 `publish_job_items.wechat_status`、`wechat_edit_status`、`last_status_sync_at`、`audit_summary`，并同步更新 `shop_products`。
+- 微信返回 `status=5` 时进入 `success`；返回 `status=4` 或 `edit_status=4` 时进入 `audit_passed`，表示审核通过但仍需上架。
+- 微信返回审核失败、异步失败、quota 不足、限频、冻结、风控下架、封禁、商品不存在等状态时进入 `failed`，任务项保留可读失败原因。
+- 微信仍在审核、上传或异步提审中时进入 `audit_pending`，支持后续继续轮询。
+
+当前商品上架阶段已落地：
+
+- 支持调用微信 `POST /channels/ec/product/listing`。
+- 任务项必须已经是 `audit_passed`，避免在审核中、上传中或异步提审中重复上架。
+- 上架接口返回成功后不直接标 `success`，而是进入 `audit_pending`，继续通过 `getproduct` 确认 `status=5`。
+- 上架失败会记录到任务项、店铺商品映射和任务日志。
+
+### 4.4 定价策略
+
+首版简单策略：
+
+```text
+售价 = 成本价 * 加价率 + 固定利润
+```
+
+需要配置：
+
+- 默认加价率。
+- 默认固定利润。
+- 最低售价。
+- 最低毛利率。
+- 价格取整规则。
+
+暂不做：
+
+- 按店铺组差异化定价。
+- 按类目差异化定价。
+- 动态竞价。
+
+## 5. 订单与采购履约
+
+### 5.1 订单同步
+
+能力：
+
+- 主控机定时同步微信订单。
+- 同步订单详情。
+- 自动匹配店铺 SKU -> 标准 SKU -> 供应商 SKU。
+- 自动生成采购任务。
+
+当前订单列表同步 MVP 已落地：
+
+- 支持调用微信 `POST /channels/ec/order/list/get`。
+- 默认按最近 1 天、微信订单状态 `20` 同步待发货订单，单次最多翻 5 页，每页最多 100 条。
+- 同步结果写入本地 `orders` 表，保存店铺、微信订单号、微信状态、内部状态、同步时间和脱敏原始摘要。
+- 订单列表阶段不拉取订单详情，不保存收件人姓名、手机号、地址等敏感信息。
+- 同步任务写入 `task_runs` 和 `task_logs`，总览会显示待处理订单数量和最近订单同步时间。
+
+当前订单详情同步 MVP 已落地：
+
+- 支持调用微信 `POST /channels/ec/order/get`。
+- 只处理本地已有订单，按批次补充订单详情和订单项。
+- 订单项写入 `order_items`，保存微信商品 ID、微信 SKU ID、外部商品 ID、外部 SKU ID、标题、数量和金额字段。
+- 订单详情原始摘要采用白名单脱敏保存，只保留订单 ID、状态、商品列表、金额和备注等履约必要字段。
+- 不调用 `decodesensitiveinfo`，不保存收件人姓名、手机号、地址等敏感信息。
+- 同步失败会写入 `orders.detail_error` 和任务日志，支持按订单查看失败原因。
+
+待处理订单范围：
+
+- 待采购。
+- 采购失败。
+- 待供应商发货。
+- 待录入物流。
+- 微信发货失败。
+- 售后中。
+- 超时未发货。
+
+### 5.2 采购任务
+
+规则：
+
+- 一个微信订单可以拆成多个采购任务。
+- 如果一个订单内商品来自不同供应商，允许拆单采购。
+- 暂不做自动下单 agent。
+- 首版支持导出采购表。
+- 采购任务优先按订单项生成，使用 `out_product_id`/`external_product_id` 作为外部货源映射。
+- 有货源映射的订单项进入 `pending_purchase`，缺少映射的订单项进入 `needs_mapping` 并通知人工处理。
+
+当前采购任务生成 MVP 已落地：
+
+- 支持从已同步详情的 `order_items` 批量生成 `purchase_tasks`。
+- 同一订单项只生成一个采购任务，重复执行保持幂等。
+- 同时具备外部商品 ID 和外部 SKU 的任务状态为 `pending_purchase`，缺任一映射的任务状态为 `needs_mapping`。
+- 采购任务会优先从 `shop_products.source_url` 带出货源链接，缺失时回退到同外部商品 ID 的最近 `publish_products.source_url`，方便后续人工下单定位。
+- 生成采购任务后会把对应订单推进到 `pending_purchase`。
+- 首版不自动向供应商平台下单，后续 agent/skill 必须走独立适配器。
+- 桌面端已支持采购任务列表、按状态筛选、查看缺映射/失败原因，并可导出本地 CSV 采购表。
+- 当前导出的采购表不包含收件人姓名、手机号、地址；后续如需履约敏感信息，必须走独立解密、权限和审计流程。
+- 支持 `resolve_purchase_task_mapping` 将待映射采购任务补齐外部商品/外部 SKU，回到待采购，并把对应缺映射通知标记已读。
+- 支持按采购任务回填供应商物流单号和采购成本，任务进入 `supplier_shipped`。
+- 同一订单全部采购任务都已回填且物流信息一致时，自动创建订单级发货单；多供应商物流暂不自动整单发货，进入人工确认。
+- 支持 `mark_purchase_task_issue` 将采购任务标记为供应商缺货、涨价、取消、质量风险或其他异常，并写入通知中心；系统不自动换供应商、不自动取消采购。
+- 支持桌面端 `export_supplier_agent_tasks`、`get_supplier_agent_result_template` 和 `apply_supplier_agent_results`，把供应商 agent 结果纳入同一套后端字段校验和自动发货开关。
+
+采购表字段：
+
+- 采购任务 ID。
+- 微信订单号。
+- 店铺。
+- 外部商品 ID。
+- 货源链接。
+- 外部 SKU。
+- 商品标题。
+- 数量。
+- 成交金额。
+- 预估成本。
+- 预估毛利。
+- 供应商物流公司。
+- 供应商物流单号。
+- 供应商发货时间。
+- 处理原因。
+- 创建时间。
+- 更新时间。
+
+### 5.3 物流回填与微信发货
+
+首版物流来源：
+
+- 人工录入物流单号。
+
+后续可扩展：
+
+- Excel 导入物流。
+- 供应商 agent 通过 `docs/supplier-agent-protocol.md` 写回已确认物流；自动登录供应商平台抓取物流仍需独立适配器和显式开关。
+
+微信发货：
+
+- 拿到物流公司和物流单号后，默认可自动调用微信发货接口。
+- 自动发货必须做成开关。
+- 开关关闭时进入“待确认发货”列表。
+
+当前物流回填与微信发货 MVP 已落地：
+
+- 支持在桌面端人工录入物流，写入本地 `shipments`。
+- 自动发货开关保存在本地 `app_settings`，关闭时物流单只进入 `waiting_confirmation`。
+- 开关开启后，新回填物流进入 `ready_to_send`；历史待确认物流也会进入待提交队列。
+- 支持按店铺同步微信快递公司列表 `getdeliverycompanylistnew` 并缓存；发货录单优先使用同步结果，未同步时保留常用快递编码兜底。
+- 履约页已支持查看发货队列，按待确认、待提交、发货失败、已发货筛选。
+- 支持调用微信 `POST /channels/ec/order/delivery/send`，按订单项构造 `delivery_list.product_infos`。
+- 自寄快递发货必须填写微信快递公司 ID 和快递单号；虚拟商品可使用 `deliver_type=3`，但仍需整单发货。
+- 发货成功后 `shipments` 和 `orders` 进入 `wechat_shipped`；失败进入 `send_failed`/`exception` 并记录错误码和原因。
+- 发货失败支持重试，重试只清除本地错误并按自动发货开关回到 `ready_to_send` 或 `waiting_confirmation`。
+
+### 5.4 售后同步与异常订单
+
+当前售后同步 MVP 已落地：
+
+- 支持调用微信 `POST /channels/ec/aftersale/getaftersalelist` 拉取售后单号，单次同步窗口最多 24 小时。
+- 支持调用微信 `POST /channels/ec/aftersale/getaftersaleorder` 同步售后详情。
+- 售后详情写入本地 `aftersales`，保存店铺、微信订单号、售后单号、状态、类型、原因、退款金额、同步时间和脱敏原始摘要。
+- 售后详情入库前递归脱敏 `openid`、姓名、电话、地址、联系人等敏感字段。
+- 能关联到本地订单的处理中售后，会把订单标记为 `aftersale_active`，进入待处理订单口径。
+- 微信已退款成功的售后会按售后单号生成幂等的订单级 `refund` 调整项，进入利润核算。
+- 单个店铺失败不阻塞其他店铺；单个售后详情失败会保留 `sync_failed` 和原因。
+- 桌面端已提供“售后异常”处理台，支持按处理中、同步失败、退款成功等状态筛选。
+- 支持人工记录售后责任方、处理备注和供应商赔付金额；售后已关联订单时，供应商赔付会以订单级 `other_income` 调整项进入利润核算。
+- 支持按店铺调用微信 `POST /channels/ec/aftersale/rejectreason/get` 同步售后拒绝原因，并在拒绝表单中按官方原因下拉选择。
+- 支持在“售后异常”处理台人工提交微信售后同意/拒绝，并记录最近动作、动作状态、错误摘要、备注和动作时间。
+- 支持本地主控 HTTP API `GET /api/aftersale-reject-reasons` 和 `POST /api/aftersale-reject-reasons/sync`，供受控脚本先查/同步官方拒绝原因。
+- 支持本地主控 HTTP API `GET /api/aftersales` 和 `POST /api/aftersales/{aftersale_id}/responsibility`，供受控脚本查询售后异常并记录责任方、备注和供应商赔付回款。
+- 支持本地主控 HTTP API `POST /api/aftersales/{aftersale_id}/accept` 和 `POST /api/aftersales/{aftersale_id}/reject`，供受控脚本复用。
+- 支持本地主控 HTTP API `GET/POST /api/aftersale-evidence`，供受控脚本查询或记录售后/纠纷本地凭证资料元数据；不读取文件内容、不上传微信、不提交平台处理。
+- 支持本地主控 HTTP API `GET/POST /api/supplier-aftersale-followups`，供人工或受控脚本记录供应商售后协同、索证状态、供应商名称和采购任务引用；只保存脱敏摘要，不登录供应商平台、不上传微信、不直接计入利润。
+- 支持调用微信 `searchguaranteeorder/getguaranteeorder` 同步纠纷/保障单，脱敏保存买家标识和凭证信息，并在“售后异常”页展示状态、赔付金额、过期时间和关联订单。
+- 支持本地主控 HTTP API `GET /api/guarantee-orders` 和 `POST /api/runners/guarantee-sync`，供受控脚本查询纠纷单和触发同步。
+- 售后同意/拒绝失败不会伪造成成功，会写入最近动作失败和通知中心；平台最终状态仍以后续售后同步为准。
+- 当前仅支持本地整理凭证资料元数据和供应商协同摘要，不自动上传凭证、不自动处理纠纷单、不做深度自动售后处理；售后同意/拒绝和纠纷处理都不进入自动推进 runner。
+
+当前任务中心自动推进 MVP 已落地：
+
+- 支持保存自动推进步骤开关：订单同步、订单详情、售后同步、采购任务、微信发货、铺货校验、属性补齐、类目预检、素材上传、提交发品、铺货状态、自动上架、改价确认。
+- 点击“自动推进一轮”会按顺序调用现有 runner，不新增隐藏状态机。
+- 单个步骤报错会记录 `step/error` 并继续后续步骤，方便按任务中心和具体商品/订单继续排错。
+- 微信发货步骤仍受自动发货开关控制，关闭时不会调用微信 `senddelivery`。
+
+当前数据备份 MVP 已落地：
+
+- 应用启动后按上海日期每天最多自动创建一次 `auto` 前缀 SQLite 备份；自动备份失败只写本地 stderr，不阻断桌面端启动。
+- 数据备份页支持查看应用 `backups/` 目录下的备份列表、文件大小、SHA-256、创建时间和 SQLite 完整性校验结果。
+- 支持一键创建本地数据库备份，备份前执行 WAL checkpoint，备份后执行 `PRAGMA integrity_check`。
+- 支持从应用备份目录恢复数据库；恢复前自动创建 `pre-restore` 回滚备份，恢复后再次校验完整性。
+- 恢复不允许从任意外部路径直接覆盖数据库；导入原始文件和导出文件索引仍待后续补齐。
+
+### 5.4 缺货处理
+
+规则：
+
+- 供应商缺货时通知用户处理。
+- 不自动换供应商。
+- 不自动取消采购。
+- 缺货订单进入待处理订单。
+
+当前通知中心 MVP 已落地：
+
+- `notifications` 表按来源类型和来源 ID 去重，支持未读/已读、严重/提醒/信息级别。
+- 铺货任务失败、采购任务缺少外部商品映射、采购供应商异常、同一订单多个供应商物流、微信发货失败、订单详情同步失败、售后详情同步失败和售后待处理会写入通知。
+- 通知中心支持按状态和级别筛选、标记单条已读、全部已读，并可定位到铺货任务、采购任务、履约发货或售后异常页面。
+- 通知正文只保存脱敏摘要、店铺 ID/名称和来源 ID，不保存收件人姓名、手机号、地址、密钥或完整微信响应。
+
+## 6. 利润核算
+
+需要做利润核算。
+
+订单利润字段：
+
+- 商品成交价。
+- 商品数量。
+- 采购成本。
+- 采购运费。
+- 平台退款。
+- 售后赔付。
+- 供应商赔付回款。
+- 其他成本。
+- 预估毛利。
+- 实际毛利。
+- 毛利率。
+
+利润核算规则：
+
+- 订单同步后先生成预估利润。
+- 采购单确认成本后更新预估利润。
+- 发货后进入待结算。
+- 售后、退款、赔付发生后更新实际利润。
+
+当前利润核算 MVP 已落地：
+
+- 支持 `list_order_profit_summaries` 按订单汇总成交额、商品数量、采购任务数、缺成本项、采购成本和毛利。
+- 支持 `record_order_profit_adjustment` 记录订单级采购运费、退款、售后赔付、其他成本和其他收入。
+- 支持 `record_aftersale_responsibility` 将售后供应商赔付自动写入订单级 `other_income`，避免责任归因只停留在页面备注。
+- 支持本地主控 HTTP API `GET /api/order-profits` 和 `POST /api/order-profits/{order_id}/adjustments`，供受控脚本查询利润摘要和记录可追踪的订单级调整项。
+- 实际毛利只有在订单已有采购任务且采购成本全部补齐时才展示；缺采购任务或缺成本时显示为待补齐状态。
+- 利润核算页面不展示收件人姓名、手机号、地址等履约敏感信息。
+
+## 6.1 库存风控
+
+当前库存风控 MVP 已落地：
+
+- 支持 `list_inventory_risks` 基于外部铺货商品 SKU 库存、采购任务占用、供应商异常和店铺商品映射生成库存风险视图。
+- 支持 `run_inventory_risk_scan_once` 创建 `inventory.scan_risks` 任务，扫描断货、低库存、库存压力和供应商异常，并写入通知中心。
+- 支持本地主控 HTTP API `GET /api/inventory-risks` 和 `POST /api/runners/inventory-risk-scan`，供外部选品/铺货系统和供应商 agent 查询。
+- 桌面端“库存风控”页面可按风险状态筛选，并展示货源库存、采购占用、可用库存、已铺店铺和运营建议。
+- 当前风控只使用真实外部商品库存、采购任务和本地映射，不调用微信 `updatestock`，不制造虚假库存或虚假动销。
+
+## 6.2 商品动销分析
+
+当前商品动销分析 MVP 已落地：
+
+- 支持 `list_product_sales_analysis` 按外部商品 ID 聚合真实订单、订单项、采购成本、售后关联、铺货店铺数和库存风险。
+- 支持本地主控 HTTP API `GET /api/product-sales-analysis`，供外部选品/铺货系统查询“可放量、库存风险、毛利风险、售后观察、未动销、未铺货”等状态。
+- 桌面端“动销分析”页面展示商品数、已动销商品、销量、成交额、粗毛利、可放量商品、风险商品和缺成本商品。
+- 商品级建议只输出继续铺货、调价、补货、售后观察或保持观察，不自动刷单、不虚构动销、不绕过真实库存和审核。
+- 当前先使用本地已同步订单和履约数据计算；微信罗盘 `compass`、收藏、资金流水等官方经营数据作为后续增强。
+
+## 7. 首页与任务视图
+
+首页必须优先展示：
+
+- 待处理订单数量。
+- 异常店铺数量。
+- 铺货失败商品数量。
+- 正在运行任务数量。
+- 主控机运行状态。
+- 最近一次订单同步时间。
+- 最近一次铺货任务结果。
+
+铺货任务详情：
+
+- 默认按商品聚合。
+- 展示每个商品的目标店铺数、成功数、失败数、重复失败数。
+- 展开后显示每个店铺的失败原因。
+
+订单待办：
+
+- 按处理类型聚合：待采购、待录入物流、发货失败、售后中、超时未发货。
+- 支持直接跳到采购任务、物流回填或售后详情。
+
+## 8. 暂缓功能
+
+明确暂缓：
+
+- 自动登录供应商平台下单。
+- 自动登录供应商平台抓取物流单号。
+- 外部 API webhook 回调。
+- 更新已有微信商品。
+- 店铺组差异化策略。
+- 默认铺货节流。
+- 自动换供应商。
+- 自动取消采购。
+- 深度自动售后处理、售后凭证上传和自动纠纷处理。
+
+预留扩展：
+
+- 履约插件/skill：下单、查物流、回填单号。
+- 批量改价。
+- Excel 导入物流。
+- 更复杂的定价策略。
+- 外部 API 鉴权和调用额度。
