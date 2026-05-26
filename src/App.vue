@@ -995,6 +995,34 @@ const backupRunning = ref(false);
 const latestTaskId = ref("");
 const queriedTaskId = ref("");
 const currentJob = ref<PublishJobView | null>(null);
+
+// 采集与导入相关状态
+type CollectionTaskView = {
+  id: string;
+  title: string;
+  source_url: string;
+  category_path: string;
+  target_shop_ids: string[];
+  status: 'pending' | 'running' | 'success' | 'failed';
+  error_summary: string | null;
+  collected_data: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+const collectionImportVisible = ref(false);
+const collectionTargetShopIds = ref<string[]>([]);
+const collectionFilePath = ref("");
+const collectionImporting = ref(false);
+const collectionLoggingIn = ref(false);
+const collectionTasks = ref<CollectionTaskView[]>([]);
+let collectionPollTimer: number | null = null;
+const collectionCheckingLogin = ref(false);
+const collectionTesting = ref(false);
+const testCollectVisible = ref(false);
+const testCollectUrl = ref("");
+const testCollectHeaded = ref(true);
+const testCollectResult = ref<any | null>(null);
 const latestPriceTaskId = ref("");
 const queriedPriceTaskId = ref("");
 const currentPriceJob = ref<PriceUpdateJobView | null>(null);
@@ -4408,6 +4436,7 @@ async function refreshAll() {
       refreshProductSalesAnalysis(),
       refreshCategoryCatalog(),
       refreshAttributeSuggestions(),
+      refreshCollectionTasks(),
     ]);
   } catch (error) {
     ElMessage.error(String(error));
@@ -4917,6 +4946,131 @@ async function createPublishJob() {
   } catch (error) {
     ElMessage.error(String(error));
   }
+}
+
+async function refreshCollectionTasks() {
+  try {
+    collectionTasks.value = await command<CollectionTaskView[]>("get_collection_tasks");
+  } catch (err: any) {
+    console.error("加载采集任务失败：", err);
+  }
+}
+
+async function startExcelImport() {
+  if (!collectionFilePath.value.trim()) {
+    ElMessage.warning("请先填写 Excel 文件路径");
+    return;
+  }
+  if (collectionTargetShopIds.value.length === 0) {
+    ElMessage.warning("请选择至少一个目标店铺");
+    return;
+  }
+  collectionImporting.value = true;
+  try {
+    const count = await command<number>("import_excel_for_collection", {
+      filePath: collectionFilePath.value.trim(),
+      targetShopIds: collectionTargetShopIds.value,
+    });
+    ElMessage.success(`成功导入 ${count} 个商品采集任务`);
+    collectionImportVisible.value = false;
+    collectionFilePath.value = "";
+    await refreshCollectionTasks();
+    startCollectionPolling();
+  } catch (err: any) {
+    ElMessage.error(`导入失败：${err}`);
+  } finally {
+    collectionImporting.value = false;
+  }
+}
+
+async function triggerTaobaoLogin() {
+  collectionLoggingIn.value = true;
+  try {
+    ElMessage.info("正在拉起淘宝登录窗口，请稍候...");
+    await command("open_taobao_login");
+    ElMessage.success("淘宝登录会话已保存");
+  } catch (err: any) {
+    ElMessage.error(`打开淘宝登录失败：${err}`);
+  } finally {
+    collectionLoggingIn.value = false;
+  }
+}
+
+async function retryCollection(taskId: string) {
+  try {
+    await command("retry_collection_task", { taskId });
+    ElMessage.success("已加入重新采集队列");
+    await refreshCollectionTasks();
+    startCollectionPolling();
+  } catch (err: any) {
+    ElMessage.error(`操作失败：${err}`);
+  }
+}
+
+async function clearCollectionHistory() {
+  try {
+    await command("clear_collection_tasks");
+    ElMessage.success("采集任务列表已清空");
+    await refreshCollectionTasks();
+  } catch (err: any) {
+    ElMessage.error(`清空失败：${err}`);
+  }
+}
+
+async function checkTaobaoLoginState() {
+  collectionCheckingLogin.value = true;
+  try {
+    const res: any = await command("check_taobao_login_state");
+    if (res && res.logged_in) {
+      ElMessage.success(`登录态有效：${res.detail || ""}`);
+    } else {
+      ElMessage.warning(res?.detail || "未检测到有效登录态，请先点击\"淘宝登录(保持状态)\"完成登录。");
+    }
+  } catch (err: any) {
+    ElMessage.error(`检测登录态失败：${err}`);
+  } finally {
+    collectionCheckingLogin.value = false;
+  }
+}
+
+function openTestCollectDialog() {
+  testCollectResult.value = null;
+  testCollectVisible.value = true;
+}
+
+async function runTestCollect() {
+  const url = testCollectUrl.value.trim();
+  if (!url) {
+    ElMessage.warning("请输入淘宝商品链接");
+    return;
+  }
+  collectionTesting.value = true;
+  try {
+    const res: any = await command("test_taobao_collect", { url, headed: testCollectHeaded.value });
+    testCollectResult.value = res;
+    if (res?.success) {
+      ElMessage.success("抓取成功");
+    } else {
+      ElMessage.error(res?.error || "抓取失败");
+    }
+  } catch (err: any) {
+    ElMessage.error(`测试抓取失败：${err}`);
+    testCollectResult.value = { success: false, error: String(err), raw: null, stderr: "" };
+  } finally {
+    collectionTesting.value = false;
+  }
+}
+
+function startCollectionPolling() {
+  if (collectionPollTimer) return;
+  collectionPollTimer = window.setInterval(async () => {
+    await refreshCollectionTasks();
+    const hasActive = collectionTasks.value.some(t => t.status === "pending" || t.status === "running");
+    if (!hasActive && collectionPollTimer) {
+      window.clearInterval(collectionPollTimer);
+      collectionPollTimer = null;
+    }
+  }, 3000);
 }
 
 async function queryJob() {
@@ -8496,6 +8650,87 @@ onMounted(refreshAll);
       </section>
 
       <section v-if="selectedSection === 'jobs'" class="content-stack">
+        <!-- 批量导入与淘宝登录控制面板 -->
+        <div class="panel">
+          <div class="panel-title">
+            <div>
+              <h2>淘宝采集与批量铺货</h2>
+              <p>导入含有淘宝商品链接的 Excel 进行全自动采集并铺货。采集任务会在后台自动排队执行。</p>
+            </div>
+            <div class="button-group">
+              <el-button :loading="collectionCheckingLogin" @click="checkTaobaoLoginState">
+                检测登录态
+              </el-button>
+              <el-button :loading="collectionTesting" @click="openTestCollectDialog">
+                测试抓取
+              </el-button>
+              <el-button type="warning" :loading="collectionLoggingIn" @click="triggerTaobaoLogin">
+                淘宝登录(保持状态)
+              </el-button>
+              <el-button type="primary" @click="collectionImportVisible = true">
+                导入 Excel 铺货
+              </el-button>
+            </div>
+          </div>
+
+          <el-dialog v-model="testCollectVisible" title="测试抓取淘宝商品" width="720px">
+            <div class="inline-form">
+              <el-input
+                v-model="testCollectUrl"
+                placeholder="https://item.taobao.com/item.htm?id=..."
+                clearable
+              />
+              <el-button type="primary" :loading="collectionTesting" @click="runTestCollect">
+                开始抓取
+              </el-button>
+            </div>
+            <div style="margin-top: 8px;">
+              <el-checkbox v-model="testCollectHeaded">
+                使用可见浏览器（headed，规避淘宝滑块/反爬，推荐勾选）
+              </el-checkbox>
+            </div>
+            <div v-if="testCollectResult" class="sub-panel" style="margin-top: 12px;">
+              <dl class="status-list compact">
+                <div>
+                  <dt>结果</dt>
+                  <dd>
+                    <el-tag :type="testCollectResult.success ? 'success' : 'danger'">
+                      {{ testCollectResult.success ? "成功" : "失败" }}
+                    </el-tag>
+                  </dd>
+                </div>
+                <div v-if="!testCollectResult.success">
+                  <dt>错误</dt>
+                  <dd>{{ testCollectResult.error || "未知错误" }}</dd>
+                </div>
+                <div v-if="testCollectResult.raw">
+                  <dt>标题</dt>
+                  <dd>{{ testCollectResult.raw.title || "-" }}</dd>
+                </div>
+                <div v-if="testCollectResult.raw">
+                  <dt>主图数</dt>
+                  <dd>{{ (testCollectResult.raw.images || []).length }}</dd>
+                </div>
+                <div v-if="testCollectResult.raw">
+                  <dt>详情图数</dt>
+                  <dd>{{ (testCollectResult.raw.detail_images || []).length }}</dd>
+                </div>
+                <div v-if="testCollectResult.raw">
+                  <dt>SKU 数</dt>
+                  <dd>{{ (testCollectResult.raw.skus || []).length }}</dd>
+                </div>
+              </dl>
+              <el-input
+                type="textarea"
+                :rows="14"
+                :model-value="JSON.stringify(testCollectResult.raw ?? { stderr: testCollectResult.stderr }, null, 2)"
+                readonly
+                style="margin-top: 8px; font-family: monospace;"
+              />
+            </div>
+          </el-dialog>
+        </div>
+
         <div class="panel">
           <div class="panel-title">
             <h2>查询铺货任务</h2>
@@ -8618,8 +8853,119 @@ onMounted(refreshAll);
             </el-collapse-item>
           </el-collapse>
         </div>
+
+        <!-- 采集任务队列展示 -->
+        <div class="panel collection-panel" style="margin-top: 20px;">
+          <div class="panel-title">
+            <div>
+              <h2>淘宝详情采集队列</h2>
+              <p>后台正在排队采集并自动铺货的商品任务。</p>
+            </div>
+            <div class="button-group">
+              <el-button :icon="Refresh" @click="refreshCollectionTasks">刷新队列</el-button>
+              <el-button type="danger" text @click="clearCollectionHistory">清空列表</el-button>
+            </div>
+          </div>
+          
+          <el-table :data="collectionTasks" class="dense-table" max-height="400">
+            <el-table-column prop="title" label="商品名称" min-width="180" show-overflow-tooltip />
+            <el-table-column prop="source_url" label="淘宝链接" min-width="220" show-overflow-tooltip>
+              <template #default="{ row }">
+                <a :href="row.source_url" target="_blank" class="link" style="color: #c38a21; text-decoration: underline;">{{ row.source_url }}</a>
+              </template>
+            </el-table-column>
+            <el-table-column prop="category_path" label="微信类目" min-width="150" show-overflow-tooltip />
+            <el-table-column prop="status" label="采集状态" width="120">
+              <template #default="{ row }">
+                <el-tag :type="row.status === 'success' ? 'success' : row.status === 'failed' ? 'danger' : row.status === 'running' ? 'warning' : 'info'">
+                  {{ row.status === 'pending' ? '等待中' :
+                     row.status === 'running' ? '正在采集...' :
+                     row.status === 'success' ? '采集成功' : '采集失败' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="error_summary" label="失败原因" min-width="200" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span style="color: #bd4c2f;">{{ row.error_summary || '-' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="created_at" label="创建时间" width="160" />
+            <el-table-column label="操作" width="100" fixed="right">
+              <template #default="{ row }">
+                <el-button 
+                  v-if="row.status === 'failed'" 
+                  size="small" 
+                  type="primary" 
+                  text 
+                  @click="retryCollection(row.id)"
+                >
+                  重试
+                </el-button>
+                <span v-else>-</span>
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
       </section>
     </main>
+    <!-- 批量导入采集铺货 Dialog -->
+    <el-dialog
+      v-model="collectionImportVisible"
+      title="批量导入采集铺货"
+      width="600px"
+      append-to-body
+    >
+      <div class="collection-import-form" style="display: flex; flex-direction: column; gap: 20px;">
+        <div>
+          <span style="font-weight: bold; display: block; margin-bottom: 8px;">1. 选择目标铺货店铺</span>
+          <el-select
+            v-model="collectionTargetShopIds"
+            multiple
+            collapse-tags
+            placeholder="请选择要发布到的店铺"
+            style="width: 100%;"
+          >
+            <el-option
+              v-for="shop in shops"
+              :key="shop.id"
+              :label="`${shop.name} (${shop.group_name})`"
+              :value="shop.id"
+            />
+          </el-select>
+        </div>
+        
+        <div>
+          <span style="font-weight: bold; display: block; margin-bottom: 8px;">2. Excel 文件路径</span>
+          <el-input
+            v-model="collectionFilePath"
+            placeholder="请输入 Excel 文件的绝对路径，例如: /Users/username/Desktop/products.xlsx"
+            style="width: 100%;"
+          />
+          <p style="font-size: 12px; color: #8c6b30; margin-top: 6px;">
+            提示：Excel 文件无表头。第一列商品名称，第二列淘宝链接，第三列微信类目路径（用 > 连接）。
+          </p>
+        </div>
+
+        <div style="background-color: rgba(195, 138, 33, 0.08); border-left: 4px solid #c38a21; padding: 12px; border-radius: 4px;">
+          <p style="font-size: 13px; color: #7f5f19; margin: 0; line-height: 1.5;">
+            <strong>安全提示：</strong>采集淘宝商品需要模拟浏览器环境。如果遇到反爬限流，请先点击铺货任务页面上的<b>“淘宝登录”</b>按钮，在弹出的浏览器中手动登录一次淘宝以建立登录态。
+          </p>
+        </div>
+      </div>
+      
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="collectionImportVisible = false">取消</el-button>
+          <el-button
+            type="primary"
+            :loading="collectionImporting"
+            @click="startExcelImport"
+          >
+            开始导入并采集
+          </el-button>
+        </span>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -8652,7 +8998,7 @@ textarea {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 292px 1fr;
+  grid-template-columns: 292px minmax(0, 1fr);
   min-height: 100vh;
   background:
     linear-gradient(90deg, rgba(30, 80, 72, 0.08) 1px, transparent 1px),
@@ -8752,8 +9098,10 @@ textarea {
 }
 
 .workspace {
+  min-width: 0;
   padding: 28px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .topbar {
@@ -8797,6 +9145,7 @@ h2 {
 
 .metric,
 .panel {
+  min-width: 0;
   background: rgba(255, 252, 244, 0.92);
   border: 1px solid rgba(57, 53, 44, 0.12);
   border-radius: 6px;
@@ -8850,10 +9199,16 @@ h2 {
 
 .panel-title {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 18px;
   align-items: flex-start;
   margin-bottom: 16px;
+}
+
+.panel-title > :first-child {
+  flex: 1 1 320px;
+  min-width: min(320px, 100%);
 }
 
 .panel-title p {
@@ -8868,13 +9223,13 @@ h2 {
 
 .content-stack {
   display: grid;
+  min-width: 0;
   gap: 16px;
 }
 
 .inline-form,
 .form-grid,
-.action-row,
-.button-group {
+.action-row {
   display: grid;
   gap: 12px;
   align-items: center;
@@ -8956,8 +9311,13 @@ h2 {
 }
 
 .button-group {
-  grid-auto-flow: column;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
   justify-content: end;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .status-filter {
@@ -9002,7 +9362,7 @@ h2 {
 
 .automation-switches {
   display: grid;
-  grid-template-columns: repeat(8, minmax(88px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
   gap: 8px 12px;
   align-items: center;
 }
@@ -9050,16 +9410,18 @@ h2 {
 
 .status-list {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 0;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 14px;
 }
 
 .status-list.compact {
-  grid-template-columns: 1.6fr 0.7fr 0.7fr;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   margin-bottom: 18px;
 }
 
 .status-list div {
+  min-width: 0;
   padding: 14px;
   background: #f6efe0;
   border: 1px solid rgba(57, 53, 44, 0.08);
@@ -9075,6 +9437,7 @@ h2 {
   margin: 6px 0 0;
   color: #1d2420;
   font-weight: 700;
+  overflow-wrap: anywhere;
   word-break: break-all;
 }
 
@@ -9139,6 +9502,7 @@ h2 {
 
 .dense-table {
   width: 100%;
+  max-width: 100%;
 }
 
 .compact-table {

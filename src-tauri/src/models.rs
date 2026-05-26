@@ -1282,3 +1282,17 @@ pub struct PublishJobItemView {
     pub error_summary: Option<String>,
     pub created_at: String,
 }
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub struct CollectionTaskView {
+    pub id: String,
+    pub title: String,
+    pub source_url: String,
+    pub category_path: String,
+    pub target_shop_ids: Vec<String>,
+    pub status: String,
+    pub error_summary: Option<String>,
+    pub collected_data: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}

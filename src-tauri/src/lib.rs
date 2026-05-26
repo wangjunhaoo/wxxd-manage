@@ -101,7 +101,14 @@ pub fn run() {
             commands::run_publish_status_sync_once,
             commands::run_publish_listing_once,
             local_api::get_local_api_config,
-            local_api::rotate_local_api_key
+            local_api::rotate_local_api_key,
+            commands::import_excel_for_collection,
+            commands::open_taobao_login,
+            commands::get_collection_tasks,
+            commands::retry_collection_task,
+            commands::clear_collection_tasks,
+            commands::check_taobao_login_state,
+            commands::test_taobao_collect
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

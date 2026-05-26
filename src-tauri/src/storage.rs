@@ -559,6 +559,19 @@ fn migrate(conn: &Connection) -> AppResult<()> {
           PRIMARY KEY(shop_id, delivery_id),
           FOREIGN KEY(shop_id) REFERENCES shops(id)
         );
+
+        CREATE TABLE IF NOT EXISTS collection_tasks (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          source_url TEXT NOT NULL,
+          category_path TEXT NOT NULL,
+          target_shop_ids TEXT NOT NULL,
+          status TEXT NOT NULL,
+          error_summary TEXT,
+          collected_data TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
         "#,
     )?;
     ensure_column(conn, "shops", "wechat_nickname", "TEXT")?;
@@ -731,6 +744,9 @@ fn migrate(conn: &Connection) -> AppResult<()> {
 
         CREATE INDEX IF NOT EXISTS idx_delivery_companies_shop
           ON delivery_companies(shop_id);
+
+        CREATE INDEX IF NOT EXISTS idx_collection_tasks_status
+          ON collection_tasks(status);
         "#,
     )?;
     Ok(())
