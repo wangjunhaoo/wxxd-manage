@@ -166,6 +166,42 @@ pub struct CategoryRuleSyncResult {
     pub failed_steps: Vec<String>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct AgentSkillView {
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub enabled: bool,
+    pub runtime: String,
+    pub model: Option<String>,
+    pub temperature: Option<f64>,
+    pub skill_path: String,
+    pub schema_path: String,
+    pub checksum: String,
+    pub file_status: String,
+    pub runtime_status: String,
+    pub last_test_status: Option<String>,
+    pub last_test_summary: Option<String>,
+    pub last_test_at: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AgentSkillSettingsRequest {
+    pub name: String,
+    pub enabled: bool,
+    pub model: Option<String>,
+    pub temperature: Option<f64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AgentSkillTestResult {
+    pub name: String,
+    pub status: String,
+    pub summary: String,
+    pub checked_at: String,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ExternalPublishJobRequest {
     pub request_id: String,
@@ -177,6 +213,56 @@ pub struct ExternalPublishJobRequest {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+pub struct CollectionPublishRequest {
+    #[serde(default)]
+    pub collection_task_ids: Vec<String>,
+    #[serde(default)]
+    pub target_shop_ids: Vec<String>,
+    pub pricing_strategy: Option<PublishPricingStrategy>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CollectionReviewRunRequest {
+    #[serde(default)]
+    pub task_ids: Vec<String>,
+    #[serde(default)]
+    pub target_shop_ids: Vec<String>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CollectionReviewConfirmRequest {
+    pub task_id: String,
+    pub title: Option<String>,
+    pub category_ids: Option<Vec<i64>>,
+    pub category_path: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CollectionReviewBatchResult {
+    pub processed_items: i64,
+    pub passed_items: i64,
+    pub needs_review_items: i64,
+    pub blocked_items: i64,
+    pub failed_items: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CollectionReviewCategoryCandidate {
+    pub category_ids: Vec<i64>,
+    pub category_path: String,
+    pub score: i64,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PublishPricingStrategy {
+    pub sale_price_markup_rate: f64,
+    pub sale_price_fixed_cents: i64,
+    pub sale_price_floor_cents: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ExternalProductInput {
     pub external_product_id: String,
     pub title: String,
@@ -195,7 +281,7 @@ pub struct ExternalProductInput {
     pub metadata: serde_json::Value,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ExternalSkuInput {
     pub external_sku_id: String,
     #[serde(default)]
@@ -221,6 +307,31 @@ pub struct PriceUpdateProductInput {
     pub reason: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct OrderPriceAdjustmentJobRequest {
+    pub request_id: String,
+    pub orders: Vec<OrderPriceAdjustmentOrderInput>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct OrderPriceAdjustmentOrderInput {
+    pub shop_id: String,
+    pub wechat_order_id: String,
+    #[serde(default)]
+    pub change_express: bool,
+    pub express_fee_cents: Option<i64>,
+    #[serde(default)]
+    pub lines: Vec<OrderPriceAdjustmentLineInput>,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct OrderPriceAdjustmentLineInput {
+    pub product_id: String,
+    pub sku_id: String,
+    pub change_price_cents: i64,
+}
+
 #[derive(Debug, Serialize)]
 pub struct PublishJobCreated {
     pub task_id: String,
@@ -238,6 +349,13 @@ pub struct PriceUpdateJobCreated {
 }
 
 #[derive(Debug, Serialize)]
+pub struct OrderPriceAdjustmentJobCreated {
+    pub task_id: String,
+    pub status: String,
+    pub accepted_order_count: usize,
+}
+
+#[derive(Debug, Serialize)]
 pub struct TaskRunView {
     pub id: String,
     pub task_type: String,
@@ -249,6 +367,40 @@ pub struct TaskRunView {
     pub pending_count: i64,
     pub ready_count: i64,
     pub failed_count: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AgentRunView {
+    pub id: String,
+    pub skill_name: String,
+    pub skill_version: String,
+    pub scene: String,
+    pub source_type: String,
+    pub source_id: String,
+    pub shop_id: Option<String>,
+    pub status: String,
+    pub provider_type: Option<String>,
+    pub model: Option<String>,
+    pub temperature: Option<f64>,
+    pub input_summary: String,
+    pub decision: Option<String>,
+    pub error_code: Option<String>,
+    pub error_summary: Option<String>,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AgentRunEventView {
+    pub id: String,
+    pub run_id: String,
+    pub event_type: String,
+    pub level: String,
+    pub message: String,
+    pub data_json: Option<String>,
+    pub created_at: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -373,9 +525,13 @@ pub struct NotificationMarkResult {
 pub struct AiProviderSettings {
     pub enabled: bool,
     pub provider_type: String,
+    pub custom_provider_id: String,
+    pub api: String,
     pub base_url: String,
     pub model: String,
     pub temperature: f64,
+    pub context_window: i64,
+    pub max_tokens: i64,
     pub has_api_key: bool,
     pub api_key_hint: Option<String>,
     pub updated_at: Option<String>,
@@ -385,9 +541,13 @@ pub struct AiProviderSettings {
 pub struct AiProviderSettingsRequest {
     pub enabled: bool,
     pub provider_type: String,
+    pub custom_provider_id: Option<String>,
+    pub api: Option<String>,
     pub base_url: String,
     pub model: String,
     pub temperature: Option<f64>,
+    pub context_window: Option<i64>,
+    pub max_tokens: Option<i64>,
     pub api_key: Option<String>,
     #[serde(default)]
     pub clear_api_key: bool,
@@ -535,6 +695,14 @@ pub struct PriceUpdateConfirmBatchResult {
     pub processed_items: i64,
     pub confirmed_items: i64,
     pub pending_items: i64,
+    pub failed_items: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OrderPriceAdjustmentBatchResult {
+    pub processed_jobs: i64,
+    pub processed_items: i64,
+    pub success_items: i64,
     pub failed_items: i64,
 }
 
@@ -748,6 +916,57 @@ pub struct ProductSalesAnalysisListResult {
 }
 
 #[derive(Debug, Serialize)]
+pub struct ProductManagementListResult {
+    pub items: Vec<ProductManagementView>,
+    pub total: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProductManagementView {
+    pub external_product_id: String,
+    pub title: String,
+    pub source_url: Option<String>,
+    pub supplier_name: Option<String>,
+    pub supplier_product_id: Option<String>,
+    pub management_status: String,
+    pub publish_status: Option<String>,
+    pub publish_error_summary: Option<String>,
+    pub active_shop_count: i64,
+    pub shop_count: i64,
+    pub order_count: i64,
+    pub units_sold: i64,
+    pub revenue_cents: i64,
+    pub purchase_task_count: i64,
+    pub missing_cost_count: i64,
+    pub purchase_cost_cents: i64,
+    pub related_aftersale_count: i64,
+    pub related_refund_cents: i64,
+    pub total_stock: i64,
+    pub available_stock: i64,
+    pub inventory_risk_status: String,
+    pub operation_status: String,
+    pub recommendation: String,
+    pub last_order_at: Option<String>,
+    pub updated_at: String,
+    pub shops: Vec<ProductManagementShopView>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct ProductManagementShopView {
+    pub shop_id: String,
+    pub shop_name: String,
+    pub status: String,
+    pub wechat_product_id: Option<String>,
+    pub wechat_status: Option<i64>,
+    pub wechat_edit_status: Option<i64>,
+    pub current_price_cents: Option<i64>,
+    pub last_status_sync_at: Option<String>,
+    pub last_price_update_at: Option<String>,
+    pub audit_summary: Option<String>,
+    pub source_url: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct ProductSalesAnalysisTotals {
     pub product_count: i64,
     pub sold_product_count: i64,
@@ -838,6 +1057,55 @@ pub struct OrderProfitAdjustmentResult {
     pub kind: String,
     pub amount_cents: i64,
     pub message: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OrderManagementListResult {
+    pub items: Vec<OrderManagementView>,
+    pub total: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OrderManagementView {
+    pub order_id: String,
+    pub wechat_order_id: String,
+    pub shop_id: String,
+    pub shop_name: String,
+    pub wechat_status: Option<i64>,
+    pub order_status: String,
+    pub management_status: String,
+    pub item_count: i64,
+    pub quantity: i64,
+    pub revenue_cents: i64,
+    pub purchase_task_count: i64,
+    pub missing_cost_count: i64,
+    pub purchase_status: String,
+    pub shipment_count: i64,
+    pub shipment_status: String,
+    pub active_aftersale_count: i64,
+    pub profit_status: String,
+    pub estimated_profit_cents: i64,
+    pub actual_profit_cents: Option<i64>,
+    pub detail_synced_at: Option<String>,
+    pub detail_error: Option<String>,
+    pub synced_at: Option<String>,
+    pub order_created_at: Option<i64>,
+    pub order_updated_at: Option<i64>,
+    pub updated_at: Option<String>,
+    pub items: Vec<OrderManagementItemView>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct OrderManagementItemView {
+    pub id: String,
+    pub wechat_product_id: Option<String>,
+    pub wechat_sku_id: Option<String>,
+    pub external_product_id: Option<String>,
+    pub external_sku_id: Option<String>,
+    pub title: Option<String>,
+    pub quantity: i64,
+    pub sale_price: Option<i64>,
+    pub real_price: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1261,6 +1529,37 @@ pub struct PriceUpdateItemView {
 }
 
 #[derive(Debug, Serialize)]
+pub struct OrderPriceAdjustmentJobView {
+    pub id: String,
+    pub request_id: String,
+    pub status: String,
+    pub accepted_order_count: i64,
+    pub created_at: String,
+    pub updated_at: String,
+    pub items: Vec<OrderPriceAdjustmentItemView>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OrderPriceAdjustmentItemView {
+    pub id: String,
+    pub shop_id: String,
+    pub shop_name: String,
+    pub order_id: Option<String>,
+    pub wechat_order_id: String,
+    pub wechat_status: Option<i64>,
+    pub change_order_infos: Vec<OrderPriceAdjustmentLineInput>,
+    pub change_express: bool,
+    pub express_fee_cents: Option<i64>,
+    pub note: Option<String>,
+    pub status: String,
+    pub error_code: Option<String>,
+    pub error_summary: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub submitted_at: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct PublishProductView {
     pub external_product_id: String,
     pub title: String,
@@ -1293,6 +1592,14 @@ pub struct CollectionTaskView {
     pub status: String,
     pub error_summary: Option<String>,
     pub collected_data: Option<String>,
+    pub review_status: String,
+    pub review_summary: Option<String>,
+    pub reviewed_data: Option<String>,
+    pub review_result_json: Option<String>,
+    pub reviewed_at: Option<String>,
+    pub published_shop_ids: Vec<String>,
+    pub publish_job_ids: Vec<String>,
+    pub published_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }

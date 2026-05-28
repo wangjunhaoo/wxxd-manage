@@ -5,9 +5,11 @@ pub async fn run_order_sync_once(
     app: AppHandle,
     lookback_days: Option<i64>,
     page_size: Option<i64>,
+    order_status: Option<i64>,
 ) -> AppResult<OrderSyncBatchResult> {
     let lookback_days = lookback_days.unwrap_or(1).clamp(1, 7);
     let page_size = page_size.unwrap_or(100).clamp(1, 100);
+    let order_status = order_status.unwrap_or(20);
     let sync_shops = {
         let conn = open_connection(&app)?;
         load_order_sync_shops(&conn)?
@@ -79,7 +81,7 @@ pub async fn run_order_sync_once(
                     &access_token,
                     start_time,
                     end_time,
-                    Some(20),
+                    Some(order_status),
                     page_size,
                     &next_key,
                 )
@@ -118,7 +120,7 @@ pub async fn run_order_sync_once(
                         )),
                     )?;
                     for order_id in &result.order_id_list {
-                        save_synced_order(&conn, &shop.shop_id, order_id, 20)?;
+                        save_synced_order(&conn, &shop.shop_id, order_id, order_status)?;
                         synced_orders += 1;
                     }
                     insert_task_log(
@@ -127,8 +129,9 @@ pub async fn run_order_sync_once(
                         Some(&shop.shop_id),
                         "info",
                         &format!(
-                            "店铺 {} 同步待发货订单 {} 个",
+                            "店铺 {} 同步订单状态 {} 共 {} 个",
                             shop.shop_name,
+                            order_status,
                             result.order_id_list.len()
                         ),
                         Some(&serde_json::json!({

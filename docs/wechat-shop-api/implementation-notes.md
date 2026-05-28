@@ -40,7 +40,7 @@
 - 类目预检阶段使用 `POST /channels/ec/product/categoryprecheck`，任务项通过后进入 `category_prechecked`；如果微信返回 `all_pass=false`，必须把 `fail_reasons` 写入任务项失败原因。
 - 本地已缓存类目详情时，素材上传前要用 `product_attr_list` 和 `sale_attr_list` 的必填项校验 `metadata.wechat_attrs` 与 `skus[].specs`/`sku_attrs`；缺失时任务项失败并提示 AI/外部系统补齐。
 - `CATEGORY_ATTRS_NEED_AI_FILL` 失败项先走 `run_publish_attribute_fill_once`：外部 AI 可写入 `metadata.ai_attr_suggestions`，系统也会生成 `publish_attribute_suggestions.prompt_json`；只有高置信补齐才写回 `metadata.wechat_add_product_payload` 并重新进入类目预检。
-- 可选 AI provider 只用于生成属性候选值：默认关闭，桌面端配置 OpenAI-compatible `base_url/model/API Key` 后，`run_publish_ai_attribute_suggestions_once` 会读取 `publish_attribute_suggestions.prompt_json`、调用模型返回 JSON，再复用本地允许值校验和高置信应用规则。
+- 可选 AI provider 只用于生成属性候选值：默认关闭，桌面端选择 Pi 内置 provider 或 Custom provider 后，`run_publish_ai_attribute_suggestions_once` 会读取 `publish_attribute_suggestions.prompt_json`、调用模型返回 JSON，再复用本地允许值校验和高置信应用规则。Custom provider 按 Pi `models.json` 语义配置 `base_url/api/model`。
 - AI provider API Key 按店铺密钥同等级加密保存；日志、外部 API 审计、通知、任务错误和文档样例不得出现 API Key、完整 prompt 或完整模型响应。
 - AI 输出不能替代微信官方类目详情、发品规则和 `categoryprecheck`，只能把可验证候选值写入 `publish_attribute_suggestions` 或高置信写回发品草稿；写回后必须重新跑类目预检。
 - 人工采纳属性建议使用 `apply_publish_attribute_suggestions`，支持 SKU 级销售属性映射；采纳后只更新 `metadata.wechat_add_product_payload` 并重新校验缺失属性，不能直接进入素材上传或发布成功。

@@ -26,6 +26,12 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": {
+      "../scripts/taobao_collector.py": "scripts/taobao_collector.py",
+      "../scripts/taobao_captcha/*.py": "scripts/taobao_captcha/",
+      "../scripts/pi_agents/*.mjs": "scripts/pi_agents/",
+      "../requirements.txt": "requirements.txt"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -1472,7 +1472,7 @@ async fn run_order_sync_handler(
         "POST",
         "/api/runners/order-sync",
         Some("lookback_days=1 page_size=100".to_string()),
-        |app| commands::run_order_sync_once(app, Some(1), Some(100)),
+        |app| commands::run_order_sync_once(app, Some(1), Some(100), None),
     )
     .await
 }

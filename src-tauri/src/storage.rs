@@ -256,6 +256,37 @@ fn migrate(conn: &Connection) -> AppResult<()> {
           FOREIGN KEY(order_id) REFERENCES orders(id)
         );
 
+        CREATE TABLE IF NOT EXISTS order_price_adjustment_jobs (
+          id TEXT PRIMARY KEY,
+          request_id TEXT NOT NULL UNIQUE,
+          status TEXT NOT NULL,
+          accepted_order_count INTEGER NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS order_price_adjustment_items (
+          id TEXT PRIMARY KEY,
+          job_id TEXT NOT NULL,
+          shop_id TEXT NOT NULL,
+          shop_name TEXT NOT NULL,
+          order_id TEXT,
+          wechat_order_id TEXT NOT NULL,
+          wechat_status INTEGER,
+          change_order_infos_json TEXT NOT NULL,
+          change_express INTEGER NOT NULL DEFAULT 0,
+          express_fee_cents INTEGER,
+          note TEXT,
+          status TEXT NOT NULL,
+          error_code TEXT,
+          error_summary TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          submitted_at TEXT,
+          FOREIGN KEY(job_id) REFERENCES order_price_adjustment_jobs(id),
+          FOREIGN KEY(order_id) REFERENCES orders(id)
+        );
+
         CREATE TABLE IF NOT EXISTS purchase_tasks (
           id TEXT PRIMARY KEY,
           order_id TEXT NOT NULL,
@@ -560,6 +591,54 @@ fn migrate(conn: &Connection) -> AppResult<()> {
           FOREIGN KEY(shop_id) REFERENCES shops(id)
         );
 
+        CREATE TABLE IF NOT EXISTS agent_skill_settings (
+          name TEXT PRIMARY KEY,
+          enabled INTEGER NOT NULL,
+          model TEXT,
+          temperature REAL,
+          last_test_status TEXT,
+          last_test_summary TEXT,
+          last_test_at TEXT,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS agent_runs (
+          id TEXT PRIMARY KEY,
+          skill_name TEXT NOT NULL,
+          skill_version TEXT NOT NULL,
+          scene TEXT NOT NULL,
+          source_type TEXT NOT NULL,
+          source_id TEXT NOT NULL,
+          shop_id TEXT,
+          status TEXT NOT NULL,
+          provider_type TEXT,
+          model TEXT,
+          temperature REAL,
+          input_summary TEXT NOT NULL,
+          input_snapshot_json TEXT,
+          output_json TEXT,
+          validated_output_json TEXT,
+          tool_calls_json TEXT,
+          decision TEXT,
+          error_code TEXT,
+          error_summary TEXT,
+          started_at TEXT,
+          finished_at TEXT,
+          duration_ms INTEGER,
+          created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS agent_run_events (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          event_type TEXT NOT NULL,
+          level TEXT NOT NULL,
+          message TEXT NOT NULL,
+          data_json TEXT,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY(run_id) REFERENCES agent_runs(id)
+        );
+
         CREATE TABLE IF NOT EXISTS collection_tasks (
           id TEXT PRIMARY KEY,
           title TEXT NOT NULL,
@@ -582,6 +661,14 @@ fn migrate(conn: &Connection) -> AppResult<()> {
     ensure_column(conn, "shops", "is_local_life", "INTEGER")?;
     ensure_column(conn, "shops", "open_timestamp", "INTEGER")?;
     ensure_column(conn, "shops", "last_health_check_at", "TEXT")?;
+    ensure_column(conn, "collection_tasks", "published_shop_ids", "TEXT")?;
+    ensure_column(conn, "collection_tasks", "publish_job_ids", "TEXT")?;
+    ensure_column(conn, "collection_tasks", "published_at", "TEXT")?;
+    ensure_column(conn, "collection_tasks", "review_status", "TEXT")?;
+    ensure_column(conn, "collection_tasks", "review_summary", "TEXT")?;
+    ensure_column(conn, "collection_tasks", "reviewed_data", "TEXT")?;
+    ensure_column(conn, "collection_tasks", "review_result_json", "TEXT")?;
+    ensure_column(conn, "collection_tasks", "reviewed_at", "TEXT")?;
     ensure_column(conn, "publish_job_items", "wechat_status", "INTEGER")?;
     ensure_column(conn, "publish_job_items", "wechat_edit_status", "INTEGER")?;
     ensure_column(conn, "publish_job_items", "last_status_sync_at", "TEXT")?;
@@ -659,6 +746,12 @@ fn migrate(conn: &Connection) -> AppResult<()> {
         CREATE INDEX IF NOT EXISTS idx_order_items_order_id
           ON order_items(order_id);
 
+        CREATE INDEX IF NOT EXISTS idx_order_price_adjustment_items_job_status
+          ON order_price_adjustment_items(job_id, status);
+
+        CREATE INDEX IF NOT EXISTS idx_order_price_adjustment_items_order
+          ON order_price_adjustment_items(shop_id, wechat_order_id);
+
         CREATE INDEX IF NOT EXISTS idx_purchase_tasks_status
           ON purchase_tasks(status);
 
@@ -729,6 +822,18 @@ fn migrate(conn: &Connection) -> AppResult<()> {
 
         CREATE INDEX IF NOT EXISTS idx_publish_attribute_suggestions_item
           ON publish_attribute_suggestions(item_id, applied);
+
+        CREATE INDEX IF NOT EXISTS idx_agent_runs_created_at
+          ON agent_runs(created_at);
+
+        CREATE INDEX IF NOT EXISTS idx_agent_runs_scene_status
+          ON agent_runs(scene, status, created_at);
+
+        CREATE INDEX IF NOT EXISTS idx_agent_runs_source
+          ON agent_runs(source_type, source_id);
+
+        CREATE INDEX IF NOT EXISTS idx_agent_run_events_run
+          ON agent_run_events(run_id, created_at);
 
         CREATE INDEX IF NOT EXISTS idx_wechat_categories_shop_name
           ON wechat_categories(shop_id, name);

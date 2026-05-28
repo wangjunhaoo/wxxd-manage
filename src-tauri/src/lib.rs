@@ -9,12 +9,14 @@ mod wechat;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             storage::initialize(&app.handle())?;
             if let Err(error) = commands::run_startup_database_backup(app.handle().clone()) {
                 eprintln!("启动自动备份失败：{error}");
             }
             local_api::start(app.handle().clone());
+            commands::trigger_collection_worker(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -29,6 +31,11 @@ pub fn run() {
             commands::get_ai_provider_settings,
             commands::save_ai_provider_settings,
             commands::test_ai_provider,
+            commands::list_agent_skills,
+            commands::list_agent_runs,
+            commands::list_agent_run_events,
+            commands::save_agent_skill_settings,
+            commands::test_agent_skill,
             commands::list_shop_groups,
             commands::list_shops,
             commands::create_shop_group,
@@ -41,8 +48,12 @@ pub fn run() {
             commands::sync_category_rules,
             commands::create_external_publish_job,
             commands::get_publish_job,
+            commands::get_publish_pricing_strategy,
+            commands::save_publish_pricing_strategy,
             commands::create_price_update_job,
             commands::get_price_update_job,
+            commands::create_order_price_adjustment_job,
+            commands::get_order_price_adjustment_job,
             commands::list_task_runs,
             commands::get_automation_settings,
             commands::set_automation_settings,
@@ -79,6 +90,8 @@ pub fn run() {
             commands::list_inventory_risks,
             commands::run_inventory_risk_scan_once,
             commands::list_product_sales_analysis,
+            commands::list_product_management_items,
+            commands::list_order_management_items,
             commands::get_delivery_settings,
             commands::list_delivery_companies,
             commands::sync_delivery_companies,
@@ -90,6 +103,7 @@ pub fn run() {
             commands::run_price_update_precheck_once,
             commands::run_price_update_submit_once,
             commands::run_price_update_confirm_once,
+            commands::run_order_price_adjustment_once,
             commands::run_publish_tasks_once,
             commands::run_publish_attribute_fill_once,
             commands::run_publish_ai_attribute_suggestions_once,
@@ -105,9 +119,17 @@ pub fn run() {
             commands::import_excel_for_collection,
             commands::open_taobao_login,
             commands::get_collection_tasks,
+            commands::run_collection_review_once,
+            commands::confirm_collection_review,
+            commands::reset_collection_review,
+            commands::create_publish_job_from_collection_tasks,
             commands::retry_collection_task,
+            commands::resume_collection_tasks,
             commands::clear_collection_tasks,
             commands::check_taobao_login_state,
+            commands::get_taobao_access_limit_state,
+            commands::clear_taobao_access_limit_state,
+            commands::mark_taobao_access_limited,
             commands::test_taobao_collect
         ])
         .run(tauri::generate_context!())

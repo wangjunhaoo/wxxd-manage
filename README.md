@@ -20,7 +20,7 @@
 - 类目规则缓存：按店铺同步微信类目树、单类目详情、商品发布规则、发货方式规则和运费模板 ID
 - 微信类目预检：素材上传前调用 `categoryprecheck`，并用本地类目详情缓存检查必填商品/销售属性
 - 必填属性补齐：对 `CATEGORY_ATTRS_NEED_AI_FILL` 失败项生成 `publish_attribute_suggestions`，支持读取 `metadata.ai_attr_suggestions`，并对单选值、SKU 规格同义词和安全标题规则做高置信自动写回
-- AI Provider 设置页：默认关闭，支持配置 OpenAI-compatible `base_url/model/API Key`，API Key 加密保存并可试连；启用后 `run_publish_ai_attribute_suggestions_once` 可根据 `prompt_json` 生成属性候选值
+- AI Agent 设置页：默认关闭，统一使用 `pi-coding-agent` 调用 OpenAI-compatible 模型网关，API Key 加密保存且可选，采集审查和属性补齐复用同一套技能配置
 - 属性建议确认：支持查看待确认/已采纳建议，展示建议值、SKU 级映射、允许值、来源和置信度，并可单条或批量人工采纳
 - 铺货任务详情可按商品直接查看当前任务的属性建议，并支持在商品折叠项内采纳当前商品建议
 - 微信素材上传命令：`run_publish_asset_uploads_once`
@@ -53,6 +53,20 @@
 ```bash
 npm install --include=dev
 ```
+
+安装 Python 采集依赖：
+
+```bash
+bash scripts/setup_python_env.sh
+```
+
+脚本会创建项目内虚拟环境 `.venv`，并安装淘宝采集运行时依赖，
+避免 macOS/Homebrew Python 的 `externally-managed-environment` 限制。桌面端会优先使用
+这个虚拟环境里的 Python。
+
+AI Agent 统一使用 `@mariozechner/pi-coding-agent`。设置页的 Base URL 按
+OpenAI-compatible `/chat/completions` 网关填写，例如 `http://127.0.0.1:8080/v1`；
+API Key 可留空用于无鉴权本地网关，保存后仍会加密存储。
 
 启动前端预览：
 

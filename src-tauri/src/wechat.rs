@@ -14,6 +14,7 @@ const CATEGORY_PRECHECK_URL: &str =
     "https://api.weixin.qq.com/channels/ec/product/categoryprecheck";
 const ORDER_LIST_URL: &str = "https://api.weixin.qq.com/channels/ec/order/list/get";
 const ORDER_GET_URL: &str = "https://api.weixin.qq.com/channels/ec/order/get";
+const ORDER_PRICE_UPDATE_URL: &str = "https://api.weixin.qq.com/channels/ec/order/price/update";
 const SEND_DELIVERY_URL: &str = "https://api.weixin.qq.com/channels/ec/order/delivery/send";
 const DELIVERY_COMPANY_LIST_URL: &str =
     "https://api.weixin.qq.com/channels/ec/order/deliverycompanylist/new/get";
@@ -143,6 +144,12 @@ pub struct OrderGetCall {
 }
 
 #[derive(Debug, Serialize)]
+pub struct OrderPriceUpdateCall {
+    pub meta: WechatCallMeta,
+    pub result: WechatCallResult<OrderPriceUpdateResult>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct SendDeliveryCall {
     pub meta: WechatCallMeta,
     pub result: WechatCallResult<SendDeliveryResult>,
@@ -220,6 +227,11 @@ pub struct OrderListResult {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct OrderGetResult {
     pub order: serde_json::Value,
+    pub raw_payload: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct OrderPriceUpdateResult {
     pub raw_payload: serde_json::Value,
 }
 
@@ -424,6 +436,30 @@ struct OrderGetResponse {
     errcode: i64,
     errmsg: String,
     order: Option<serde_json::Value>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+struct OrderPriceUpdateRequest<'a> {
+    order_id: &'a str,
+    change_order_infos: &'a [OrderPriceUpdateInfo],
+    change_express: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    express_fee: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OrderPriceUpdateInfo {
+    pub product_id: String,
+    pub sku_id: String,
+    pub change_price: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct OrderPriceUpdateResponse {
+    errcode: i64,
+    errmsg: String,
     #[serde(flatten)]
     extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -1141,6 +1177,58 @@ impl WechatShopClient {
         Ok(OrderGetCall {
             meta: WechatCallMeta {
                 endpoint: ORDER_GET_URL,
+                method: "POST",
+            },
+            result,
+        })
+    }
+
+    pub async fn change_order_price(
+        &self,
+        access_token: &str,
+        order_id: &str,
+        change_order_infos: &[OrderPriceUpdateInfo],
+        change_express: bool,
+        express_fee: Option<i64>,
+    ) -> AppResult<OrderPriceUpdateCall> {
+        let mut url = Url::parse(ORDER_PRICE_UPDATE_URL)
+            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
+        url.query_pairs_mut()
+            .append_pair("access_token", access_token);
+
+        let response = self
+            .http
+            .post(url)
+            .json(&OrderPriceUpdateRequest {
+                order_id,
+                change_order_infos,
+                change_express,
+                express_fee,
+            })
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<OrderPriceUpdateResponse>()
+            .await?;
+
+        let result = if response.errcode == 0 {
+            let mut raw_payload = serde_json::Map::new();
+            raw_payload.insert("errcode".to_string(), serde_json::json!(response.errcode));
+            raw_payload.insert("errmsg".to_string(), serde_json::json!(response.errmsg));
+            raw_payload.extend(response.extra);
+            WechatCallResult::Success(OrderPriceUpdateResult {
+                raw_payload: serde_json::Value::Object(raw_payload),
+            })
+        } else {
+            WechatCallResult::ApiError(WechatApiError {
+                errcode: response.errcode,
+                errmsg: response.errmsg,
+            })
+        };
+
+        Ok(OrderPriceUpdateCall {
+            meta: WechatCallMeta {
+                endpoint: ORDER_PRICE_UPDATE_URL,
                 method: "POST",
             },
             result,

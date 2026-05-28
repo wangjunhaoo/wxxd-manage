@@ -1,0 +1,51 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "title": {
+      "type": ["string", "null"]
+    },
+    "remove_image_urls": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "url": { "type": "string" },
+          "reason": { "type": "string" },
+          "confidence": { "type": "integer", "minimum": 0, "maximum": 100 }
+        },
+        "required": ["url", "reason", "confidence"]
+      }
+    },
+    "category": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "category_ids": {
+          "type": "array",
+          "items": { "type": "integer" },
+          "minItems": 3
+        },
+        "category_path": { "type": "string" },
+        "confidence": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "reason": { "type": "string" }
+      },
+      "required": ["category_ids", "category_path", "confidence", "reason"]
+    },
+    "needs_human_review": { "type": "boolean" },
+    "notes": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "confidence": { "type": "integer", "minimum": 0, "maximum": 100 }
+  },
+  "required": [
+    "title",
+    "remove_image_urls",
+    "category",
+    "needs_human_review",
+    "notes",
+    "confidence"
+  ]
+}

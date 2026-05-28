@@ -22,7 +22,7 @@ pub fn run_publish_tasks_once(
     let mut failed_items = 0i64;
     let tx = conn.transaction()?;
 
-    for item in pending_items {
+    for mut item in pending_items {
         job_ids.insert(item.job_id.clone());
         let started_at = now_shanghai();
         tx.execute(
@@ -44,7 +44,7 @@ pub fn run_publish_tasks_once(
             None,
         )?;
 
-        let product = match serde_json::from_str::<ExternalProductInput>(&item.raw_payload) {
+        let mut product = match serde_json::from_str::<ExternalProductInput>(&item.raw_payload) {
             Ok(product) => product,
             Err(error) => {
                 mark_publish_item_failed(
@@ -57,6 +57,17 @@ pub fn run_publish_tasks_once(
                 continue;
             }
         };
+
+        if let Some(summary) = ensure_wechat_category_metadata(&tx, &mut item, &mut product)? {
+            insert_task_log(
+                &tx,
+                &item.job_id,
+                Some(&item.item_id),
+                "info",
+                &summary,
+                None,
+            )?;
+        }
 
         if let Some((code, summary)) = precheck_publish_item(&tx, &item, &product)? {
             mark_publish_item_failed(&tx, &item, code, &summary)?;
@@ -132,9 +143,9 @@ pub fn run_publish_attribute_fill_once(
     let mut failed_items = 0i64;
     let mut generated_suggestions = 0i64;
 
-    for item in items {
+    for mut item in items {
         job_ids.insert(item.job_id.clone());
-        let product = match serde_json::from_str::<ExternalProductInput>(&item.raw_payload) {
+        let mut product = match serde_json::from_str::<ExternalProductInput>(&item.raw_payload) {
             Ok(product) => product,
             Err(error) => {
                 failed_items += 1;
@@ -149,10 +160,22 @@ pub fn run_publish_attribute_fill_once(
                 continue;
             }
         };
+        let inferred_category = ensure_wechat_category_metadata(&tx, &mut item, &mut product)?;
+        if let Some(summary) = &inferred_category {
+            insert_task_log(
+                &tx,
+                &item.job_id,
+                Some(&item.item_id),
+                "info",
+                summary,
+                None,
+            )?;
+        }
         let mut draft = match resolve_add_product_base_payload(&product) {
             Ok(draft) => draft,
             Err(error) => {
                 failed_items += 1;
+                conn_update_publish_item_error(&tx, &item, "WECHAT_PAYLOAD_NEEDS_AI_FILL", &error)?;
                 insert_task_log(
                     &tx,
                     &item.job_id,
@@ -178,6 +201,27 @@ pub fn run_publish_attribute_fill_once(
         };
         let Some(raw_detail) = load_cached_category_detail_payload(&tx, &item.shop_id, cat_id)?
         else {
+            if inferred_category.is_some() {
+                persist_generated_add_product_payload(&tx, &item, &draft)?;
+                let summary = "已补齐微信类目，等待执行微信类目预检";
+                set_publish_item_status_in_conn(
+                    &tx,
+                    &item,
+                    "ready_to_publish",
+                    None,
+                    Some(summary),
+                )?;
+                insert_task_log(
+                    &tx,
+                    &item.job_id,
+                    Some(&item.item_id),
+                    "info",
+                    summary,
+                    Some(&serde_json::json!({ "cat_id": cat_id })),
+                )?;
+                auto_filled_items += 1;
+                continue;
+            }
             failed_items += 1;
             let summary = "本地未缓存该店铺类目详情，无法生成必填属性补齐建议；请先同步类目规则";
             conn_update_publish_item_error(&tx, &item, "CATEGORY_DETAIL_CACHE_MISSING", summary)?;
@@ -295,16 +339,7 @@ pub async fn run_publish_ai_attribute_suggestions_once(
     app: AppHandle,
     limit: Option<i64>,
 ) -> AppResult<PublishAttributeFillBatchResult> {
-    let Some(ai_config) = load_optional_ai_provider_config(&app)? else {
-        return Ok(PublishAttributeFillBatchResult {
-            processed_jobs: 0,
-            processed_items: 0,
-            auto_filled_items: 0,
-            suggestion_only_items: 0,
-            failed_items: 0,
-            generated_suggestions: 0,
-        });
-    };
+    let ai_config = load_optional_ai_provider_config(&app)?;
     let limit = limit.unwrap_or(20).clamp(1, 100);
     let items = {
         let conn = open_connection(&app)?;
@@ -327,9 +362,9 @@ pub async fn run_publish_ai_attribute_suggestions_once(
     let mut failed_items = 0i64;
     let mut generated_suggestions = 0i64;
 
-    for item in items {
+    for mut item in items {
         job_ids.insert(item.job_id.clone());
-        let product = match serde_json::from_str::<ExternalProductInput>(&item.raw_payload) {
+        let mut product = match serde_json::from_str::<ExternalProductInput>(&item.raw_payload) {
             Ok(product) => product,
             Err(error) => {
                 failed_items += 1;
@@ -338,22 +373,43 @@ pub async fn run_publish_ai_attribute_suggestions_once(
                     &item.job_id,
                     Some(&item.item_id),
                     "error",
-                    &format!("AI 属性补齐失败：商品原始数据无法解析：{error}"),
+                    &format!("类目/属性补齐失败：商品原始数据无法解析：{error}"),
                     None,
                 )?;
                 continue;
             }
         };
+        let inferred_category = {
+            let conn = open_connection(&app)?;
+            ensure_wechat_category_metadata(&conn, &mut item, &mut product)?
+        };
+        if let Some(summary) = &inferred_category {
+            insert_task_log_for_app(
+                &app,
+                &item.job_id,
+                Some(&item.item_id),
+                "info",
+                summary,
+                None,
+            )?;
+        }
         let mut draft = match resolve_add_product_base_payload(&product) {
             Ok(draft) => draft,
             Err(error) => {
                 failed_items += 1;
+                let conn = open_connection(&app)?;
+                conn_update_publish_item_error(
+                    &conn,
+                    &item,
+                    "WECHAT_PAYLOAD_NEEDS_AI_FILL",
+                    &error,
+                )?;
                 insert_task_log_for_app(
                     &app,
                     &item.job_id,
                     Some(&item.item_id),
                     "error",
-                    &format!("AI 属性补齐失败：{error}"),
+                    &format!("类目/属性补齐失败：{error}"),
                     None,
                 )?;
                 continue;
@@ -366,7 +422,7 @@ pub async fn run_publish_ai_attribute_suggestions_once(
                 &item.job_id,
                 Some(&item.item_id),
                 "error",
-                "AI 属性补齐失败：缺少微信叶子类目 ID",
+                "类目/属性补齐失败：缺少微信叶子类目 ID",
                 None,
             )?;
             continue;
@@ -376,6 +432,29 @@ pub async fn run_publish_ai_attribute_suggestions_once(
             load_cached_category_detail_payload(&conn, &item.shop_id, cat_id)?
         };
         let Some(raw_detail) = raw_detail else {
+            if inferred_category.is_some() {
+                let conn = open_connection(&app)?;
+                persist_generated_add_product_payload(&conn, &item, &draft)?;
+                let summary = "已补齐微信类目，等待执行微信类目预检";
+                set_publish_item_status_in_conn(
+                    &conn,
+                    &item,
+                    "ready_to_publish",
+                    None,
+                    Some(summary),
+                )?;
+                insert_task_log(
+                    &conn,
+                    &item.job_id,
+                    Some(&item.item_id),
+                    "info",
+                    summary,
+                    Some(&serde_json::json!({ "cat_id": cat_id })),
+                )?;
+                recompute_publish_job(&conn, &item.job_id)?;
+                auto_filled_items += 1;
+                continue;
+            }
             failed_items += 1;
             continue;
         };
@@ -404,20 +483,132 @@ pub async fn run_publish_ai_attribute_suggestions_once(
             &raw_detail,
             &requirement_check,
         );
-        let ai_generated = match fill_attribute_plan_with_ai(&ai_config, &mut plan).await {
-            Ok(count) => count,
-            Err(error) => {
-                failed_items += 1;
-                insert_task_log_for_app(
-                    &app,
-                    &item.job_id,
-                    Some(&item.item_id),
-                    "error",
-                    &format!("AI 属性补齐失败：{error}"),
-                    None,
-                )?;
-                continue;
+        let requires_ai = plan
+            .suggestions
+            .iter()
+            .any(|suggestion| !suggestion.applied && suggestion.source == "needs_ai");
+        let mut agent_run_id = None::<String>;
+        let mut agent_started = None::<std::time::Instant>;
+        if requires_ai {
+            let input_snapshot = serde_json::json!({
+                "job_id": &item.job_id,
+                "item_id": &item.item_id,
+                "shop_id": &item.shop_id,
+                "external_product_id": &item.external_product_id,
+                "cat_id": cat_id,
+                "missing_product_attrs": &requirement_check.missing_product_attrs,
+                "missing_sale_attrs": &requirement_check.missing_sale_attrs,
+                "suggestions": attribute_suggestions_json(&plan.suggestions)
+            });
+            let input_summary = format!(
+                "属性建议 item_id={} 商品属性缺失={} 销售属性缺失={}",
+                item.item_id,
+                requirement_check.missing_product_attrs.len(),
+                requirement_check.missing_sale_attrs.len()
+            );
+            let conn = open_connection(&app)?;
+            agent_run_id = Some(create_agent_run_for_skill(
+                &conn,
+                &ATTRIBUTE_SUGGESTION_SKILL,
+                "publish_attribute",
+                "publish_item",
+                &item.item_id,
+                Some(&item.shop_id),
+                ai_config.as_ref(),
+                &input_summary,
+                Some(&input_snapshot),
+            )?);
+            agent_started = Some(std::time::Instant::now());
+        }
+        let ai_generated = if let Some(ai_config) = ai_config.as_ref() {
+            match fill_attribute_plan_with_ai(&app, ai_config, &mut plan).await {
+                Ok(count) => {
+                    if let Some(run_id) = agent_run_id.as_deref() {
+                        let conn = open_connection(&app)?;
+                        let output = attribute_suggestions_json(&plan.suggestions);
+                        finish_agent_run(
+                            &conn,
+                            run_id,
+                            AgentRunFinish {
+                                status: if plan.can_auto_apply() {
+                                    "succeeded"
+                                } else {
+                                    "needs_review"
+                                },
+                                output: None,
+                                validated_output: Some(&output),
+                                tool_calls: None,
+                                decision: Some(if plan.can_auto_apply() {
+                                    "ready_to_publish"
+                                } else {
+                                    "needs_review"
+                                }),
+                                error_code: None,
+                                error_summary: None,
+                                duration_ms: agent_started.map(|started| {
+                                    started.elapsed().as_millis().min(i64::MAX as u128) as i64
+                                }),
+                            },
+                        )?;
+                    }
+                    count
+                }
+                Err(error) => {
+                    if let Some(run_id) = agent_run_id.as_deref() {
+                        let conn = open_connection(&app)?;
+                        let error_summary = error.to_string();
+                        finish_agent_run(
+                            &conn,
+                            run_id,
+                            AgentRunFinish {
+                                status: "failed",
+                                output: None,
+                                validated_output: Some(&attribute_suggestions_json(
+                                    &plan.suggestions,
+                                )),
+                                tool_calls: None,
+                                decision: Some("failed"),
+                                error_code: Some(agent_error_code(&error)),
+                                error_summary: Some(&error_summary),
+                                duration_ms: agent_started.map(|started| {
+                                    started.elapsed().as_millis().min(i64::MAX as u128) as i64
+                                }),
+                            },
+                        )?;
+                    }
+                    failed_items += 1;
+                    insert_task_log_for_app(
+                        &app,
+                        &item.job_id,
+                        Some(&item.item_id),
+                        "error",
+                        &format!("AI 属性补齐失败：{error}"),
+                        None,
+                    )?;
+                    continue;
+                }
             }
+        } else {
+            if let Some(run_id) = agent_run_id.as_deref() {
+                let conn = open_connection(&app)?;
+                finish_agent_run(
+                    &conn,
+                    run_id,
+                    AgentRunFinish {
+                        status: "blocked",
+                        output: None,
+                        validated_output: Some(&attribute_suggestions_json(&plan.suggestions)),
+                        tool_calls: None,
+                        decision: Some("needs_review"),
+                        error_code: Some("PROVIDER_NOT_CONFIGURED"),
+                        error_summary: Some("未启用 AI provider，属性建议仅保留为人工确认项"),
+                        duration_ms: agent_started.map(|started| {
+                            started.elapsed().as_millis().min(i64::MAX as u128) as i64
+                        }),
+                    },
+                )?;
+            }
+            0
         };
         generated_suggestions += ai_generated;
 
@@ -428,10 +619,14 @@ pub async fn run_publish_ai_attribute_suggestions_once(
         if plan.can_auto_apply() {
             apply_attribute_fill_plan_to_payload(&mut draft.payload, &plan)?;
             persist_filled_add_product_payload(&conn, &item, &draft.payload, &plan)?;
-            let summary = format!(
-                "AI 已生成并自动补齐 {} 个必填属性，等待重新执行微信类目预检",
-                ai_generated
-            );
+            let summary = if ai_generated > 0 {
+                format!(
+                    "AI 已生成并自动补齐 {} 个必填属性，等待重新执行微信类目预检",
+                    ai_generated
+                )
+            } else {
+                "已按本地规则补齐必填属性，等待重新执行微信类目预检".to_string()
+            };
             set_publish_item_status_in_conn(
                 &conn,
                 &item,
@@ -460,7 +655,7 @@ pub async fn run_publish_ai_attribute_suggestions_once(
                 "publish_item",
                 &item.item_id,
                 Some(&item.shop_id),
-                "AI 已生成铺货属性建议，仍需人工确认",
+                "铺货属性建议仍需人工确认",
                 &summary,
                 Some(&serde_json::json!({
                     "job_id": &item.job_id,

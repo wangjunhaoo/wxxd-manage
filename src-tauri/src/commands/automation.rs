@@ -102,7 +102,7 @@ pub async fn run_operational_automation_once(
     };
 
     if settings.order_sync_enabled {
-        match run_order_sync_once(app.clone(), Some(1), Some(100)).await {
+        match run_order_sync_once(app.clone(), Some(1), Some(100), None).await {
             Ok(step_result) => {
                 result
                     .executed_steps

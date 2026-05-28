@@ -1,0 +1,35 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "value": {
+      "type": ["string", "null"]
+    },
+    "sku_values": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "sku_index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": ["sku_index", "value"]
+      }
+    },
+    "confidence": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "reason": {
+      "type": "string"
+    }
+  },
+  "required": ["value", "sku_values", "confidence", "reason"]
+}

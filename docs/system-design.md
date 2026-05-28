@@ -470,8 +470,8 @@ Tauri 命令按资源建模，前端只调用命令，不直接操作数据库�
 - `get_automation_settings`：读取任务中心自动推进开关。
 - `set_automation_settings`：保存自动推进步骤开关。
 - `run_operational_automation_once`：串联执行一轮订单同步、订单详情、售后同步、采购任务、发货提交、铺货状态同步、商品上架和改价确认；单步失败只写入步骤错误并继续。
-- `get_ai_provider_settings`：读取 AI provider 开关、base URL、模型、temperature 和密钥摘要。
-- `save_ai_provider_settings`：保存 OpenAI-compatible AI provider 配置，API Key 加密入库，默认关闭。
+- `get_ai_provider_settings`：读取 AI provider 开关、Pi provider id、Custom API、base URL、模型、temperature 和密钥摘要。
+- `save_ai_provider_settings`：保存 Pi provider 或 Custom provider 配置，API Key 按 provider 加密入库，默认关闭。
 - `test_ai_provider`：用当前配置执行一次 JSON 连通性测试，不记录 API Key 或完整响应。
 - `list_database_backups`：查看本地 `backups/` 下的数据库备份、大小、SHA-256 和完整性校验结果。
 - `create_database_backup`：执行 WAL checkpoint 后创建 SQLite 备份并校验。
@@ -677,7 +677,7 @@ Tauri 命令按资源建模，前端只调用命令，不直接操作数据库�
 
 - `app_secret`、`access_token`、供应商 API key、AI provider API Key 必须加密存储。
 - Tauri 桌面端优先使用系统 Keychain 保存主密钥；SQLite 中只保存密文或密钥引用。
-- AI provider 默认关闭，只允许桌面端显式配置 OpenAI-compatible `base_url/model/API Key` 后启用；日志、外部 API 审计和错误响应不得输出 API Key、完整 prompt 或完整模型响应。
+- AI provider 默认关闭，只允许桌面端显式选择 Pi provider 或 Custom provider 后启用；Custom provider 需填写 `base_url/model/API Key`（本地无鉴权网关可留空 Key），日志、外部 API 审计和错误响应不得输出 API Key、完整 prompt 或完整模型响应。
 - 收件人信息只在履约时解密，解密记录必须包含操作者、原因、订单和时间。
 - 日志和错误响应中禁止出现密钥、token、收件人完整手机号、完整地址。
 

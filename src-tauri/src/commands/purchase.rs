@@ -532,6 +532,35 @@ pub fn export_supplier_agent_tasks(
         .iter()
         .map(supplier_agent_task_json)
         .collect::<Vec<_>>();
+    let agent_started = std::time::Instant::now();
+    let agent_input_snapshot = serde_json::json!({
+        "status": status.as_deref().unwrap_or("all"),
+        "format": &format,
+        "exported_count": records.len(),
+        "sensitive_fields": "excluded"
+    });
+    let agent_input_summary = format!(
+        "供应商 Agent 导出 status={} format={} count={}",
+        status.as_deref().unwrap_or("all"),
+        format,
+        records.len()
+    );
+    let agent_run_id = create_agent_run(
+        &conn,
+        AgentRunCreate {
+            skill_name: supplier_bridge_skill_name(),
+            skill_version: supplier_bridge_skill_version(),
+            scene: "supplier_bridge",
+            source_type: "purchase_task_export",
+            source_id: status.as_deref().unwrap_or("all"),
+            shop_id: None,
+            provider_type: None,
+            model: None,
+            temperature: None,
+            input_summary: &agent_input_summary,
+            input_snapshot: Some(&agent_input_snapshot),
+        },
+    )?;
     let export_dir = database_path(&app)?
         .parent()
         .ok_or_else(|| AppError::Validation("无法定位应用数据目录".to_string()))?
@@ -568,12 +597,32 @@ pub fn export_supplier_agent_tasks(
     };
     fs::write(&file_path, content)?;
 
-    Ok(SupplierAgentExportResult {
+    let result = SupplierAgentExportResult {
         file_path: file_path.display().to_string(),
         exported_count: rows.len() as i64,
         format,
         sensitive_fields: "excluded".to_string(),
-    })
+    };
+    finish_agent_run(
+        &conn,
+        &agent_run_id,
+        AgentRunFinish {
+            status: "succeeded",
+            output: None,
+            validated_output: Some(&serde_json::json!({
+                "file_path": &result.file_path,
+                "exported_count": result.exported_count,
+                "format": &result.format,
+                "sensitive_fields": &result.sensitive_fields
+            })),
+            tool_calls: None,
+            decision: Some("success"),
+            error_code: None,
+            error_summary: None,
+            duration_ms: Some(agent_started.elapsed().as_millis().min(i64::MAX as u128) as i64),
+        },
+    )?;
+    Ok(result)
 }
 
 #[tauri::command]
@@ -620,6 +669,36 @@ pub fn apply_supplier_agent_results(
     request: SupplierAgentApplyRequest,
 ) -> AppResult<SupplierAgentApplyResult> {
     let records = parse_supplier_agent_result_records(&request.raw_results)?;
+    let agent_started = std::time::Instant::now();
+    let conn = open_connection(&app)?;
+    let agent_input_snapshot = serde_json::json!({
+        "record_count": records.len(),
+        "dry_run": request.dry_run,
+        "continue_on_error": request.continue_on_error,
+        "allowed_actions": ["shipment", "issue", "mapping"],
+        "sensitive_fields": "excluded"
+    });
+    let agent_input_summary = format!(
+        "供应商 Agent 结果{} record_count={}",
+        if request.dry_run { "干跑" } else { "写回" },
+        records.len()
+    );
+    let agent_run_id = create_agent_run(
+        &conn,
+        AgentRunCreate {
+            skill_name: supplier_bridge_skill_name(),
+            skill_version: supplier_bridge_skill_version(),
+            scene: "supplier_bridge",
+            source_type: "supplier_agent_results",
+            source_id: if request.dry_run { "dry_run" } else { "apply" },
+            shop_id: None,
+            provider_type: None,
+            model: None,
+            temperature: None,
+            input_summary: &agent_input_summary,
+            input_snapshot: Some(&agent_input_snapshot),
+        },
+    )?;
     let mut results = Vec::new();
 
     for (index, record) in records.iter().enumerate() {
@@ -663,13 +742,50 @@ pub fn apply_supplier_agent_results(
         .iter()
         .filter(|item| item.status == "failed")
         .count() as i64;
-    Ok(SupplierAgentApplyResult {
+    let result = SupplierAgentApplyResult {
         dry_run: request.dry_run,
         processed: results.len() as i64,
         succeeded,
         failed,
         results,
-    })
+    };
+    let output_json = serde_json::to_value(&result)
+        .map_err(|error| AppError::Validation(format!("JSON 序列化失败：{error}")))?;
+    finish_agent_run(
+        &conn,
+        &agent_run_id,
+        AgentRunFinish {
+            status: if result.failed > 0 {
+                if result.succeeded > 0 {
+                    "needs_review"
+                } else {
+                    "failed"
+                }
+            } else {
+                "succeeded"
+            },
+            output: None,
+            validated_output: Some(&output_json),
+            tool_calls: None,
+            decision: Some(if result.failed > 0 {
+                "needs_review"
+            } else {
+                "success"
+            }),
+            error_code: if result.failed > 0 {
+                Some("BUSINESS_VALIDATION_FAILED")
+            } else {
+                None
+            },
+            error_summary: if result.failed > 0 {
+                Some("供应商 Agent 结果存在失败项，请查看明细")
+            } else {
+                None
+            },
+            duration_ms: Some(agent_started.elapsed().as_millis().min(i64::MAX as u128) as i64),
+        },
+    )?;
+    Ok(result)
 }
 
 #[tauri::command]

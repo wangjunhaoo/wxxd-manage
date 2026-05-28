@@ -1,0 +1,338 @@
+use super::*;
+
+pub(in crate::commands) fn load_category_catalog_shop_summaries(
+    conn: &Connection,
+) -> AppResult<Vec<CategoryCatalogShopSummary>> {
+    let mut stmt = conn.prepare(
+        "SELECT
+           s.id,
+           s.name,
+           (SELECT COUNT(*) FROM wechat_categories c WHERE c.shop_id = s.id),
+           (SELECT COUNT(*) FROM wechat_category_details d WHERE d.shop_id = s.id),
+           (SELECT COUNT(*) FROM wechat_category_rules r WHERE r.shop_id = s.id AND r.rule_type = 'product'),
+           (SELECT COUNT(*) FROM wechat_category_rules r WHERE r.shop_id = s.id AND r.rule_type = 'delivery'),
+           (SELECT COUNT(*) FROM wechat_freight_templates f WHERE f.shop_id = s.id),
+           (SELECT MAX(synced_at) FROM wechat_categories c WHERE c.shop_id = s.id),
+           (SELECT MAX(synced_at) FROM wechat_category_rules r WHERE r.shop_id = s.id),
+           (SELECT MAX(synced_at) FROM wechat_freight_templates f WHERE f.shop_id = s.id)
+         FROM shops s
+         ORDER BY s.created_at ASC",
+    )?;
+    let items = stmt
+        .query_map([], |row| {
+            Ok(CategoryCatalogShopSummary {
+                shop_id: row.get(0)?,
+                shop_name: row.get(1)?,
+                category_count: row.get(2)?,
+                detail_count: row.get(3)?,
+                product_rule_count: row.get(4)?,
+                delivery_rule_count: row.get(5)?,
+                freight_template_count: row.get(6)?,
+                last_category_sync_at: row.get(7)?,
+                last_rule_sync_at: row.get(8)?,
+                last_freight_sync_at: row.get(9)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(items)
+}
+
+pub(in crate::commands) fn load_category_cache_views(
+    conn: &Connection,
+    shop_id: Option<&str>,
+    keyword: Option<&str>,
+    limit: i64,
+) -> AppResult<Vec<CategoryCacheView>> {
+    let mut stmt = conn.prepare(
+        "SELECT
+           c.shop_id,
+           s.name,
+           c.cat_id,
+           c.parent_cat_id,
+           c.level,
+           c.name,
+           COALESCE(d.product_attr_count, 0),
+           COALESCE(d.sale_attr_count, 0),
+           COALESCE(d.product_qua_count, 0),
+           d.cat_id IS NOT NULL,
+           pr.cat_id IS NOT NULL,
+           dr.cat_id IS NOT NULL,
+           c.synced_at,
+           d.synced_at
+         FROM wechat_categories c
+         JOIN shops s ON s.id = c.shop_id
+         LEFT JOIN wechat_category_details d
+           ON d.shop_id = c.shop_id AND d.cat_id = c.cat_id
+         LEFT JOIN wechat_category_rules pr
+           ON pr.shop_id = c.shop_id AND pr.cat_id = c.cat_id AND pr.rule_type = 'product'
+         LEFT JOIN wechat_category_rules dr
+           ON dr.shop_id = c.shop_id AND dr.cat_id = c.cat_id AND dr.rule_type = 'delivery'
+         WHERE (?1 IS NULL OR c.shop_id = ?1)
+           AND (?2 IS NULL OR c.name LIKE ?2 OR CAST(c.cat_id AS TEXT) LIKE ?2)
+         ORDER BY c.level DESC, c.name ASC
+         LIMIT ?3",
+    )?;
+    let items = stmt
+        .query_map(params![shop_id, keyword, limit], |row| {
+            Ok(CategoryCacheView {
+                shop_id: row.get(0)?,
+                shop_name: row.get(1)?,
+                cat_id: row.get(2)?,
+                parent_cat_id: row.get(3)?,
+                level: row.get(4)?,
+                name: row.get(5)?,
+                product_attr_count: row.get(6)?,
+                sale_attr_count: row.get(7)?,
+                product_qua_count: row.get(8)?,
+                has_detail: row.get::<_, i64>(9)? == 1,
+                has_product_rule: row.get::<_, i64>(10)? == 1,
+                has_delivery_rule: row.get::<_, i64>(11)? == 1,
+                synced_at: row.get(12)?,
+                detail_synced_at: row.get(13)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(items)
+}
+
+pub(in crate::commands) fn load_freight_template_views(
+    conn: &Connection,
+    shop_id: Option<&str>,
+) -> AppResult<Vec<FreightTemplateView>> {
+    let mut stmt = conn.prepare(
+        "SELECT f.shop_id, s.name, f.template_id, f.synced_at
+         FROM wechat_freight_templates f
+         JOIN shops s ON s.id = f.shop_id
+         WHERE (?1 IS NULL OR f.shop_id = ?1)
+         ORDER BY s.name ASC, f.template_id ASC
+         LIMIT 200",
+    )?;
+    let items = stmt
+        .query_map(params![shop_id], |row| {
+            Ok(FreightTemplateView {
+                shop_id: row.get(0)?,
+                shop_name: row.get(1)?,
+                template_id: row.get(2)?,
+                synced_at: row.get(3)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(items)
+}
+
+pub(in crate::commands) async fn sync_freight_template_ids(
+    app: &AppHandle,
+    client: &WechatShopClient,
+    access_token: &str,
+    shop_id: &str,
+    task_id: &str,
+) -> AppResult<i64> {
+    let mut offset = 0i64;
+    let limit = 100i64;
+    let mut total = 0i64;
+    for _ in 0..20 {
+        let call = client
+            .get_freight_template_list(access_token, offset, limit)
+            .await?;
+        match &call.result {
+            WechatCallResult::Success(raw) => {
+                let template_ids = extract_freight_template_ids(&raw.raw_payload);
+                let conn = open_connection(app)?;
+                upsert_freight_template_ids(&conn, shop_id, &template_ids, &now_shanghai())?;
+                insert_api_call_log(
+                    &conn,
+                    Some(shop_id),
+                    call.meta.endpoint,
+                    call.meta.method,
+                    "success",
+                    None,
+                    None,
+                    Some(&format!(
+                        "synced freight templates page offset={}, count={}",
+                        offset,
+                        template_ids.len()
+                    )),
+                )?;
+                total += template_ids.len() as i64;
+                if template_ids.len() < limit as usize {
+                    break;
+                }
+                offset += limit;
+            }
+            WechatCallResult::ApiError(error) => {
+                let conn = open_connection(app)?;
+                insert_api_call_log(
+                    &conn,
+                    Some(shop_id),
+                    call.meta.endpoint,
+                    call.meta.method,
+                    "api_error",
+                    Some(error.errcode),
+                    Some(&error.errmsg),
+                    Some("freight template list api error"),
+                )?;
+                insert_task_log(
+                    &conn,
+                    task_id,
+                    None,
+                    "error",
+                    &format!("运费模板同步失败：{}", error.errmsg),
+                    Some(&serde_json::json!({ "errcode": error.errcode, "offset": offset })),
+                )?;
+                return Err(AppError::WechatApi {
+                    errcode: error.errcode,
+                    errmsg: error.errmsg.clone(),
+                });
+            }
+        }
+    }
+
+    let conn = open_connection(app)?;
+    insert_task_log(
+        &conn,
+        task_id,
+        None,
+        "info",
+        &format!("运费模板同步完成：{total} 个模板 ID"),
+        None,
+    )?;
+    Ok(total)
+}
+
+pub(in crate::commands) fn upsert_wechat_categories(
+    conn: &Connection,
+    shop_id: &str,
+    categories: &[CachedWechatCategory],
+    synced_at: &str,
+) -> AppResult<()> {
+    for category in categories {
+        conn.execute(
+            "INSERT INTO wechat_categories
+             (shop_id, cat_id, parent_cat_id, level, name, raw_payload, synced_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(shop_id, cat_id) DO UPDATE SET
+               parent_cat_id = excluded.parent_cat_id,
+               level = excluded.level,
+               name = excluded.name,
+               raw_payload = excluded.raw_payload,
+               synced_at = excluded.synced_at",
+            params![
+                shop_id,
+                category.cat_id,
+                category.parent_cat_id,
+                category.level,
+                category.name,
+                category.raw_payload.to_string(),
+                synced_at
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+pub(in crate::commands) fn upsert_freight_template_ids(
+    conn: &Connection,
+    shop_id: &str,
+    template_ids: &[String],
+    synced_at: &str,
+) -> AppResult<()> {
+    for template_id in template_ids {
+        conn.execute(
+            "INSERT INTO wechat_freight_templates (shop_id, template_id, raw_payload, synced_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(shop_id, template_id) DO UPDATE SET
+               raw_payload = excluded.raw_payload,
+               synced_at = excluded.synced_at",
+            params![
+                shop_id,
+                template_id,
+                serde_json::json!({ "template_id": template_id }).to_string(),
+                synced_at
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+pub(in crate::commands) fn upsert_category_detail(
+    conn: &Connection,
+    shop_id: &str,
+    cat_id: i64,
+    raw_payload: &Value,
+    counts: &CategoryDetailCounts,
+) -> AppResult<()> {
+    conn.execute(
+        "INSERT INTO wechat_category_details
+         (shop_id, cat_id, product_attr_count, sale_attr_count, product_qua_count, raw_payload, synced_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(shop_id, cat_id) DO UPDATE SET
+           product_attr_count = excluded.product_attr_count,
+           sale_attr_count = excluded.sale_attr_count,
+           product_qua_count = excluded.product_qua_count,
+           raw_payload = excluded.raw_payload,
+           synced_at = excluded.synced_at",
+        params![
+            shop_id,
+            cat_id,
+            counts.product_attr_count,
+            counts.sale_attr_count,
+            counts.product_qua_count,
+            raw_payload.to_string(),
+            now_shanghai()
+        ],
+    )?;
+    Ok(())
+}
+
+pub(in crate::commands) fn upsert_category_rule(
+    conn: &Connection,
+    shop_id: &str,
+    cat_id: i64,
+    rule_type: &str,
+    raw_payload: &Value,
+) -> AppResult<()> {
+    conn.execute(
+        "INSERT INTO wechat_category_rules (shop_id, cat_id, rule_type, raw_payload, synced_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(shop_id, cat_id, rule_type) DO UPDATE SET
+           raw_payload = excluded.raw_payload,
+           synced_at = excluded.synced_at",
+        params![
+            shop_id,
+            cat_id,
+            rule_type,
+            raw_payload.to_string(),
+            now_shanghai()
+        ],
+    )?;
+    Ok(())
+}
+
+pub(in crate::commands) fn upsert_category_precheck_result(
+    conn: &Connection,
+    shop_id: &str,
+    cat_id: i64,
+    all_pass: bool,
+    fail_reasons: &[String],
+    raw_payload: &Value,
+) -> AppResult<()> {
+    conn.execute(
+        "INSERT INTO wechat_category_prechecks
+         (shop_id, cat_id, all_pass, fail_reasons, raw_payload, checked_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(shop_id, cat_id) DO UPDATE SET
+           all_pass = excluded.all_pass,
+           fail_reasons = excluded.fail_reasons,
+           raw_payload = excluded.raw_payload,
+           checked_at = excluded.checked_at",
+        params![
+            shop_id,
+            cat_id,
+            if all_pass { 1 } else { 0 },
+            serde_json::to_string(fail_reasons).unwrap_or_else(|_| "[]".to_string()),
+            raw_payload.to_string(),
+            now_shanghai()
+        ],
+    )?;
+    Ok(())
+}

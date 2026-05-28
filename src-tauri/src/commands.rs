@@ -5,6 +5,7 @@ mod automation;
 mod collection;
 mod delivery;
 mod jobs;
+mod order_price_adjustment;
 mod orders;
 mod price_update;
 mod publish;
@@ -20,6 +21,7 @@ pub use automation::*;
 pub use collection::*;
 pub use delivery::*;
 pub use jobs::*;
+pub use order_price_adjustment::*;
 pub use orders::*;
 pub use price_update::*;
 pub use publish::*;
@@ -37,11 +39,14 @@ use crate::models::{
     AftersaleEvidenceStatusUpdateRequest, AftersaleEvidenceStatusUpdateResult,
     AftersaleEvidenceView, AftersaleListResult, AftersaleRejectReasonSyncResult,
     AftersaleRejectReasonView, AftersaleRejectRequest, AftersaleResponsibilityRequest,
-    AftersaleResponsibilityResult, AftersaleSyncBatchResult, AftersaleView, AiProviderSettings,
-    AiProviderSettingsRequest, AiProviderTestResult, ApiQuotaCheckRequest, ApiQuotaCheckResult,
-    AssetUploadBatchResult, AutomationStepError, BackupCreateResult, BackupInfo,
-    BackupRestoreRequest, BackupRestoreResult, CategoryCacheView, CategoryCatalogListResult,
-    CategoryCatalogShopSummary, CategoryCatalogSyncResult, CategoryRuleSyncResult,
+    AftersaleResponsibilityResult, AftersaleSyncBatchResult, AftersaleView, AgentRunEventView,
+    AgentRunView, AgentSkillSettingsRequest, AgentSkillTestResult, AgentSkillView,
+    AiProviderSettings, AiProviderSettingsRequest, AiProviderTestResult, ApiQuotaCheckRequest,
+    ApiQuotaCheckResult, AssetUploadBatchResult, AutomationStepError, BackupCreateResult,
+    BackupInfo, BackupRestoreRequest, BackupRestoreResult, CategoryCacheView,
+    CategoryCatalogListResult, CategoryCatalogShopSummary, CategoryCatalogSyncResult,
+    CategoryRuleSyncResult, CollectionPublishRequest, CollectionReviewBatchResult,
+    CollectionReviewCategoryCandidate, CollectionReviewConfirmRequest, CollectionReviewRunRequest,
     CollectionTaskView, CreateShopRequest, DashboardSummary, DeliveryCompanySyncResult,
     DeliveryCompanyView, DeliverySettings, DeliverySubmitBatchResult, ExternalApiLogView,
     ExternalProductInput, ExternalPublishJobRequest, FreightTemplateView, GuaranteeFollowupRequest,
@@ -49,22 +54,27 @@ use crate::models::{
     GuaranteeSyncBatchResult, InventoryRiskListResult, InventoryRiskScanResult, InventoryRiskView,
     NotificationListResult, NotificationMarkResult, NotificationView,
     OperationalAutomationRunResult, OperationalAutomationSettings, OrderDetailSyncBatchResult,
-    OrderProfitAdjustmentRequest, OrderProfitAdjustmentResult, OrderProfitListResult,
-    OrderProfitTotals, OrderProfitView, OrderSyncBatchResult, PriceUpdateConfirmBatchResult,
-    PriceUpdateItemView, PriceUpdateJobCreated, PriceUpdateJobRequest, PriceUpdateJobView,
-    PriceUpdatePrecheckBatchResult, PriceUpdateSubmitBatchResult, ProductListingBatchResult,
-    ProductSalesAnalysisListResult, ProductSalesAnalysisTotals, ProductSalesAnalysisView,
-    ProductStatusSyncBatchResult, ProductSubmitBatchResult, PublishAttributeFillBatchResult,
+    OrderManagementItemView, OrderManagementListResult, OrderManagementView,
+    OrderPriceAdjustmentBatchResult, OrderPriceAdjustmentItemView, OrderPriceAdjustmentJobCreated,
+    OrderPriceAdjustmentJobRequest, OrderPriceAdjustmentJobView, OrderPriceAdjustmentLineInput,
+    OrderPriceAdjustmentOrderInput, OrderProfitAdjustmentRequest, OrderProfitAdjustmentResult,
+    OrderProfitListResult, OrderProfitTotals, OrderProfitView, OrderSyncBatchResult,
+    PriceUpdateConfirmBatchResult, PriceUpdateItemView, PriceUpdateJobCreated,
+    PriceUpdateJobRequest, PriceUpdateJobView, PriceUpdatePrecheckBatchResult,
+    PriceUpdateSubmitBatchResult, ProductListingBatchResult, ProductManagementListResult,
+    ProductManagementShopView, ProductManagementView, ProductSalesAnalysisListResult,
+    ProductSalesAnalysisTotals, ProductSalesAnalysisView, ProductStatusSyncBatchResult,
+    ProductSubmitBatchResult, PublishAttributeFillBatchResult,
     PublishAttributeSuggestionApplyRequest, PublishAttributeSuggestionApplyResult,
     PublishAttributeSuggestionListResult, PublishAttributeSuggestionSkuValue,
     PublishAttributeSuggestionView, PublishCategoryPrecheckBatchResult, PublishJobCreated,
-    PublishJobItemView, PublishJobView, PublishProductView, PublishTaskBatchResult,
-    PurchaseTaskBatchResult, PurchaseTaskExportResult, PurchaseTaskIssueRequest,
-    PurchaseTaskIssueResult, PurchaseTaskListResult, PurchaseTaskMappingRequest,
-    PurchaseTaskMappingResult, PurchaseTaskShipmentRequest, PurchaseTaskShipmentResult,
-    PurchaseTaskView, ShipmentListResult, ShipmentRecordRequest, ShipmentRecordResult,
-    ShipmentRetryResult, ShipmentView, Shop, ShopBasicInfoSyncResult, ShopCredentialCheck,
-    ShopGroup, ShopListItem, SupplierAftersaleFollowupListResult,
+    PublishJobItemView, PublishJobView, PublishPricingStrategy, PublishProductView,
+    PublishTaskBatchResult, PurchaseTaskBatchResult, PurchaseTaskExportResult,
+    PurchaseTaskIssueRequest, PurchaseTaskIssueResult, PurchaseTaskListResult,
+    PurchaseTaskMappingRequest, PurchaseTaskMappingResult, PurchaseTaskShipmentRequest,
+    PurchaseTaskShipmentResult, PurchaseTaskView, ShipmentListResult, ShipmentRecordRequest,
+    ShipmentRecordResult, ShipmentRetryResult, ShipmentView, Shop, ShopBasicInfoSyncResult,
+    ShopCredentialCheck, ShopGroup, ShopListItem, SupplierAftersaleFollowupListResult,
     SupplierAftersaleFollowupRecordRequest, SupplierAftersaleFollowupRecordResult,
     SupplierAftersaleFollowupView, SupplierAgentApplyItemResult, SupplierAgentApplyRequest,
     SupplierAgentApplyResult, SupplierAgentExportResult, TaskRunView,
@@ -74,8 +84,8 @@ use crate::storage::{
     open_connection, AppError, AppResult,
 };
 use crate::wechat::{
-    ProductGetInfo, WechatApiError, WechatCallMeta, WechatCallResult, WechatProductSnapshot,
-    WechatRawCall, WechatShopClient,
+    OrderPriceUpdateInfo, ProductGetInfo, WechatApiError, WechatCallMeta, WechatCallResult,
+    WechatProductSnapshot, WechatRawCall, WechatShopClient,
 };
 use chrono::{DateTime, Duration, Utc};
 use image::{codecs::jpeg::JpegEncoder, DynamicImage, GenericImageView, ImageFormat};
@@ -110,13 +120,23 @@ const AUTOMATION_PUBLISH_SUBMIT_SETTING: &str = "automation.publish_submit_enabl
 const AUTOMATION_PUBLISH_STATUS_SYNC_SETTING: &str = "automation.publish_status_sync_enabled";
 const AUTOMATION_PUBLISH_LISTING_SETTING: &str = "automation.publish_listing_enabled";
 const AUTOMATION_PRICE_CONFIRM_SETTING: &str = "automation.price_confirm_enabled";
+const PUBLISH_PRICING_STRATEGY_SETTING: &str = "publish.pricing_strategy";
 const AUTO_BACKUP_LAST_DATE_SETTING: &str = "backup.last_auto_created_date";
-const AI_PROVIDER_ID: &str = "default";
+const AI_PROVIDER_CUSTOM: &str = "custom";
+const AI_PROVIDER_LEGACY_PI: &str = "pi_coding_agent";
+const AI_PROVIDER_DEFAULT_CUSTOM_ID: &str = "wx-xd-custom";
+const AI_PROVIDER_DEFAULT_API: &str = "openai-completions";
+const AI_PROVIDER_DEFAULT_CONTEXT_WINDOW: i64 = 128_000;
+const AI_PROVIDER_DEFAULT_MAX_TOKENS: i64 = 4_096;
 const AI_PROVIDER_ENABLED_SETTING: &str = "ai_provider.enabled";
 const AI_PROVIDER_TYPE_SETTING: &str = "ai_provider.provider_type";
+const AI_PROVIDER_CUSTOM_ID_SETTING: &str = "ai_provider.custom_provider_id";
+const AI_PROVIDER_API_SETTING: &str = "ai_provider.api";
 const AI_PROVIDER_BASE_URL_SETTING: &str = "ai_provider.base_url";
 const AI_PROVIDER_MODEL_SETTING: &str = "ai_provider.model";
 const AI_PROVIDER_TEMPERATURE_SETTING: &str = "ai_provider.temperature";
+const AI_PROVIDER_CONTEXT_WINDOW_SETTING: &str = "ai_provider.context_window";
+const AI_PROVIDER_MAX_TOKENS_SETTING: &str = "ai_provider.max_tokens";
 const IMAGE_DOWNLOAD_TIMEOUT_SECONDS: u64 = 15;
 const IMAGE_DOWNLOAD_MAX_BYTES: u64 = 20 * 1024 * 1024;
 const WECHAT_IMAGE_MAX_BYTES: usize = 10 * 1024 * 1024;
@@ -405,9 +425,13 @@ struct PriceUpdateConfirmationResolution {
 #[derive(Debug, Clone)]
 struct AiProviderConfig {
     provider_type: String,
+    custom_provider_id: String,
+    api: String,
     base_url: String,
     model: String,
     temperature: f64,
+    context_window: i64,
+    max_tokens: i64,
     api_key: String,
 }
 

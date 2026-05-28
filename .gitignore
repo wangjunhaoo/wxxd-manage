@@ -14,6 +14,9 @@ dist
 dist-ssr
 src-tauri/target
 artifacts
+.venv/
+.venv-*/
+.serena/
 *.local
 
 # Editor directories and files
