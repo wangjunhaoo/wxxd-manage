@@ -20,8 +20,14 @@ runtime/python-vendor/
 runtime/node/node_modules/
 runtime/bin/node
 runtime/.npm-cache/
+runtime/app-backups/
 .serena/
 *.local
+
+# Browser / local verification artifacts
+.playwright-mcp/
+/category-tree-verify.png
+/publish-*.png
 
 # Editor directories and files
 .vscode/*
