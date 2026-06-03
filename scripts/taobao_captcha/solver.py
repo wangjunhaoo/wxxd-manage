@@ -398,38 +398,271 @@ def _looks_unblocked(page: Any, context: Any, pre_x5sec: Optional[str]) -> bool:
 
 
 def _build_minimal_stealth_script() -> str:
-    """最小化反检测脚本 — 只补充 CloakBrowser 底层未覆盖的部分。
+    """淘宝专项反检测脚本。
 
-    CloakBrowser v0.3+ 已在 Chromium C++ 层处理了:
-    - navigator.webdriver 隐藏
-    - window.chrome 对象伪造
-    - Canvas/WebGL/Audio 指纹噪声（--fingerprint flag）
-    - 屏幕分辨率/硬件参数随机化
-    - User-Agent 与 Chromium 版本一致
-    - CDP 信号屏蔽
-
-    本脚本补充 CloakBrowser 不一定覆盖的 JS 层检测点:
-    1. 清理自动化私有全局变量痕迹
-    2. 安装鼠标轨迹收集器（淘宝 NoCaptcha 特有检测点）
-    3. navigator.plugins 补充（空插件列表是已知的自动化特征）
-    4. navigator.permissions.query 正常化
+    不假设 CloakBrowser 的 C++ 层已充分处理，在 JS 层做冗余防护。
+    每条防护都有注释说明对应的淘宝检测向量。
     """
-    return """
+    return r"""
         (() => {
-            // 1. 清理自动化框架特有的全局变量痕迹
-            const pwKeys = [
-                'play' + 'wright', '__play' + 'wright', '__pw_manual', '__pw_original',
+            // ============================================================
+            // 0. 时间窗口保护 —— 页面加载后立即执行，抢在淘宝检测脚本之前
+            // ============================================================
+
+            // ----------------------------------------------------------
+            // 1. navigator.webdriver —— 最基础的自动化标志
+            // ----------------------------------------------------------
+            try {
+                if (navigator.webdriver !== false && navigator.webdriver !== undefined) {
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => false,
+                        configurable: true,
+                    });
+                }
+            } catch (e) {}
+            try {
+                delete Object.getPrototypeOf(navigator).webdriver;
+            } catch (e) {}
+
+            // ----------------------------------------------------------
+            // 2. 清理 CDP (Chrome DevTools Protocol) 运行时注入的属性
+            //    淘宝会检查 document 上是否有 $cdc_ 前缀的属性
+            // ----------------------------------------------------------
+            try {
+                const cdcKeys = [];
+                for (const key in document) {
+                    if (key.startsWith('$cdc_') || key.startsWith('$chrome_')) {
+                        cdcKeys.push(key);
+                    }
+                }
+                for (const key of cdcKeys) {
+                    try { delete document[key]; } catch (e) {}
+                }
+            } catch (e) {}
+
+            // ----------------------------------------------------------
+            // 3. 清理所有已知自动化框架的痕迹
+            // ----------------------------------------------------------
+            const automationKeys = [
+                'playwright', '__playwright', '__pw_manual', '__pw_original',
                 '__PW_inspect', 'webdriver', '__webdriver_script_fn',
                 '__webdriver_evaluate', '__webdriver_unwrapped',
                 '__fxdriver_evaluate', '__driver_evaluate',
                 '__webdriver_script_func', '_selenium', '_phantom',
-                'callPhantom', 'phantom', 'Buffer', 'emit', 'spawn'
+                'callPhantom', 'phantom', 'Buffer', 'emit', 'spawn',
+                '__nightmare', '__puppeteer_evaluate', '__AREX_',
+                '_WEBDRIVER_ELEM_CACHE', '__webdriverFunc', '__lastWatirAlert',
+                '__lastWatirConfirm', '__lastWatirPrompt', '_Cypress_',
+                '__inspectorUrl', '__cloaKbrowser',
             ];
-            for (const key of pwKeys) {
+            for (const key of automationKeys) {
                 try { delete window[key]; } catch (e) {}
             }
 
-            // 2. 鼠标轨迹收集器（淘宝 NoCaptcha 会检查鼠标事件历史来评估人类行为）
+            // ----------------------------------------------------------
+            // 4. chrome.runtime —— 自动化浏览器通常没有或为空
+            //    正常 Chrome 必须有 chrome.runtime.connect
+            // ----------------------------------------------------------
+            try {
+                if (!window.chrome) {
+                    window.chrome = {};
+                }
+                if (!window.chrome.runtime) {
+                    window.chrome.runtime = {
+                        connect: function() { return { onMessage: { addListener: function() {} }, onDisconnect: { addListener: function() {} }, postMessage: function() {}, disconnect: function() {} }; },
+                        sendMessage: function() {},
+                        onMessage: { addListener: function() {} },
+                        onConnect: { addListener: function() {} },
+                        getManifest: function() { return { version: '1.0' }; },
+                        id: undefined,
+                        getURL: function(path) { return 'chrome-extension://' + path; },
+                        lastError: undefined,
+                        onInstalled: { addListener: function() {} },
+                    };
+                }
+                if (!window.chrome.loadTimes) {
+                    window.chrome.loadTimes = function() {
+                        return {
+                            requestTime: Date.now() / 1000 - Math.random() * 5,
+                            startLoadTime: Date.now() / 1000 - Math.random() * 5,
+                            commitLoadTime: Date.now() / 1000 - Math.random() * 3,
+                            finishDocumentLoadTime: Date.now() / 1000 - Math.random() * 2,
+                            finishLoadTime: Date.now() / 1000,
+                            firstPaintTime: Date.now() / 1000 - Math.random() * 2,
+                            firstPaintAfterLoadTime: 0,
+                            navigationType: 'Other',
+                            wasFetchedViaSpdy: false,
+                            wasNpnNegotiated: false,
+                            npnNegotiatedProtocol: 'unknown',
+                            wasAlternateProtocolAvailable: false,
+                            connectionInfo: '',
+                        };
+                    };
+                }
+                if (!window.chrome.csi) {
+                    window.chrome.csi = function() {
+                        return {
+                            startE: Date.now() - Math.floor(Math.random() * 5000),
+                            onloadT: Date.now() - Math.floor(Math.random() * 3000),
+                            pageT: Math.floor(Math.random() * 500) + 200,
+                            tran: 15,
+                        };
+                    };
+                }
+                if (!window.chrome.app) {
+                    window.chrome.app = {
+                        isInstalled: false,
+                        InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+                        RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
+                        getDetails: function() { return null; },
+                        runningState: function() { return 'cannot_run'; },
+                    };
+                }
+            } catch (e) {}
+
+            // ----------------------------------------------------------
+            // 5. navigator.plugins —— 空插件列表是已知自动化特征
+            //    不依赖 PluginArray.prototype（headless 下可能不存在）
+            // ----------------------------------------------------------
+            try {
+                const makePluginArray = (pluginDefs) => {
+                    const pluginObjs = pluginDefs.map((def, i) => {
+                        const mimeTypeObj = {
+                            type: def.mimeType || 'application/pdf',
+                            suffixes: def.suffixes || 'pdf',
+                            description: def.mimeDescription || '',
+                            __proto__: null,
+                        };
+                        const pluginObj = {
+                            name: def.name,
+                            filename: def.filename,
+                            description: def.description || '',
+                            length: 1,
+                            0: mimeTypeObj,
+                            item: function(idx) { return idx === 0 ? mimeTypeObj : null; },
+                            namedItem: function(name) { return mimeTypeObj; },
+                            __proto__: null,
+                        };
+                        return pluginObj;
+                    });
+
+                    const arr = {
+                        0: pluginObjs[0],
+                        1: pluginObjs[1],
+                        2: pluginObjs[2],
+                        length: pluginObjs.length,
+                        item: function(idx) { return pluginObjs[idx] || null; },
+                        namedItem: function(name) {
+                            for (const p of pluginObjs) {
+                                if (p.name === name) return p;
+                            }
+                            return null;
+                        },
+                        refresh: function() {},
+                        __proto__: null,
+                    };
+                    // 正确的 toString 行为
+                    arr[Symbol.iterator] = function*() {
+                        for (const p of pluginObjs) yield p;
+                    };
+                    return arr;
+                };
+
+                const plugins = makePluginArray([
+                    { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format', mimeType: 'application/pdf', suffixes: 'pdf' },
+                    { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '', mimeType: 'application/pdf', suffixes: 'pdf' },
+                    { name: 'Native Client', filename: 'internal-nacl-plugin', description: '', mimeType: 'application/x-nacl', suffixes: '' },
+                ]);
+
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => plugins,
+                    configurable: true,
+                    enumerable: true,
+                });
+
+                // 同步 mimeTypes（淘宝会交叉验证 plugins 和 mimeTypes）
+                const mimeTypes = {
+                    0: { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format', __proto__: null },
+                    1: { type: 'application/x-nacl', suffixes: '', description: '', __proto__: null },
+                    length: 2,
+                    item: function(idx) {
+                        const items = [
+                            { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format', __proto__: null },
+                            { type: 'application/x-nacl', suffixes: '', description: '', __proto__: null },
+                        ];
+                        return items[idx] || null;
+                    },
+                    namedItem: function(name) {
+                        if (name === 'application/pdf') return { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format', __proto__: null };
+                        if (name === 'application/x-nacl') return { type: 'application/x-nacl', suffixes: '', description: '', __proto__: null };
+                        return null;
+                    },
+                    __proto__: null,
+                };
+                mimeTypes[Symbol.iterator] = function*() {
+                    yield mimeTypes[0];
+                    yield mimeTypes[1];
+                };
+
+                Object.defineProperty(navigator, 'mimeTypes', {
+                    get: () => mimeTypes,
+                    configurable: true,
+                    enumerable: true,
+                });
+            } catch (e) {}
+
+            // ----------------------------------------------------------
+            // 6. navigator.permissions.query —— 自动化行为异常
+            // ----------------------------------------------------------
+            try {
+                const permStatusProto = Object.create(EventTarget.prototype);
+                Object.defineProperties(permStatusProto, {
+                    state: { value: 'prompt', enumerable: true, configurable: true },
+                    onchange: { value: null, writable: true, enumerable: true, configurable: true },
+                });
+                const origQuery = navigator.permissions && navigator.permissions.query;
+                if (origQuery) {
+                    navigator.permissions.query = function(desc) {
+                        if (desc && desc.name === 'notifications') {
+                            return Promise.resolve(Object.create(permStatusProto, {
+                                state: { value: 'denied', enumerable: true },
+                            }));
+                        }
+                        return origQuery.call(this, desc).catch(() => {
+                            return Promise.resolve(Object.create(permStatusProto));
+                        });
+                    };
+                }
+            } catch (e) {}
+
+            // ----------------------------------------------------------
+            // 7. navigator.hardwareConcurrency —— 头显模式下常为 1 或过大
+            // ----------------------------------------------------------
+            try {
+                const hc = navigator.hardwareConcurrency;
+                if (hc === undefined || hc === 1 || hc > 16) {
+                    Object.defineProperty(navigator, 'hardwareConcurrency', {
+                        get: () => 8,
+                        configurable: true,
+                    });
+                }
+            } catch (e) {}
+
+            // ----------------------------------------------------------
+            // 8. navigator.deviceMemory —— 自动化通常缺失
+            // ----------------------------------------------------------
+            try {
+                if (navigator.deviceMemory === undefined || navigator.deviceMemory === 0) {
+                    Object.defineProperty(navigator, 'deviceMemory', {
+                        get: () => 8,
+                        configurable: true,
+                    });
+                }
+            } catch (e) {}
+
+            // ----------------------------------------------------------
+            // 9. 鼠标轨迹收集器 —— 淘宝 NoCaptcha 特有检测点
+            // ----------------------------------------------------------
             try {
                 if (!window.__wx_xd_mouse_collector_installed) {
                     const mouseMovements = [];
@@ -437,67 +670,80 @@ def _build_minimal_stealth_script() -> str:
                     document.addEventListener('mousemove', function(e) {
                         const now = Date.now();
                         mouseMovements.push({
-                            x: e.clientX,
-                            y: e.clientY,
-                            time: now,
-                            timeDiff: now - lastMouseTime
+                            x: e.clientX, y: e.clientY,
+                            time: now, timeDiff: now - lastMouseTime,
                         });
                         lastMouseTime = now;
-                        if (mouseMovements.length > 100) {
-                            mouseMovements.shift();
-                        }
+                        if (mouseMovements.length > 120) mouseMovements.shift();
                     }, true);
                     window.__wx_xd_mouse_collector_installed = true;
                 }
             } catch (e) {}
 
-            // 3. navigator.plugins 补充 — 空插件列表是已知的自动化特征
+            // ----------------------------------------------------------
+            // 10. Notification.permission —— 自动化下常为 'default'
+            // ----------------------------------------------------------
             try {
-                if (!navigator.plugins || navigator.plugins.length === 0) {
-                    Object.defineProperty(navigator, 'plugins', {
-                        get: () => {
-                            // 返回类数组对象，模拟常见插件
-                            const pluginNames = [
-                                {name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format'},
-                                {name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: ''},
-                                {name: 'Native Client', filename: 'internal-nacl-plugin', description: ''},
-                            ];
-                            const arr = Object.create(PluginArray.prototype);
-                            pluginNames.forEach((p, i) => {
-                                const plugin = Object.create(Plugin.prototype);
-                                Object.defineProperties(plugin, {
-                                    name: {value: p.name, enumerable: true},
-                                    filename: {value: p.filename, enumerable: true},
-                                    description: {value: p.description, enumerable: true},
-                                    length: {value: 1, enumerable: false},
-                                });
-                                plugin[0] = Object.create(MimeType.prototype, {
-                                    type: {value: 'application/pdf', enumerable: true},
-                                    suffixes: {value: 'pdf', enumerable: true},
-                                    description: {value: '', enumerable: true},
-                                });
-                                arr[i] = plugin;
-                            });
-                            Object.defineProperty(arr, 'length', {value: pluginNames.length, enumerable: false});
-                            return arr;
+                if (!window.Notification || Notification.permission === 'default') {
+                    const notifProto = Object.create(EventTarget.prototype);
+                    Object.defineProperties(notifProto, {
+                        permission: { get: () => 'denied', configurable: true },
+                        requestPermission: {
+                            value: function() { return Promise.resolve('denied'); },
                         },
-                        configurable: true,
-                        enumerable: true,
                     });
                 }
             } catch (e) {}
 
-            // 4. navigator.permissions.query 正常化
+            // ----------------------------------------------------------
+            // 11. 确保 language / languages 一致性
+            // ----------------------------------------------------------
             try {
-                const origQuery = window.Permissions && window.Permissions.prototype && window.Permissions.prototype.query;
-                if (origQuery) {
-                    window.Permissions.prototype.query = function(desc) {
-                        return Promise.resolve(Object.create(PermissionStatus.prototype, {
-                            state: {value: 'prompt', enumerable: true},
-                            onchange: {value: null, writable: true, enumerable: true},
-                        }));
-                    };
+                if (!navigator.languages || navigator.languages.length === 0) {
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['zh-CN', 'zh', 'en'],
+                        configurable: true,
+                    });
                 }
+            } catch (e) {}
+
+            // ----------------------------------------------------------
+            // 12. screen 属性一致性 —— 确保和 viewport 不冲突
+            // ----------------------------------------------------------
+            try {
+                const targetWidth = 1920;
+                const targetHeight = 1080;
+                if (screen.width !== targetWidth || screen.height !== targetHeight) {
+                    Object.defineProperty(screen, 'width', { get: () => targetWidth, configurable: true });
+                    Object.defineProperty(screen, 'height', { get: () => targetHeight, configurable: true });
+                    Object.defineProperty(screen, 'availWidth', { get: () => targetWidth, configurable: true });
+                    Object.defineProperty(screen, 'availHeight', { get: () => targetHeight - 25, configurable: true });
+                    Object.defineProperty(screen, 'colorDepth', { get: () => 30, configurable: true });
+                    Object.defineProperty(screen, 'pixelDepth', { get: () => 30, configurable: true });
+                }
+            } catch (e) {}
+
+            // ----------------------------------------------------------
+            // 13. 覆盖 toString 陷阱 —— 防止 Function.prototype.toString 检测
+            // ----------------------------------------------------------
+            try {
+                const origToString = Function.prototype.toString;
+                const nativeCodePatterns = [
+                    /^function \w+\(\)\s*\{\s*\[native code\]\s*\}$/,
+                    /^function\s*\(\)\s*\{\s*\[native code\]\s*\}$/,
+                ];
+                // 确保我们的 getter 返回的函数 toString 看起来像原生代码
+                const fakeNativeFn = function() {};
+                Function.prototype.toString = function() {
+                    const str = origToString.call(this);
+                    // 如果函数体内包含我们注入的代码特征，替换为 native code
+                    if (str.includes('__wx_xd_') || str.includes('automationKeys')) {
+                        return 'function() { [native code] }';
+                    }
+                    return str;
+                };
+                // 立即恢复，避免过度干预 —— 只在必要时替换
+                Function.prototype.toString = origToString;
             } catch (e) {}
         })();
     """

@@ -28,6 +28,16 @@ fn create_category_conn() -> Connection {
         [],
     )
     .expect("创建微信类目表");
+    conn.execute(
+        "CREATE TABLE wechat_category_relations (
+              shop_id TEXT NOT NULL,
+              cat_id INTEGER NOT NULL,
+              status INTEGER NOT NULL,
+              PRIMARY KEY(shop_id, cat_id)
+            )",
+        [],
+    )
+    .expect("创建微信类目权限表");
     conn
 }
 
@@ -44,6 +54,12 @@ fn insert_category(
         params![cat_id, parent_cat_id, level, name],
     )
     .expect("写入微信类目");
+    conn.execute(
+        "INSERT INTO wechat_category_relations (shop_id, cat_id, status)
+             VALUES ('shop-1', ?1, 1)",
+        params![cat_id],
+    )
+    .expect("写入微信类目权限");
 }
 
 fn product_with_category_hint(title: &str, category_hint: &str) -> ExternalProductInput {
@@ -57,6 +73,23 @@ fn product_with_category_hint(title: &str, category_hint: &str) -> ExternalProdu
         supplier_name: None,
         supplier_product_id: None,
         category_hint: Some(category_hint.to_string()),
+        brand_hint: None,
+        weight_gram: None,
+        metadata: serde_json::json!({}),
+    }
+}
+
+fn product_without_category_hint(title: &str) -> ExternalProductInput {
+    ExternalProductInput {
+        external_product_id: "demo".to_string(),
+        title: title.to_string(),
+        source_url: "https://example.com/item".to_string(),
+        images: vec![],
+        detail_images: vec![],
+        skus: vec![],
+        supplier_name: None,
+        supplier_product_id: None,
+        category_hint: None,
         brand_hint: None,
         weight_gram: None,
         metadata: serde_json::json!({}),
@@ -99,6 +132,45 @@ fn infer_wechat_category_from_cache_skips_single_broad_adult_term() {
         infer_wechat_category_from_cache(&conn, "shop-1", &product).expect("推断微信类目");
 
     assert!(inferred.is_none());
+}
+
+#[test]
+fn infer_wechat_category_from_cache_matches_leaf_name_in_title_without_hint() {
+    let conn = create_category_conn();
+    insert_category(&conn, 10000116, None, 1, "母婴");
+    insert_category(&conn, 10000123, Some(10000116), 2, "童装");
+    insert_category(&conn, 6215, Some(10000123), 3, "T恤");
+
+    let product = product_without_category_hint("2026新款儿童短袖纯棉T恤男童女童夏季婴幼儿上衣");
+    let inferred =
+        infer_wechat_category_from_cache(&conn, "shop-1", &product).expect("推断微信类目");
+
+    let inferred = inferred.expect("应从标题命中微信 T 恤类目");
+    assert_eq!(inferred.category_ids, vec![10000116, 10000123, 6215]);
+    assert_eq!(inferred.category_path, "母婴 > 童装 > T恤");
+}
+
+#[test]
+fn broad_category_candidates_include_active_leaf_when_strict_match_missing() {
+    let conn = create_category_conn();
+    insert_category(&conn, 10000116, None, 1, "母婴");
+    insert_category(&conn, 10000123, Some(10000116), 2, "童装");
+    insert_category(&conn, 6236, Some(10000123), 3, "裤子");
+
+    let product =
+        product_with_category_hint("2026春秋夏季新品女小童薄款打底裤长裤", "女装/女士精品>卫裤");
+
+    let strict = suggest_wechat_category_candidates_from_cache(&conn, "shop-1", &product, 5)
+        .expect("读取精确类目候选");
+    let broad = suggest_wechat_category_broad_candidates_from_cache(&conn, "shop-1", &product, 20)
+        .expect("读取宽类目候选");
+
+    assert!(strict.is_empty());
+    assert!(broad.iter().any(|candidate| {
+        candidate.category_ids == vec![10000116, 10000123, 6236]
+            && candidate.category_path == "母婴 > 童装 > 裤子"
+            && candidate.source == "local_category_cache_broad"
+    }));
 }
 
 #[test]

@@ -33,14 +33,7 @@ RUNNER_PATHS = {
     "price-precheck": "/api/runners/price-precheck",
     "price-submit": "/api/runners/price-submit",
     "purchase-task-generation": "/api/runners/purchase-task-generation",
-    "publish-ai-attributes": "/api/runners/publish-ai-attributes",
-    "publish-assets": "/api/runners/publish-assets",
-    "publish-attribute-fill": "/api/runners/publish-attribute-fill",
-    "publish-category-precheck": "/api/runners/publish-category-precheck",
-    "publish-listing": "/api/runners/publish-listing",
-    "publish-precheck": "/api/runners/publish-precheck",
-    "publish-status-sync": "/api/runners/publish-status-sync",
-    "publish-submit": "/api/runners/publish-submit",
+    "publish-pipeline": "/api/runners/publish-pipeline",
 }
 
 
@@ -169,7 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
     runner_parser.add_argument(
         "name",
         choices=sorted(RUNNER_PATHS),
-        help="Runner name, e.g. publish-precheck, price-submit, operations.",
+        help="Runner name, e.g. publish-pipeline, price-submit, operations.",
     )
 
     list_parser = subparsers.add_parser(

@@ -1,5 +1,24 @@
-import type { AftersaleEvidenceView, AftersaleRejectReasonView, AftersaleView, BackupInfo, CategoryCacheView, CategoryCatalogShopSummary, CollectionTaskView, ExternalApiLogView, FreightTemplateView, GuaranteeOrderView, NotificationView, PurchaseTaskView, PublishAttributeSuggestionView, ShipmentView, ShopGroup, ShopListItem, SupplierAftersaleFollowupView, TaskRunView, } from "../../types/app";
-export const createPreviewGroups = (): ShopGroup[] => ([
+import type {
+  AftersaleEvidenceView,
+  AftersaleRejectReasonView,
+  AftersaleView,
+  BackupInfo,
+  CategoryCacheView,
+  CategoryCatalogShopSummary,
+  CategoryRelationView,
+  CollectionTaskView,
+  ExternalApiLogView,
+  FreightTemplateView,
+  GuaranteeOrderView,
+  NotificationView,
+  PurchaseTaskView,
+  ShipmentView,
+  ShopGroup,
+  ShopListItem,
+  SupplierAftersaleFollowupView,
+  TaskRunView,
+} from "../../types/app";
+export const createPreviewGroups = (): ShopGroup[] => [
   {
     id: "group-default",
     name: "默认店铺组",
@@ -7,8 +26,8 @@ export const createPreviewGroups = (): ShopGroup[] => ([
     shop_count: 1,
     created_at: "2026-05-22T00:00:00+08:00",
   },
-]);
-export const createPreviewShops = (): ShopListItem[] => ([
+];
+export const createPreviewShops = (): ShopListItem[] => [
   {
     id: "shop-preview",
     name: "预览店铺",
@@ -24,9 +43,9 @@ export const createPreviewShops = (): ShopListItem[] => ([
     last_quota_remain: null,
     created_at: "2026-05-22T00:00:00+08:00",
   },
-]);
-export const createPreviewTaskRuns = (): TaskRunView[] => ([]);
-export const createPreviewCollectionTasks = (): CollectionTaskView[] => ([
+];
+export const createPreviewTaskRuns = (): TaskRunView[] => [];
+export const createPreviewCollectionTasks = (): CollectionTaskView[] => [
   {
     id: "col-preview-10001",
     title: "夏季薄款防晒衣女",
@@ -45,7 +64,14 @@ export const createPreviewCollectionTasks = (): CollectionTaskView[] => ([
         "https://example.com/head-3.jpg",
       ],
       detail_images: ["https://example.com/detail-1.jpg"],
-      skus: [{ external_sku_id: "sku-1", specs: { 颜色: "米白色" }, cost_price: 39, stock: 120 }],
+      skus: [
+        {
+          external_sku_id: "sku-1",
+          specs: { 颜色: "米白色" },
+          cost_price: 39,
+          stock: 120,
+        },
+      ],
       supplier_name: "淘宝采集",
       supplier_product_id: "10001",
       category_hint: "服饰内衣 > 女装 > 防晒衣",
@@ -64,8 +90,8 @@ export const createPreviewCollectionTasks = (): CollectionTaskView[] => ([
     created_at: "2026-05-22T00:00:00+08:00",
     updated_at: "2026-05-22T00:01:00+08:00",
   },
-]);
-export const createPreviewShipments = (): ShipmentView[] => ([
+];
+export const createPreviewShipments = (): ShipmentView[] => [
   {
     id: "shipment-preview-failed",
     order_id: "order-preview-failed",
@@ -83,8 +109,8 @@ export const createPreviewShipments = (): ShipmentView[] => ([
     created_at: "2026-05-22T00:09:00+08:00",
     updated_at: "2026-05-22T00:09:20+08:00",
   },
-]);
-export const createPreviewPurchaseTasks = (): PurchaseTaskView[] => ([
+];
+export const createPreviewPurchaseTasks = (): PurchaseTaskView[] => [
   {
     id: "purchase-preview-1",
     order_id: "order-preview-1",
@@ -141,8 +167,8 @@ export const createPreviewPurchaseTasks = (): PurchaseTaskView[] => ([
     created_at: "2026-05-22T00:08:00+08:00",
     updated_at: "2026-05-22T00:08:00+08:00",
   },
-]);
-export const createPreviewAftersales = (): AftersaleView[] => ([
+];
+export const createPreviewAftersales = (): AftersaleView[] => [
   {
     id: "aftersale-preview-1",
     shop_id: "shop-preview",
@@ -191,37 +217,39 @@ export const createPreviewAftersales = (): AftersaleView[] => ([
     synced_at: "2026-05-22T00:18:10+08:00",
     updated_at: "2026-05-22T00:18:10+08:00",
   },
-]);
-export const createPreviewAftersaleRejectReasons = (): AftersaleRejectReasonView[] => ([
-  {
-    shop_id: "shop-preview",
-    reject_reason_type: 6,
-    reject_reason_type_text: "买家误操作/已协商取消申请",
-    reject_reason: "已与买家沟通确认，本次售后先取消处理。",
-    reject_scene: 1,
-    reject_scene_text: "拒绝仅退款",
-    synced_at: "2026-05-22T00:24:00+08:00",
-  },
-  {
-    shop_id: "shop-preview",
-    reject_reason_type: 4,
-    reject_reason_type_text: "包裹在买家发起售后时已完成发货/揽收",
-    reject_reason: "商品已完成发货或揽收，建议买家收到货后按实际情况重新发起售后。",
-    reject_scene: 1,
-    reject_scene_text: "拒绝仅退款",
-    synced_at: "2026-05-22T00:24:00+08:00",
-  },
-  {
-    shop_id: "shop-preview",
-    reject_reason_type: 1,
-    reject_reason_type_text: "已在约定时间发货且物流运输正常",
-    reject_reason: "本店已在约定时间内完成发货，目前物流正常转运。",
-    reject_scene: 1,
-    reject_scene_text: "拒绝仅退款",
-    synced_at: "2026-05-22T00:24:00+08:00",
-  },
-]);
-export const createPreviewGuaranteeOrders = (): GuaranteeOrderView[] => ([
+];
+export const createPreviewAftersaleRejectReasons =
+  (): AftersaleRejectReasonView[] => [
+    {
+      shop_id: "shop-preview",
+      reject_reason_type: 6,
+      reject_reason_type_text: "买家误操作/已协商取消申请",
+      reject_reason: "已与买家沟通确认，本次售后先取消处理。",
+      reject_scene: 1,
+      reject_scene_text: "拒绝仅退款",
+      synced_at: "2026-05-22T00:24:00+08:00",
+    },
+    {
+      shop_id: "shop-preview",
+      reject_reason_type: 4,
+      reject_reason_type_text: "包裹在买家发起售后时已完成发货/揽收",
+      reject_reason:
+        "商品已完成发货或揽收，建议买家收到货后按实际情况重新发起售后。",
+      reject_scene: 1,
+      reject_scene_text: "拒绝仅退款",
+      synced_at: "2026-05-22T00:24:00+08:00",
+    },
+    {
+      shop_id: "shop-preview",
+      reject_reason_type: 1,
+      reject_reason_type_text: "已在约定时间发货且物流运输正常",
+      reject_reason: "本店已在约定时间内完成发货，目前物流正常转运。",
+      reject_scene: 1,
+      reject_scene_text: "拒绝仅退款",
+      synced_at: "2026-05-22T00:24:00+08:00",
+    },
+  ];
+export const createPreviewGuaranteeOrders = (): GuaranteeOrderView[] => [
   {
     id: "guarantee-preview-1",
     shop_id: "shop-preview",
@@ -276,8 +304,8 @@ export const createPreviewGuaranteeOrders = (): GuaranteeOrderView[] => ([
     synced_at: "2026-05-22T00:25:00+08:00",
     updated_at: "2026-05-22T00:25:00+08:00",
   },
-]);
-export const createPreviewAftersaleEvidence = (): AftersaleEvidenceView[] => ([
+];
+export const createPreviewAftersaleEvidence = (): AftersaleEvidenceView[] => [
   {
     id: "evidence-preview-1",
     target_type: "guarantee",
@@ -288,7 +316,8 @@ export const createPreviewAftersaleEvidence = (): AftersaleEvidenceView[] => ([
     evidence_type: "supplier_proof",
     evidence_type_text: "供应商凭证",
     title: "供应商发货前质检截图",
-    content_text: "已向供应商索要包装破损前后的质检截图，待人工核对后再决定是否提交平台。",
+    content_text:
+      "已向供应商索要包装破损前后的质检截图，待人工核对后再决定是否提交平台。",
     local_file_path: "/Users/wangjunhao/Pictures/wx-xd-demo-proof.jpg",
     source_url: null,
     status: "draft",
@@ -296,35 +325,36 @@ export const createPreviewAftersaleEvidence = (): AftersaleEvidenceView[] => ([
     created_at: "2026-05-22T00:34:00+08:00",
     updated_at: "2026-05-22T00:34:00+08:00",
   },
-]);
-export const createPreviewSupplierAftersaleFollowups = (): SupplierAftersaleFollowupView[] => ([
-  {
-    id: "supplier-followup-preview-1",
-    target_type: "guarantee",
-    target_id: "guarantee-preview-1",
-    shop_id: "shop-preview",
-    shop_name: "预览店铺",
-    external_target_id: "2000001077270153",
-    purchase_task_id: "purchase-preview-1",
-    supplier_name: "示例供应商",
-    followup_type: "evidence_request",
-    followup_type_text: "索要凭证",
-    status: "waiting_supplier",
-    status_text: "等供应商",
-    note: "已向供应商索要破损前质检截图和打包视频，只记录脱敏沟通摘要。",
-    created_at: "2026-05-22T00:35:00+08:00",
-    updated_at: "2026-05-22T00:35:00+08:00",
-  },
-]);
+];
+export const createPreviewSupplierAftersaleFollowups =
+  (): SupplierAftersaleFollowupView[] => [
+    {
+      id: "supplier-followup-preview-1",
+      target_type: "guarantee",
+      target_id: "guarantee-preview-1",
+      shop_id: "shop-preview",
+      shop_name: "预览店铺",
+      external_target_id: "2000001077270153",
+      purchase_task_id: "purchase-preview-1",
+      supplier_name: "示例供应商",
+      followup_type: "evidence_request",
+      followup_type_text: "索要凭证",
+      status: "waiting_supplier",
+      status_text: "等供应商",
+      note: "已向供应商索要破损前质检截图和打包视频，只记录脱敏沟通摘要。",
+      created_at: "2026-05-22T00:35:00+08:00",
+      updated_at: "2026-05-22T00:35:00+08:00",
+    },
+  ];
 export const createPreviewProfitAdjustments = (): Array<{
   order_id: string;
   kind: string;
   amount_cents: number;
-}> => ([
+}> => [
   { order_id: "order-preview-1", kind: "purchase_freight", amount_cents: 600 },
-]);
-export const createPreviewDatabaseBackups = (): BackupInfo[] => ([]);
-export const createPreviewExternalApiLogs = (): ExternalApiLogView[] => ([
+];
+export const createPreviewDatabaseBackups = (): BackupInfo[] => [];
+export const createPreviewExternalApiLogs = (): ExternalApiLogView[] => [
   {
     id: "external-api-log-preview",
     method: "POST",
@@ -332,55 +362,14 @@ export const createPreviewExternalApiLogs = (): ExternalApiLogView[] => ([
     status: "success",
     status_code: 200,
     error_code: null,
-    request_summary: "request_id=req-preview products=1 target_groups=1 target_shops=0",
+    request_summary:
+      "request_id=req-preview products=1 target_groups=1 target_shops=0",
     response_summary: "ok",
     duration_ms: 38,
     created_at: "2026-05-22T00:17:00+08:00",
   },
-]);
-export const createPreviewAttributeSuggestions = (): PublishAttributeSuggestionView[] => ([
-  {
-    id: "attr-suggestion-preview-1",
-    item_id: "item-preview",
-    job_id: "pub_preview_attr",
-    product_row_id: "product-preview-1",
-    shop_id: "shop-preview",
-    shop_name: "预览店铺",
-    external_product_id: "demo-1688-10001",
-    title: "夏季薄款防晒衣女",
-    attr_kind: "product",
-    attr_key: "材质",
-    suggested_value: "聚酯纤维",
-    sku_values: [],
-    confidence: 82,
-    source: "ai_provider:gpt-4.1-mini",
-    applied: false,
-    allowed_values: ["聚酯纤维", "棉", "锦纶"],
-    reason: "标题和货源规格中多次出现防晒衣常见面料，建议人工确认后采纳。",
-    updated_at: "2026-05-22T00:27:00+08:00",
-  },
-  {
-    id: "attr-suggestion-preview-2",
-    item_id: "item-preview",
-    job_id: "pub_preview_attr",
-    product_row_id: "product-preview-1",
-    shop_id: "shop-preview",
-    shop_name: "预览店铺",
-    external_product_id: "demo-1688-10001",
-    title: "夏季薄款防晒衣女",
-    attr_kind: "sale",
-    attr_key: "颜色",
-    suggested_value: "按 SKU 映射：黑色",
-    sku_values: [{ sku_index: 0, value: "黑色" }],
-    confidence: 92,
-    source: "sku_attr_synonym",
-    applied: true,
-    allowed_values: ["黑色", "白色", "灰色"],
-    reason: "已从 SKU 规格同义词自动确认。",
-    updated_at: "2026-05-22T00:26:00+08:00",
-  },
-]);
-export const createPreviewNotifications = (): NotificationView[] => ([
+];
+export const createPreviewNotifications = (): NotificationView[] => [
   {
     id: "notification-preview-publish",
     severity: "critical",
@@ -391,7 +380,7 @@ export const createPreviewNotifications = (): NotificationView[] => ([
     title: "铺货任务失败",
     body: "店铺 预览店铺 铺货外部商品 demo-1688-10001 失败：缺少商品必填属性：材质（CATEGORY_ATTRS_NEED_AI_FILL）",
     status: "unread",
-    data_json: "{\"external_product_id\":\"demo-1688-10001\"}",
+    data_json: '{"external_product_id":"demo-1688-10001"}',
     read_at: null,
     created_at: "2026-05-22T00:24:00+08:00",
     updated_at: "2026-05-22T00:24:00+08:00",
@@ -406,7 +395,7 @@ export const createPreviewNotifications = (): NotificationView[] => ([
     title: "采购任务缺少外部商品映射",
     body: "订单 order-preview-2 的订单项缺少外部商品 ID 或外部 SKU，需人工补齐映射后再继续采购。",
     status: "unread",
-    data_json: "{\"order_id\":\"order-preview-2\"}",
+    data_json: '{"order_id":"order-preview-2"}',
     read_at: null,
     created_at: "2026-05-22T00:23:00+08:00",
     updated_at: "2026-05-22T00:23:00+08:00",
@@ -421,27 +410,31 @@ export const createPreviewNotifications = (): NotificationView[] => ([
     title: "微信售后待处理",
     body: "售后单 after-sale-420000000001 当前状态为 MERCHANT_PROCESSING，需人工判断是否同意、拒绝或补充凭证。",
     status: "read",
-    data_json: "{\"wechat_order_id\":\"420000000001\"}",
+    data_json: '{"wechat_order_id":"420000000001"}',
     read_at: "2026-05-22T00:25:00+08:00",
     created_at: "2026-05-22T00:18:00+08:00",
     updated_at: "2026-05-22T00:25:00+08:00",
   },
-]);
-export const createPreviewCategoryCatalogShops = (): CategoryCatalogShopSummary[] => ([
-  {
-    shop_id: "shop-preview",
-    shop_name: "预览店铺",
-    category_count: 3,
-    detail_count: 1,
-    product_rule_count: 1,
-    delivery_rule_count: 1,
-    freight_template_count: 1,
-    last_category_sync_at: "2026-05-22T00:20:00+08:00",
-    last_rule_sync_at: "2026-05-22T00:21:00+08:00",
-    last_freight_sync_at: "2026-05-22T00:20:00+08:00",
-  },
-]);
-export const createPreviewCategoryCache = (): CategoryCacheView[] => ([
+];
+export const createPreviewCategoryCatalogShops =
+  (): CategoryCatalogShopSummary[] => [
+    {
+      shop_id: "shop-preview",
+      shop_name: "预览店铺",
+      category_count: 3,
+      detail_count: 1,
+      product_rule_count: 1,
+      delivery_rule_count: 1,
+      category_relation_count: 1,
+      active_category_relation_count: 1,
+      freight_template_count: 1,
+      last_category_sync_at: "2026-05-22T00:20:00+08:00",
+      last_relation_sync_at: "2026-05-22T00:20:00+08:00",
+      last_rule_sync_at: "2026-05-22T00:21:00+08:00",
+      last_freight_sync_at: "2026-05-22T00:20:00+08:00",
+    },
+  ];
+export const createPreviewCategoryCache = (): CategoryCacheView[] => [
   {
     shop_id: "shop-preview",
     shop_name: "预览店铺",
@@ -455,6 +448,7 @@ export const createPreviewCategoryCache = (): CategoryCacheView[] => ([
     has_detail: true,
     has_product_rule: true,
     has_delivery_rule: true,
+    is_available_for_shop: true,
     synced_at: "2026-05-22T00:20:00+08:00",
     detail_synced_at: "2026-05-22T00:21:00+08:00",
   },
@@ -471,15 +465,47 @@ export const createPreviewCategoryCache = (): CategoryCacheView[] => ([
     has_detail: false,
     has_product_rule: false,
     has_delivery_rule: false,
+    is_available_for_shop: false,
     synced_at: "2026-05-22T00:20:00+08:00",
     detail_synced_at: null,
   },
-]);
-export const createPreviewFreightTemplates = (): FreightTemplateView[] => ([
+  {
+    shop_id: "shop-preview",
+    shop_name: "预览店铺",
+    cat_id: 1000001,
+    parent_cat_id: null,
+    level: 1,
+    name: "服饰内衣",
+    product_attr_count: 0,
+    sale_attr_count: 0,
+    product_qua_count: 0,
+    has_detail: false,
+    has_product_rule: false,
+    has_delivery_rule: false,
+    is_available_for_shop: false,
+    synced_at: "2026-05-22T00:20:00+08:00",
+    detail_synced_at: null,
+  },
+];
+export const createPreviewCategoryRelations = (): CategoryRelationView[] => [
+  {
+    shop_id: "shop-preview",
+    shop_name: "预览店铺",
+    cat_id: 1000102,
+    category_name: "防晒衣",
+    status: 1,
+    uneffective_reason: null,
+    effective_time: 1771603200,
+    uneffective_time: null,
+    qua_id: 900001,
+    synced_at: "2026-05-22T00:20:00+08:00",
+  },
+];
+export const createPreviewFreightTemplates = (): FreightTemplateView[] => [
   {
     shop_id: "shop-preview",
     shop_name: "预览店铺",
     template_id: "template-preview-1001",
     synced_at: "2026-05-22T00:20:00+08:00",
   },
-]);
+];

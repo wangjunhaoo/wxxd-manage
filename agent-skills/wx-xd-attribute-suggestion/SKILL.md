@@ -1,52 +1,60 @@
 ---
 name: wx-xd-attribute-suggestion
-description: 基于微信类目详情、商品资料和 SKU 规格，为发品必填属性生成安全候选值。
+description: 补齐单个微信小店发品必填属性的候选值。当铺货流程中仍有属性未补齐时使用。
 version: 1.0.0
 ---
 
-# 微信小店必填属性建议
+# 微信小店必填属性补齐
 
-当铺货任务因为 `CATEGORY_ATTRS_NEED_AI_FILL` 缺少微信类目必填属性时，使用本技能。
+当商品审查后仍有必填属性缺失时，使用本技能。**你必须使用查询工具获取数据，不依赖预填信息。**
 
-## 目标
+## 可用工具
 
-- 只基于输入里的商品标题、SKU 规格、外部元数据、微信类目详情和允许值生成建议。
-- 商品属性返回 `value`；销售属性如果不同 SKU 需要不同值，优先返回 `sku_values`。
-- 不能确定时返回 `value: null`、空 `sku_values` 和低置信度。
-- 不得伪造品牌授权、资质、执行标准、材质、适用年龄、库存或任何商品事实。
+| 工具 | 用途 |
+|------|------|
+| `get_product_detail(task_id)` | 获取商品的标题、SKU、已有的属性建议 |
+| `get_category_detail(shop_id, cat_id)` | 获取类目的必填属性定义和 allowed_values |
+| `search_wechat_docs(query)` | 查询属性定义和填写规范 |
 
-## 输入
+## 工作流程
 
-调用方会提供单个缺失属性的 JSON 对象，通常包含：
+### 1. 获取类目要求
 
-- `product`：商品标题、类目提示、供应商字段和 SKU 摘要。
-- `attr_kind`：`product` 或 `sale`。
-- `attr_key`：缺失属性名称。
-- `allowed_values`：微信类目详情中的允许值，可能为空。
-- `sku_specs`：外部 SKU 规格。
-- `existing_payload`：当前微信发品草稿摘要。
-
-## 输出
-
-只返回 JSON，不输出 Markdown。字段：
-
-```json
-{
-  "value": "属性值或 null",
-  "sku_values": [
-    {
-      "sku_index": 0,
-      "value": "SKU 级属性值"
-    }
-  ],
-  "confidence": 0,
-  "reason": "一句话说明依据"
-}
+```
+get_category_detail(shop_id, cat_id)
 ```
 
-## 输出约束
+找到当前缺失的属性，确认其类型（select_one/select_many/string）和 allowed_values。
 
-- `confidence` 是 0 到 100 的整数。
-- 如果 `allowed_values` 非空，返回值必须能匹配其中一个允许值。
-- 销售属性如果每个 SKU 不同，`sku_values` 必须覆盖可判断的 SKU。
-- 低置信或无依据时不要猜测，返回低置信并说明需要人工确认。
+### 2. 获取商品上下文
+
+```
+get_product_detail(task_id)
+```
+
+查看标题、SKU 规格、外部元数据（taobao_item_params）、已有的 ai_attr_suggestions。
+
+### 3. 推断属性值
+
+按优先级：
+
+1. **ai_attr_suggestions 已有值** → 直接使用（置信度 96）
+2. **allowed_values 中仅有一个选项** → 直接使用（置信度 90）
+3. **从商品标题匹配** → 检查 allowed_values 中哪个值在标题中出现。例如标题含「纯棉」，allowed_values 中有「纯棉」→ 选中
+4. **从 SKU 规格推断**（销售属性）→ 优先返回 `sku_values`，每个 SKU 对应一个值
+5. **从 taobao_item_params 匹配** → 如果外部字段名与属性名相关，使用外部值
+6. **关联推断** → 已有「面料材质=纯棉」→ 可推断「面料材质成分含量=棉100%」
+
+**不确定时：**
+```
+search_wechat_docs(query)
+```
+查文档确认属性含义。
+
+### 4. 输出
+
+按 output_schema 输出，**value 必须从 allowed_values 中原样选取**（select_one/select_many 类型），不允许缩写或近义词。
+
+- 能确定 → confidence ≥ 85，reason 说明依据
+- 有线索但不确定 → confidence 60-84，reason 说明不确定原因
+- 完全无法判断 → confidence < 60，value 返回 null

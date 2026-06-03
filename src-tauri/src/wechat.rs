@@ -27,6 +27,10 @@ const AFTERSALE_REJECT_REASON_URL: &str =
 const GUARANTEE_SEARCH_URL: &str =
     "https://api.weixin.qq.com/channels/ec/aftersale/searchguaranteeorder";
 const GUARANTEE_GET_URL: &str = "https://api.weixin.qq.com/channels/ec/aftersale/getguaranteeorder";
+const CATEGORY_RELATION_LIST_URL: &str =
+    "https://api.weixin.qq.com/shop/ec/category/get_category_relation_list";
+const CATEGORY_RELATION_DETAIL_URL: &str =
+    "https://api.weixin.qq.com/shop/ec/category/get_category_relation_detail";
 const CATEGORY_ALL_URL: &str = "https://api.weixin.qq.com/shop/ec/category/all";
 const CATEGORY_DETAIL_URL: &str = "https://api.weixin.qq.com/shop/ec/category/detail";
 const CATEGORY_PRODUCT_RULE_URL: &str =
@@ -35,6 +39,9 @@ const CATEGORY_DELIVERY_RULE_URL: &str =
     "https://api.weixin.qq.com/shop/ec/category/getcategoryrule";
 const FREIGHT_TEMPLATE_LIST_URL: &str =
     "https://api.weixin.qq.com/channels/ec/merchant/getfreighttemplatelist";
+const MERCHANT_ADDRESS_LIST_URL: &str =
+    "https://api.weixin.qq.com/channels/ec/merchant/address/list";
+const MERCHANT_ADDRESS_GET_URL: &str = "https://api.weixin.qq.com/channels/ec/merchant/address/get";
 
 #[derive(Clone)]
 pub struct WechatShopClient {
@@ -173,9 +180,35 @@ pub struct WechatRawCall {
     pub result: WechatCallResult<WechatRawResult>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct MerchantAddressListCall {
+    pub meta: WechatCallMeta,
+    pub result: WechatCallResult<MerchantAddressListResult>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MerchantAddressDetailCall {
+    pub meta: WechatCallMeta,
+    pub result: WechatCallResult<MerchantAddressDetailSummary>,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct WechatRawResult {
     pub raw_payload: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct MerchantAddressListResult {
+    pub address_ids: Vec<i64>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct MerchantAddressDetailSummary {
+    pub address_id: i64,
+    pub send_addr: bool,
+    pub default_send: bool,
+    pub recv_addr: bool,
+    pub default_recv: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -563,6 +596,18 @@ struct CategoryDetailRequest {
 }
 
 #[derive(Debug, Serialize)]
+struct CategoryRelationListRequest {
+    is_filter_status: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+struct CategoryRelationDetailRequest {
+    category_id: i64,
+}
+
+#[derive(Debug, Serialize)]
 struct CategoryProductRuleRequest {
     cat_id: i64,
     release_mode: i64,
@@ -577,6 +622,32 @@ struct CategoryDeliveryRuleRequest {
 struct FreightTemplateListRequest {
     offset: i64,
     limit: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct MerchantAddressListRequest {
+    offset: i64,
+    limit: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct MerchantAddressListResponse {
+    errcode: i64,
+    errmsg: String,
+    #[serde(default)]
+    address_id_list: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+struct MerchantAddressGetRequest {
+    address_id: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct MerchantAddressGetResponse {
+    errcode: i64,
+    errmsg: String,
+    address_detail: Option<serde_json::Value>,
 }
 
 impl Default for WechatShopClient {
@@ -805,11 +876,7 @@ impl WechatShopClient {
             .await?;
 
         let result = if response.errcode == 0 {
-            let product_id = response
-                .product_id
-                .as_ref()
-                .or_else(|| response.extra.get("product_id"))
-                .and_then(json_value_to_string);
+            let product_id = product_add_response_product_id(&response);
             match product_id {
                 Some(product_id) if !product_id.trim().is_empty() => {
                     let mut raw_payload = serde_json::Map::new();
@@ -1600,6 +1667,67 @@ impl WechatShopClient {
         })
     }
 
+    pub async fn get_category_relation_list(
+        &self,
+        access_token: &str,
+        status: Option<i64>,
+    ) -> AppResult<WechatRawCall> {
+        let mut url = Url::parse(CATEGORY_RELATION_LIST_URL)
+            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
+        url.query_pairs_mut()
+            .append_pair("access_token", access_token);
+
+        let response = self
+            .http
+            .post(url)
+            .json(&CategoryRelationListRequest {
+                is_filter_status: status.is_some(),
+                status,
+            })
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<RawWechatResponse>()
+            .await?;
+
+        Ok(WechatRawCall {
+            meta: WechatCallMeta {
+                endpoint: CATEGORY_RELATION_LIST_URL,
+                method: "POST",
+            },
+            result: raw_wechat_result(response),
+        })
+    }
+
+    pub async fn get_category_relation_detail(
+        &self,
+        access_token: &str,
+        category_id: i64,
+    ) -> AppResult<WechatRawCall> {
+        let mut url = Url::parse(CATEGORY_RELATION_DETAIL_URL)
+            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
+        url.query_pairs_mut()
+            .append_pair("access_token", access_token);
+
+        let response = self
+            .http
+            .post(url)
+            .json(&CategoryRelationDetailRequest { category_id })
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<RawWechatResponse>()
+            .await?;
+
+        Ok(WechatRawCall {
+            meta: WechatCallMeta {
+                endpoint: CATEGORY_RELATION_DETAIL_URL,
+                method: "POST",
+            },
+            result: raw_wechat_result(response),
+        })
+    }
+
     pub async fn get_all_categories(&self, access_token: &str) -> AppResult<WechatRawCall> {
         let mut url = Url::parse(CATEGORY_ALL_URL)
             .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
@@ -1745,6 +1873,97 @@ impl WechatShopClient {
             result: raw_wechat_result(response),
         })
     }
+
+    pub async fn list_merchant_addresses(
+        &self,
+        access_token: &str,
+        offset: i64,
+        limit: i64,
+    ) -> AppResult<MerchantAddressListCall> {
+        let mut url = Url::parse(MERCHANT_ADDRESS_LIST_URL)
+            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
+        url.query_pairs_mut()
+            .append_pair("access_token", access_token);
+
+        let response = self
+            .http
+            .post(url)
+            .json(&MerchantAddressListRequest { offset, limit })
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<MerchantAddressListResponse>()
+            .await?;
+
+        let result = if response.errcode == 0 {
+            let mut address_ids = response
+                .address_id_list
+                .iter()
+                .filter_map(|value| wechat_json_value_to_i64(Some(value)))
+                .filter(|address_id| *address_id > 0)
+                .collect::<Vec<_>>();
+            address_ids.sort_unstable();
+            address_ids.dedup();
+            WechatCallResult::Success(MerchantAddressListResult { address_ids })
+        } else {
+            WechatCallResult::ApiError(WechatApiError {
+                errcode: response.errcode,
+                errmsg: response.errmsg,
+            })
+        };
+
+        Ok(MerchantAddressListCall {
+            meta: WechatCallMeta {
+                endpoint: MERCHANT_ADDRESS_LIST_URL,
+                method: "POST",
+            },
+            result,
+        })
+    }
+
+    pub async fn get_merchant_address(
+        &self,
+        access_token: &str,
+        address_id: i64,
+    ) -> AppResult<MerchantAddressDetailCall> {
+        let mut url = Url::parse(MERCHANT_ADDRESS_GET_URL)
+            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
+        url.query_pairs_mut()
+            .append_pair("access_token", access_token);
+
+        let response = self
+            .http
+            .post(url)
+            .json(&MerchantAddressGetRequest { address_id })
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<MerchantAddressGetResponse>()
+            .await?;
+
+        let result = if response.errcode == 0 {
+            match merchant_address_detail_summary(response.address_detail.as_ref(), address_id) {
+                Ok(detail) => WechatCallResult::Success(detail),
+                Err(errmsg) => WechatCallResult::ApiError(WechatApiError {
+                    errcode: -999_999,
+                    errmsg,
+                }),
+            }
+        } else {
+            WechatCallResult::ApiError(WechatApiError {
+                errcode: response.errcode,
+                errmsg: response.errmsg,
+            })
+        };
+
+        Ok(MerchantAddressDetailCall {
+            meta: WechatCallMeta {
+                endpoint: MERCHANT_ADDRESS_GET_URL,
+                method: "POST",
+            },
+            result,
+        })
+    }
 }
 
 fn raw_wechat_result(mut response: RawWechatResponse) -> WechatCallResult<WechatRawResult> {
@@ -1761,6 +1980,90 @@ fn raw_wechat_result(mut response: RawWechatResponse) -> WechatCallResult<Wechat
             errcode: response.errcode,
             errmsg: response.errmsg,
         })
+    }
+}
+
+fn product_add_response_product_id(response: &ProductAddResponse) -> Option<String> {
+    response
+        .product_id
+        .as_ref()
+        .or_else(|| response.extra.get("product_id"))
+        .or_else(|| {
+            response
+                .extra
+                .get("data")
+                .and_then(|data| data.get("product_id"))
+        })
+        .or_else(|| {
+            response
+                .extra
+                .get("data")
+                .and_then(|data| data.get("product"))
+                .and_then(|product| product.get("product_id"))
+        })
+        .or_else(|| {
+            response
+                .extra
+                .get("product")
+                .and_then(|product| product.get("product_id"))
+        })
+        .or_else(|| {
+            response
+                .extra
+                .get("product_info")
+                .and_then(|product| product.get("product_id"))
+        })
+        .or_else(|| {
+            response
+                .extra
+                .get("result")
+                .and_then(|result| result.get("product_id"))
+        })
+        .and_then(json_value_to_string)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn merchant_address_detail_summary(
+    value: Option<&serde_json::Value>,
+    fallback_address_id: i64,
+) -> Result<MerchantAddressDetailSummary, String> {
+    let detail = value
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "微信地址详情缺少 address_detail".to_string())?;
+    let address_id =
+        wechat_json_value_to_i64(detail.get("address_id")).unwrap_or(fallback_address_id);
+    if address_id <= 0 {
+        return Err("微信地址详情缺少有效 address_id".to_string());
+    }
+    Ok(MerchantAddressDetailSummary {
+        address_id,
+        send_addr: wechat_json_value_to_bool(detail.get("send_addr")),
+        default_send: wechat_json_value_to_bool(detail.get("default_send")),
+        recv_addr: wechat_json_value_to_bool(detail.get("recv_addr")),
+        default_recv: wechat_json_value_to_bool(detail.get("default_recv")),
+    })
+}
+
+fn wechat_json_value_to_i64(value: Option<&serde_json::Value>) -> Option<i64> {
+    match value? {
+        serde_json::Value::Number(value) => value
+            .as_i64()
+            .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok())),
+        serde_json::Value::String(value) => value.trim().parse::<i64>().ok(),
+        _ => None,
+    }
+}
+
+fn wechat_json_value_to_bool(value: Option<&serde_json::Value>) -> bool {
+    match value {
+        Some(serde_json::Value::Bool(value)) => *value,
+        Some(serde_json::Value::Number(value)) => value.as_i64().unwrap_or_default() != 0,
+        Some(serde_json::Value::String(value)) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes"
+        ),
+        _ => false,
     }
 }
 
@@ -1794,5 +2097,27 @@ impl From<&WechatApiError> for AppError {
             errcode: value.errcode,
             errmsg: value.errmsg.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn product_add_response_product_id_reads_nested_data() {
+        let response: ProductAddResponse = serde_json::from_value(serde_json::json!({
+            "errcode": 0,
+            "errmsg": "ok",
+            "data": {
+                "product_id": "123456"
+            }
+        }))
+        .expect("响应应可解析");
+
+        assert_eq!(
+            product_add_response_product_id(&response).as_deref(),
+            Some("123456")
+        );
     }
 }

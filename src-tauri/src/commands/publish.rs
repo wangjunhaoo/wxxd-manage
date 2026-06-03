@@ -1,4 +1,5 @@
 use super::*;
+use crate::wechat::{ProductAddCall, WechatApiError};
 
 #[tauri::command]
 pub fn run_publish_tasks_once(
@@ -171,11 +172,16 @@ pub fn run_publish_attribute_fill_once(
                 None,
             )?;
         }
-        let mut draft = match resolve_add_product_base_payload(&product) {
+        let mut draft = match resolve_add_product_base_payload_relaxed_after_sale(&product) {
             Ok(draft) => draft,
             Err(error) => {
                 failed_items += 1;
-                conn_update_publish_item_error(&tx, &item, "WECHAT_PAYLOAD_NEEDS_AI_FILL", &error)?;
+                conn_update_publish_item_error(
+                    &tx,
+                    &item,
+                    add_product_payload_error_code(&error),
+                    &error,
+                )?;
                 insert_task_log(
                     &tx,
                     &item.job_id,
@@ -254,12 +260,48 @@ pub fn run_publish_attribute_fill_once(
             continue;
         }
 
+        // 优先使用审查阶段产出的 ai_attr_suggestions（零 AI 调用）
+        let review_filled = apply_review_ai_attr_suggestions(
+            &tx,
+            &item,
+            &product,
+            &mut draft.payload,
+            &raw_detail,
+            &requirement_check,
+        )?;
+        // 重新检查：apply 可能已补齐部分属性
+        let remaining_check =
+            check_cached_category_requirements(&tx, &item.shop_id, cat_id, &draft.payload)?;
+        if !remaining_check.has_missing_attrs() {
+            let filled_count = review_filled.unwrap_or(0);
+            let summary = if filled_count > 0 {
+                format!("已从审查阶段 AI 建议中补齐 {filled_count} 个必填属性，等待重新执行微信类目预检")
+            } else {
+                "必填属性已完整，等待重新执行微信类目预检".to_string()
+            };
+            set_publish_item_status_in_conn(&tx, &item, "ready_to_publish", None, Some(&summary))?;
+            insert_task_log(
+                &tx,
+                &item.job_id,
+                Some(&item.item_id),
+                "info",
+                &summary,
+                Some(&serde_json::json!({
+                    "cat_id": cat_id,
+                    "source": "review_ai_attr_suggestions"
+                })),
+            )?;
+            auto_filled_items += 1;
+            continue;
+        }
+
+        // 本地推断 + 审查数据兜底：只自动应用高置信且完整的建议。
         let plan = build_attribute_fill_plan(
             &item,
             &product,
             &draft.payload,
             &raw_detail,
-            &requirement_check,
+            &remaining_check,
         );
         for suggestion in &plan.suggestions {
             upsert_publish_attribute_suggestion(&tx, &item, suggestion)?;
@@ -393,7 +435,7 @@ pub async fn run_publish_ai_attribute_suggestions_once(
                 None,
             )?;
         }
-        let mut draft = match resolve_add_product_base_payload(&product) {
+        let mut draft = match resolve_add_product_base_payload_relaxed_after_sale(&product) {
             Ok(draft) => draft,
             Err(error) => {
                 failed_items += 1;
@@ -401,7 +443,7 @@ pub async fn run_publish_ai_attribute_suggestions_once(
                 conn_update_publish_item_error(
                     &conn,
                     &item,
-                    "WECHAT_PAYLOAD_NEEDS_AI_FILL",
+                    add_product_payload_error_code(&error),
                     &error,
                 )?;
                 insert_task_log_for_app(
@@ -679,256 +721,714 @@ pub async fn run_publish_ai_attribute_suggestions_once(
     })
 }
 
-#[tauri::command]
-pub fn list_publish_attribute_suggestions(
-    app: AppHandle,
-    status: Option<String>,
-    limit: Option<i64>,
-    job_id: Option<String>,
-    item_id: Option<String>,
-) -> AppResult<PublishAttributeSuggestionListResult> {
-    let conn = open_connection(&app)?;
-    let status = normalize_attribute_suggestion_status(status.as_deref())?;
-    let limit = limit.unwrap_or(200).clamp(1, 500);
-    let job_id = normalize_optional_filter(job_id);
-    let item_id = normalize_optional_filter(item_id);
-    let items = load_publish_attribute_suggestion_views(
-        &conn,
-        status,
-        job_id.as_deref(),
-        item_id.as_deref(),
-        limit,
-    )?;
-    let total = count_attribute_suggestions_by_status(
-        &conn,
-        status,
-        job_id.as_deref(),
-        item_id.as_deref(),
-    )?;
-    let pending_count = count_attribute_suggestions_by_status(
-        &conn,
-        "pending",
-        job_id.as_deref(),
-        item_id.as_deref(),
-    )?;
-    let applied_count = count_attribute_suggestions_by_status(
-        &conn,
-        "applied",
-        job_id.as_deref(),
-        item_id.as_deref(),
-    )?;
-    Ok(PublishAttributeSuggestionListResult {
-        items,
-        total,
-        pending_count,
-        applied_count,
-    })
-}
-
-#[tauri::command]
-pub fn apply_publish_attribute_suggestions(
-    app: AppHandle,
-    request: PublishAttributeSuggestionApplyRequest,
-) -> AppResult<PublishAttributeSuggestionApplyResult> {
-    let mut suggestion_ids = request
-        .suggestion_ids
-        .into_iter()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .collect::<Vec<_>>();
-    suggestion_ids.sort();
-    suggestion_ids.dedup();
-    if suggestion_ids.is_empty() {
-        return Err(AppError::Validation("请选择要采纳的属性建议".to_string()));
-    }
-    if suggestion_ids.len() > 100 {
-        return Err(AppError::Validation(
-            "一次最多采纳 100 条属性建议".to_string(),
-        ));
-    }
-
-    let mut conn = open_connection(&app)?;
-    let tx = conn.transaction()?;
-    let mut grouped = BTreeMap::<String, Vec<AttributeSuggestionApplyRow>>::new();
-    let mut failed_suggestions = 0i64;
-    for suggestion_id in &suggestion_ids {
-        match load_attribute_suggestion_for_apply(&tx, suggestion_id)? {
-            Some(row) if row.applied => {}
-            Some(row) => {
-                grouped
-                    .entry(row.item.item_id.clone())
-                    .or_default()
-                    .push(row);
-            }
-            None => {
-                failed_suggestions += 1;
-            }
-        }
-    }
-
-    let mut applied_suggestions = 0i64;
-    let mut updated_items = 0i64;
-    let mut job_ids = BTreeSet::new();
-
-    for rows in grouped.values() {
-        let first = rows
-            .first()
-            .ok_or_else(|| AppError::Validation("属性建议分组为空".to_string()))?;
-        job_ids.insert(first.item.job_id.clone());
-        let product = match serde_json::from_str::<ExternalProductInput>(&first.item.raw_payload) {
-            Ok(product) => product,
-            Err(error) => {
-                failed_suggestions += rows.len() as i64;
-                insert_task_log(
-                    &tx,
-                    &first.item.job_id,
-                    Some(&first.item.item_id),
-                    "error",
-                    &format!("人工采纳属性建议失败：商品原始数据无法解析：{error}"),
-                    None,
-                )?;
-                continue;
-            }
-        };
-        let mut draft = match resolve_add_product_base_payload(&product) {
-            Ok(draft) => draft,
-            Err(error) => {
-                failed_suggestions += rows.len() as i64;
-                insert_task_log(
-                    &tx,
-                    &first.item.job_id,
-                    Some(&first.item.item_id),
-                    "error",
-                    &format!("人工采纳属性建议失败：{error}"),
-                    None,
-                )?;
-                continue;
-            }
-        };
-        let suggestions = rows
-            .iter()
-            .filter_map(|row| match row.to_attribute_fill_suggestion() {
-                Ok(suggestion) => Some(suggestion),
-                Err(error) => {
-                    let _ = insert_task_log(
-                        &tx,
-                        &row.item.job_id,
-                        Some(&row.item.item_id),
-                        "error",
-                        &format!("人工采纳属性建议失败：{error}"),
-                        None,
-                    );
-                    failed_suggestions += 1;
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-        if suggestions.is_empty() {
-            continue;
-        }
-        let plan = AttributeFillPlan { suggestions };
-        apply_attribute_fill_plan_to_payload(&mut draft.payload, &plan)?;
-        persist_filled_add_product_payload(&tx, &first.item, &draft.payload, &plan)?;
-
-        for row in rows {
-            tx.execute(
-                "UPDATE publish_attribute_suggestions
-                 SET applied = 1, updated_at = ?1
-                 WHERE id = ?2",
-                params![now_shanghai(), row.id.as_str()],
-            )?;
-        }
-        applied_suggestions += rows.len() as i64;
-        updated_items += 1;
-
-        let summary = format!(
-            "已人工采纳 {} 条属性建议，等待重新执行微信类目预检",
-            rows.len()
-        );
-        let next_summary =
-            if let Some(cat_id) = extract_leaf_category_id_from_payload(&draft.payload) {
-                match check_cached_category_requirements(
-                    &tx,
-                    &first.item.shop_id,
-                    cat_id,
-                    &draft.payload,
-                ) {
-                    Ok(check) if check.has_missing_attrs() => Some(format!(
-                        "已人工采纳 {} 条属性建议，仍{}",
-                        rows.len(),
-                        check.failure_summary()
-                    )),
-                    Ok(_) => None,
-                    Err(error) => Some(format!(
-                        "已人工采纳 {} 条属性建议，但重新校验类目属性失败：{}",
-                        rows.len(),
-                        error
-                    )),
-                }
-            } else {
-                Some(format!(
-                    "已人工采纳 {} 条属性建议，但发品草稿缺少微信叶子类目 ID",
-                    rows.len()
-                ))
-            };
-        if let Some(error_summary) = next_summary {
-            conn_update_publish_item_error(
-                &tx,
-                &first.item,
-                "CATEGORY_ATTRS_NEED_AI_FILL",
-                &error_summary,
-            )?;
-            upsert_notification(
-                &tx,
-                "warning",
-                "publish_item",
-                &first.item.item_id,
-                Some(&first.item.shop_id),
-                "铺货属性建议已部分采纳，仍需确认",
-                &error_summary,
-                Some(&serde_json::json!({
-                    "job_id": &first.item.job_id,
-                    "item_id": &first.item.item_id,
-                    "external_product_id": &first.item.external_product_id
-                })),
-            )?;
-        } else {
-            set_publish_item_status_in_conn(
-                &tx,
-                &first.item,
-                "ready_to_publish",
-                None,
-                Some(&summary),
-            )?;
+async fn ensure_category_detail_payload_for_publish(
+    app: &AppHandle,
+    client: &WechatShopClient,
+    access_token: &str,
+    item: &PendingPublishItem,
+    cat_id: i64,
+) -> AppResult<Result<Value, (String, String)>> {
+    {
+        let conn = open_connection(app)?;
+        if let Some(raw_detail) = load_cached_category_detail_payload(&conn, &item.shop_id, cat_id)?
+        {
+            return Ok(Ok(raw_detail));
         }
         insert_task_log(
-            &tx,
-            &first.item.job_id,
-            Some(&first.item.item_id),
+            &conn,
+            &item.job_id,
+            Some(&item.item_id),
             "info",
-            &summary,
+            "本地未缓存该店铺类目详情，开始同步微信类目详情",
             Some(&serde_json::json!({
-                "suggestion_ids": rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>()
+                "shop_id": item.shop_id,
+                "cat_id": cat_id,
+                "external_product_id": item.external_product_id
             })),
         )?;
     }
 
-    for job_id in &job_ids {
-        recompute_publish_job(&tx, job_id)?;
-    }
-    tx.commit()?;
+    let detail_call = match client.get_category_detail(access_token, cat_id).await {
+        Ok(call) => call,
+        Err(error) => {
+            return Ok(Err((
+                "CATEGORY_DETAIL_SYNC_HTTP_FAILED".to_string(),
+                format!("同步微信类目详情失败：{error}"),
+            )));
+        }
+    };
 
-    Ok(PublishAttributeSuggestionApplyResult {
-        processed_suggestions: suggestion_ids.len() as i64,
-        processed_items: grouped.len() as i64,
-        applied_suggestions,
-        updated_items,
-        failed_suggestions,
-        message: format!(
-            "已采纳 {} 条建议，更新 {} 个铺货项",
-            applied_suggestions, updated_items
-        ),
-    })
+    match detail_call.result {
+        WechatCallResult::Success(raw) => {
+            let counts = category_detail_counts(&raw.raw_payload);
+            let conn = open_connection(app)?;
+            upsert_category_detail(&conn, &item.shop_id, cat_id, &raw.raw_payload, &counts)?;
+            insert_api_call_log(
+                &conn,
+                Some(&item.shop_id),
+                detail_call.meta.endpoint,
+                detail_call.meta.method,
+                "success",
+                None,
+                None,
+                Some(&format!(
+                    "publish synced category detail cat_id={cat_id}, product_attrs={}, sale_attrs={}",
+                    counts.product_attr_count, counts.sale_attr_count
+                )),
+            )?;
+            insert_task_log(
+                &conn,
+                &item.job_id,
+                Some(&item.item_id),
+                "info",
+                &format!(
+                    "微信类目详情同步完成：商品属性 {}，销售属性 {}，资质 {}",
+                    counts.product_attr_count, counts.sale_attr_count, counts.product_qua_count
+                ),
+                Some(&serde_json::json!({ "cat_id": cat_id })),
+            )?;
+            Ok(Ok(raw.raw_payload))
+        }
+        WechatCallResult::ApiError(error) => {
+            let conn = open_connection(app)?;
+            insert_api_call_log(
+                &conn,
+                Some(&item.shop_id),
+                detail_call.meta.endpoint,
+                detail_call.meta.method,
+                "api_error",
+                Some(error.errcode),
+                Some(&error.errmsg),
+                Some("publish category detail api error"),
+            )?;
+            Ok(Err((
+                format!("WECHAT_CATEGORY_DETAIL_{}", error.errcode),
+                format!("同步微信类目详情失败：{}", error.errmsg),
+            )))
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AutoAfterSaleAddressSelection {
+    address_id: i64,
+    source: &'static str,
+}
+
+#[derive(Debug, Clone)]
+struct AutoFreightTemplateSelection {
+    template_id: String,
+    source: &'static str,
+}
+
+async fn ensure_after_sale_address_for_publish(
+    app: &AppHandle,
+    client: &WechatShopClient,
+    access_token: &str,
+    item: &PendingPublishItem,
+    payload: &mut Value,
+    cache: &mut BTreeMap<String, AutoAfterSaleAddressSelection>,
+) -> AppResult<Result<Option<AutoAfterSaleAddressSelection>, (String, String)>> {
+    if payload_deliver_method(payload) != 0 || payload_after_sale_address_id(payload).is_some() {
+        return Ok(Ok(None));
+    }
+
+    let selection = if let Some(selection) = cache.get(&item.shop_id) {
+        selection.clone()
+    } else {
+        let selection =
+            match resolve_default_after_sale_address_for_publish(app, client, access_token, item)
+                .await?
+            {
+                Ok(selection) => selection,
+                Err(error) => return Ok(Err(error)),
+            };
+        cache.insert(item.shop_id.clone(), selection.clone());
+        selection
+    };
+    set_payload_after_sale_address_id(payload, selection.address_id)?;
+    insert_task_log_for_app(
+        app,
+        &item.job_id,
+        Some(&item.item_id),
+        "info",
+        "已使用微信默认售后/退货地址 ID 补齐发品参数",
+        Some(&serde_json::json!({
+            "address_id": selection.address_id,
+            "source": selection.source
+        })),
+    )?;
+    Ok(Ok(Some(selection)))
+}
+
+async fn ensure_freight_template_for_publish(
+    app: &AppHandle,
+    client: &WechatShopClient,
+    access_token: &str,
+    item: &PendingPublishItem,
+    payload: &mut Value,
+    cache: &mut BTreeMap<String, AutoFreightTemplateSelection>,
+) -> AppResult<Result<Option<AutoFreightTemplateSelection>, (String, String)>> {
+    if payload_deliver_method(payload) != 0 || payload_freight_template_id(payload).is_some() {
+        return Ok(Ok(None));
+    }
+
+    let selection = if let Some(selection) = cache.get(&item.shop_id) {
+        selection.clone()
+    } else {
+        let selection =
+            match resolve_default_freight_template_for_publish(app, client, access_token, item)
+                .await?
+            {
+                Ok(selection) => selection,
+                Err(error) => return Ok(Err(error)),
+            };
+        cache.insert(item.shop_id.clone(), selection.clone());
+        selection
+    };
+    set_payload_freight_template_id(payload, &selection.template_id)?;
+    insert_task_log_for_app(
+        app,
+        &item.job_id,
+        Some(&item.item_id),
+        "info",
+        "已使用店铺缓存运费模板 ID 补齐发品参数",
+        Some(&serde_json::json!({
+            "template_id": selection.template_id,
+            "source": selection.source
+        })),
+    )?;
+    Ok(Ok(Some(selection)))
+}
+
+async fn retry_add_product_with_alternative_freight_templates(
+    app: &AppHandle,
+    client: &WechatShopClient,
+    access_token: &str,
+    item: &PendingPublishItem,
+    payload: &mut Value,
+) -> AppResult<Option<ProductAddCall>> {
+    let current_template_id = payload_freight_template_id(payload);
+    let template_ids = {
+        let conn = open_connection(app)?;
+        list_cached_freight_template_ids(&conn, &item.shop_id)?
+    };
+    let alternatives = template_ids
+        .into_iter()
+        .filter(|template_id| current_template_id.as_deref() != Some(template_id.as_str()))
+        .take(5)
+        .collect::<Vec<_>>();
+    if alternatives.is_empty() {
+        return Ok(None);
+    }
+
+    let mut last_template_error = None;
+    for template_id in alternatives {
+        set_payload_freight_template_id(payload, &template_id)?;
+        insert_task_log_for_app(
+            app,
+            &item.job_id,
+            Some(&item.item_id),
+            "info",
+            "当前运费模板被微信拒绝，自动切换同店铺其他运费模板重试 addproduct",
+            Some(&serde_json::json!({
+                "template_id": template_id
+            })),
+        )?;
+        let call = match client.add_product(access_token, payload).await {
+            Ok(call) => call,
+            Err(error) => {
+                return Err(error);
+            }
+        };
+        if matches!(
+            &call.result,
+            WechatCallResult::ApiError(error) if is_freight_template_id_error(error)
+        ) {
+            last_template_error = Some(call);
+            continue;
+        }
+        return Ok(Some(call));
+    }
+
+    Ok(last_template_error)
+}
+
+fn is_freight_template_id_error(error: &WechatApiError) -> bool {
+    error.errmsg.contains("查询模板ID失败")
+        || (error.errmsg.contains("模板") && error.errmsg.contains("ID"))
+}
+
+async fn resolve_default_after_sale_address_for_publish(
+    app: &AppHandle,
+    client: &WechatShopClient,
+    access_token: &str,
+    item: &PendingPublishItem,
+) -> AppResult<Result<AutoAfterSaleAddressSelection, (String, String)>> {
+    let list_call = match client.list_merchant_addresses(access_token, 0, 100).await {
+        Ok(call) => call,
+        Err(error) => {
+            return Ok(Err((
+                "WECHAT_ADDRESS_LIST_HTTP_FAILED".to_string(),
+                format!("读取微信店铺地址列表失败：{error}"),
+            )));
+        }
+    };
+
+    let address_ids = match list_call.result {
+        WechatCallResult::Success(result) => {
+            let conn = open_connection(app)?;
+            insert_api_call_log(
+                &conn,
+                Some(&item.shop_id),
+                list_call.meta.endpoint,
+                list_call.meta.method,
+                "success",
+                None,
+                None,
+                Some(&format!(
+                    "merchant address list count={}",
+                    result.address_ids.len()
+                )),
+            )?;
+            result.address_ids
+        }
+        WechatCallResult::ApiError(error) => {
+            let conn = open_connection(app)?;
+            insert_api_call_log(
+                &conn,
+                Some(&item.shop_id),
+                list_call.meta.endpoint,
+                list_call.meta.method,
+                "api_error",
+                Some(error.errcode),
+                Some(&error.errmsg),
+                Some("merchant address list api error"),
+            )?;
+            return Ok(Err((
+                format!("WECHAT_ADDRESS_LIST_{}", error.errcode),
+                format!("读取微信店铺地址列表失败：{}", error.errmsg),
+            )));
+        }
+    };
+
+    if address_ids.is_empty() {
+        return Ok(Err((
+            "MISSING_AFTER_SALE_ADDRESS".to_string(),
+            "快递发货必须提供售后/退货地址 ID；微信店铺地址列表为空，请先在微信小店配置退货地址，或在商品 metadata.wechat_after_sale_address_id 填入地址 ID"
+                .to_string(),
+        )));
+    }
+
+    let mut details = Vec::new();
+    for address_id in address_ids {
+        let detail_call = match client.get_merchant_address(access_token, address_id).await {
+            Ok(call) => call,
+            Err(error) => {
+                return Ok(Err((
+                    "WECHAT_ADDRESS_DETAIL_HTTP_FAILED".to_string(),
+                    format!("读取微信店铺地址详情失败：{error}"),
+                )));
+            }
+        };
+        match detail_call.result {
+            WechatCallResult::Success(detail) => {
+                let conn = open_connection(app)?;
+                insert_api_call_log(
+                    &conn,
+                    Some(&item.shop_id),
+                    detail_call.meta.endpoint,
+                    detail_call.meta.method,
+                    "success",
+                    None,
+                    None,
+                    Some(&format!(
+                        "merchant address detail address_id={}, recv_addr={}, default_recv={}, send_addr={}, default_send={}",
+                        detail.address_id,
+                        detail.recv_addr,
+                        detail.default_recv,
+                        detail.send_addr,
+                        detail.default_send
+                    )),
+                )?;
+                details.push(detail);
+            }
+            WechatCallResult::ApiError(error) => {
+                let conn = open_connection(app)?;
+                insert_api_call_log(
+                    &conn,
+                    Some(&item.shop_id),
+                    detail_call.meta.endpoint,
+                    detail_call.meta.method,
+                    "api_error",
+                    Some(error.errcode),
+                    Some(&error.errmsg),
+                    Some("merchant address detail api error"),
+                )?;
+                return Ok(Err((
+                    format!("WECHAT_ADDRESS_DETAIL_{}", error.errcode),
+                    format!("读取微信店铺地址详情失败：{}", error.errmsg),
+                )));
+            }
+        }
+    }
+
+    Ok(select_after_sale_address(&details).map_err(|summary| {
+        let code = if summary.contains("没有可用") {
+            "MISSING_AFTER_SALE_ADDRESS"
+        } else {
+            "AMBIGUOUS_AFTER_SALE_ADDRESS"
+        };
+        (
+            code.to_string(),
+            format!("{summary}；请在商品 metadata.wechat_after_sale_address_id 填入明确的微信售后/退货地址 ID"),
+        )
+    }))
+}
+
+async fn resolve_default_freight_template_for_publish(
+    app: &AppHandle,
+    client: &WechatShopClient,
+    access_token: &str,
+    item: &PendingPublishItem,
+) -> AppResult<Result<AutoFreightTemplateSelection, (String, String)>> {
+    {
+        let conn = open_connection(app)?;
+        if let Some(template_id) = select_cached_freight_template_id(&conn, &item.shop_id)? {
+            return Ok(Ok(AutoFreightTemplateSelection {
+                template_id,
+                source: "cached_first",
+            }));
+        }
+    }
+
+    if let Err(error) =
+        sync_freight_template_ids(app, client, access_token, &item.shop_id, &item.job_id).await
+    {
+        return Ok(Err((
+            "WECHAT_FREIGHT_TEMPLATE_SYNC_FAILED".to_string(),
+            format!("同步微信运费模板失败：{error}"),
+        )));
+    }
+
+    let conn = open_connection(app)?;
+    if let Some(template_id) = select_cached_freight_template_id(&conn, &item.shop_id)? {
+        return Ok(Ok(AutoFreightTemplateSelection {
+            template_id,
+            source: "synced_first",
+        }));
+    }
+
+    Ok(Err((
+        "MISSING_FREIGHT_TEMPLATE".to_string(),
+        "快递发货必须提供运费模板 ID；微信店铺没有同步到可用运费模板，请先在微信小店创建运费模板，或在商品 metadata.wechat_freight_template_id 填入模板 ID"
+            .to_string(),
+    )))
+}
+
+fn select_cached_freight_template_id(
+    conn: &Connection,
+    shop_id: &str,
+) -> AppResult<Option<String>> {
+    conn.query_row(
+        "SELECT template_id
+         FROM wechat_freight_templates
+         WHERE shop_id = ?1
+         ORDER BY synced_at DESC, template_id ASC
+         LIMIT 1",
+        [shop_id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(AppError::from)
+}
+
+fn list_cached_freight_template_ids(conn: &Connection, shop_id: &str) -> AppResult<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT template_id
+         FROM wechat_freight_templates
+         WHERE shop_id = ?1
+         ORDER BY synced_at DESC, template_id ASC",
+    )?;
+    let template_ids = stmt
+        .query_map([shop_id], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(template_ids)
+}
+
+/// 从 ai_attr_suggestions 补齐当前缺失属性，并持久化发品 payload。
+fn apply_review_ai_attr_suggestions_to_payload(
+    conn: &Connection,
+    item: &PendingPublishItem,
+    product: &ExternalProductInput,
+    payload: &mut Value,
+    raw_detail: &Value,
+    check: &CachedCategoryRequirementCheck,
+) -> AppResult<i64> {
+    let suggestions = product
+        .metadata
+        .as_object()
+        .and_then(|m| m.get("ai_attr_suggestions"))
+        .and_then(Value::as_object);
+    let Some(suggestions) = suggestions else {
+        return Ok(0);
+    };
+
+    let mut filled = 0i64;
+    let product_specs = required_category_attr_specs(raw_detail, "product_attr_list");
+    let sale_specs = required_category_attr_specs(raw_detail, "sale_attr_list");
+    for attr_key in &check.missing_product_attrs {
+        if let Some(value) = suggestions
+            .get(attr_key)
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        {
+            if let Some(spec) = product_specs.get(attr_key) {
+                if let Some(value) = normalize_attr_value_for_category_spec(product, spec, &value) {
+                    ensure_payload_product_attr(payload, attr_key, &value)?;
+                    filled += 1;
+                }
+            }
+        }
+    }
+    for attr_key in &check.missing_sale_attrs {
+        if let Some(value) = suggestions
+            .get(attr_key)
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        {
+            if let Some(spec) = sale_specs.get(attr_key) {
+                if let Some(value) = normalize_attr_value_for_category_spec(product, spec, &value) {
+                    ensure_payload_sku_attr_for_all(payload, attr_key, &value)?;
+                    filled += 1;
+                }
+            }
+        }
+    }
+    if filled > 0 {
+        persist_filled_add_product_payload_from_suggestions(conn, item, payload)?;
+    }
+    Ok(filled)
+}
+
+/// 从审查阶段产出的 ai_attr_suggestions 中补齐缺失属性。
+/// 返回 Some(count) 表示补齐成功（所有缺失属性均已补齐），None 表示仍有缺失。
+fn apply_review_ai_attr_suggestions(
+    conn: &Connection,
+    item: &PendingPublishItem,
+    product: &ExternalProductInput,
+    payload: &mut Value,
+    raw_detail: &Value,
+    check: &CachedCategoryRequirementCheck,
+) -> AppResult<Option<i64>> {
+    let suggestions = product
+        .metadata
+        .as_object()
+        .and_then(|m| m.get("ai_attr_suggestions"))
+        .and_then(Value::as_object);
+    let Some(suggestions) = suggestions else {
+        return Ok(None);
+    };
+    if suggestions.is_empty() {
+        return Ok(None);
+    }
+
+    let mut filled = 0i64;
+    let product_specs = required_category_attr_specs(raw_detail, "product_attr_list");
+    let sale_specs = required_category_attr_specs(raw_detail, "sale_attr_list");
+    // 补齐商品属性
+    for attr_key in &check.missing_product_attrs {
+        if let Some(value) = suggestions
+            .get(attr_key)
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        {
+            if let Some(spec) = product_specs.get(attr_key) {
+                if let Some(value) = normalize_attr_value_for_category_spec(product, spec, &value) {
+                    ensure_payload_product_attr(payload, attr_key, &value)?;
+                    filled += 1;
+                }
+            }
+        }
+    }
+    // 补齐销售属性
+    for attr_key in &check.missing_sale_attrs {
+        if let Some(value) = suggestions
+            .get(attr_key)
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        {
+            if let Some(spec) = sale_specs.get(attr_key) {
+                if let Some(value) = normalize_attr_value_for_category_spec(product, spec, &value) {
+                    ensure_payload_sku_attr_for_all(payload, attr_key, &value)?;
+                    filled += 1;
+                }
+            }
+        }
+    }
+
+    if filled == 0 {
+        return Ok(None);
+    }
+
+    // 重新检查是否还有缺失
+    let Some(cat_id) = extract_leaf_category_id_from_payload(payload) else {
+        persist_filled_add_product_payload_from_suggestions(conn, item, payload)?;
+        return Ok(None);
+    };
+    let recheck = match check_cached_category_requirements(conn, &item.shop_id, cat_id, payload)? {
+        recheck if !recheck.has_missing_attrs() => {
+            // 全覆盖！写入补齐记录
+            persist_filled_add_product_payload_from_suggestions(conn, item, payload)?;
+            Ok(Some(filled))
+        }
+        _ => {
+            // 仍有缺失，但已补齐的部分写入 payload
+            persist_filled_add_product_payload_from_suggestions(conn, item, payload)?;
+            Ok(None)
+        }
+    };
+    recheck
+}
+
+/// 将 ai_attr_suggestions 的补齐结果持久化到 raw_payload
+fn persist_filled_add_product_payload_from_suggestions(
+    conn: &Connection,
+    item: &PendingPublishItem,
+    payload: &Value,
+) -> AppResult<()> {
+    let mut raw_value = serde_json::from_str::<Value>(&item.raw_payload).map_err(|error| {
+        AppError::Validation(format!(
+            "商品原始数据无法解析，不能写入属性补齐结果：{error}"
+        ))
+    })?;
+    let raw_object = raw_value.as_object_mut().ok_or_else(|| {
+        AppError::Validation("商品原始数据不是对象，不能写入属性补齐结果".to_string())
+    })?;
+    let metadata_value = raw_object
+        .entry("metadata".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if metadata_value.is_null() {
+        *metadata_value = Value::Object(serde_json::Map::new());
+    }
+    let metadata = metadata_value.as_object_mut().ok_or_else(|| {
+        AppError::Validation("metadata 必须是对象，不能写入属性补齐结果".to_string())
+    })?;
+    metadata.insert("wechat_add_product_payload".to_string(), payload.clone());
+    metadata.insert(
+        "wechat_attr_fill_source".to_string(),
+        Value::String("review_ai_attr_suggestions".to_string()),
+    );
+    metadata.insert(
+        "wechat_attr_fill_at".to_string(),
+        Value::String(now_shanghai()),
+    );
+    conn.execute(
+        "UPDATE publish_products SET raw_payload = ?1 WHERE id = ?2",
+        params![raw_value.to_string(), item.product_row_id.as_str()],
+    )?;
+    Ok(())
+}
+
+fn select_after_sale_address(
+    details: &[MerchantAddressDetailSummary],
+) -> Result<AutoAfterSaleAddressSelection, String> {
+    let default_recv = details
+        .iter()
+        .filter(|detail| detail.default_recv)
+        .collect::<Vec<_>>();
+    if default_recv.len() == 1 {
+        return Ok(AutoAfterSaleAddressSelection {
+            address_id: default_recv[0].address_id,
+            source: "default_recv",
+        });
+    }
+    if default_recv.len() > 1 {
+        return Err("微信返回多个默认退货地址，无法自动选择售后地址".to_string());
+    }
+
+    let recv = details
+        .iter()
+        .filter(|detail| detail.recv_addr)
+        .collect::<Vec<_>>();
+    if recv.len() == 1 {
+        return Ok(AutoAfterSaleAddressSelection {
+            address_id: recv[0].address_id,
+            source: "only_recv",
+        });
+    }
+    if recv.is_empty() {
+        return Err("微信地址列表中没有可用退货/售后地址".to_string());
+    }
+    Err("微信返回多个退货/售后地址，无法自动选择售后地址".to_string())
+}
+
+fn payload_deliver_method(payload: &Value) -> i64 {
+    payload
+        .get("deliver_method")
+        .and_then(|value| json_value_to_i64(Some(value)))
+        .unwrap_or(0)
+}
+
+fn payload_after_sale_address_id(payload: &Value) -> Option<i64> {
+    payload
+        .get("after_sale_info")
+        .and_then(Value::as_object)
+        .and_then(|after_sale_info| after_sale_info.get("after_sale_address_id"))
+        .and_then(|value| json_value_to_i64(Some(value)))
+        .filter(|address_id| *address_id > 0)
+}
+
+fn payload_freight_template_id(payload: &Value) -> Option<String> {
+    payload
+        .get("express_info")
+        .and_then(Value::as_object)
+        .and_then(|express_info| express_info.get("template_id"))
+        .and_then(|value| json_value_to_string(Some(value)))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn set_payload_after_sale_address_id(payload: &mut Value, address_id: i64) -> AppResult<()> {
+    let object = payload.as_object_mut().ok_or_else(|| {
+        AppError::Validation("微信 addproduct 请求必须是对象，不能补齐售后地址".to_string())
+    })?;
+    object.insert(
+        "after_sale_info".to_string(),
+        serde_json::json!({ "after_sale_address_id": address_id }),
+    );
+    Ok(())
+}
+
+fn set_payload_freight_template_id(payload: &mut Value, template_id: &str) -> AppResult<()> {
+    let object = payload.as_object_mut().ok_or_else(|| {
+        AppError::Validation("微信 addproduct 请求必须是对象，不能补齐运费模板".to_string())
+    })?;
+    let express_info = object
+        .entry("express_info".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if express_info.is_null() {
+        *express_info = Value::Object(serde_json::Map::new());
+    }
+    let express_info = express_info.as_object_mut().ok_or_else(|| {
+        AppError::Validation("express_info 必须是对象，不能补齐运费模板".to_string())
+    })?;
+    express_info.insert(
+        "template_id".to_string(),
+        Value::String(template_id.trim().to_string()),
+    );
+    Ok(())
+}
+
+fn validate_publish_payload_value(payload: &Value) -> Result<(), String> {
+    let object = payload
+        .as_object()
+        .ok_or_else(|| "微信 addproduct 请求必须是对象".to_string())?;
+    validate_add_product_base_payload(object)
 }
 
 #[tauri::command]
@@ -957,6 +1457,8 @@ pub async fn run_publish_category_prechecks_once(
     let mut passed_items = 0i64;
     let mut failed_items = 0i64;
     let skipped_items = 0i64;
+    let mut after_sale_address_cache = BTreeMap::new();
+    let mut freight_template_cache = BTreeMap::new();
 
     for item in ready_items {
         job_ids.insert(item.job_id.clone());
@@ -998,13 +1500,13 @@ pub async fn run_publish_category_prechecks_once(
                 continue;
             }
         };
-        let draft = match resolve_add_product_base_payload(&product) {
+        let mut draft = match resolve_add_product_base_payload_relaxed_after_sale(&product) {
             Ok(draft) => draft,
             Err(error) => {
                 mark_publish_item_failed_for_app(
                     &app,
                     &item,
-                    "WECHAT_PAYLOAD_NEEDS_AI_FILL",
+                    add_product_payload_error_code(&error),
                     &error,
                 )?;
                 failed_items += 1;
@@ -1021,31 +1523,6 @@ pub async fn run_publish_category_prechecks_once(
             failed_items += 1;
             continue;
         };
-
-        {
-            let conn = open_connection(&app)?;
-            let requirement_check =
-                check_cached_category_requirements(&conn, &item.shop_id, cat_id, &draft.payload)?;
-            if !requirement_check.detail_found {
-                insert_task_log(
-                    &conn,
-                    &item.job_id,
-                    Some(&item.item_id),
-                    "warn",
-                    "本地未缓存该店铺类目详情，已跳过必填属性本地校验；建议先同步类目规则",
-                    Some(&serde_json::json!({
-                        "shop_id": item.shop_id,
-                        "cat_id": cat_id,
-                        "external_product_id": item.external_product_id
-                    })),
-                )?;
-            } else if requirement_check.has_missing_attrs() {
-                let summary = requirement_check.failure_summary();
-                mark_publish_item_failed(&conn, &item, "CATEGORY_ATTRS_NEED_AI_FILL", &summary)?;
-                failed_items += 1;
-                continue;
-            }
-        }
 
         if item.shop_status != "active" {
             mark_publish_item_failed_for_app(
@@ -1081,6 +1558,111 @@ pub async fn run_publish_category_prechecks_once(
                 continue;
             }
         };
+
+        if let Err((code, summary)) = ensure_after_sale_address_for_publish(
+            &app,
+            &client,
+            &access_token,
+            &item,
+            &mut draft.payload,
+            &mut after_sale_address_cache,
+        )
+        .await?
+        {
+            mark_publish_item_failed_for_app(&app, &item, &code, &summary)?;
+            failed_items += 1;
+            continue;
+        }
+        if let Err((code, summary)) = ensure_freight_template_for_publish(
+            &app,
+            &client,
+            &access_token,
+            &item,
+            &mut draft.payload,
+            &mut freight_template_cache,
+        )
+        .await?
+        {
+            mark_publish_item_failed_for_app(&app, &item, &code, &summary)?;
+            failed_items += 1;
+            continue;
+        }
+        if let Err(error) = validate_publish_payload_value(&draft.payload) {
+            mark_publish_item_failed_for_app(
+                &app,
+                &item,
+                add_product_payload_error_code(&error),
+                &error,
+            )?;
+            failed_items += 1;
+            continue;
+        }
+
+        let raw_detail = match ensure_category_detail_payload_for_publish(
+            &app,
+            &client,
+            &access_token,
+            &item,
+            cat_id,
+        )
+        .await?
+        {
+            Ok(raw_detail) => raw_detail,
+            Err((code, summary)) => {
+                mark_publish_item_failed_for_app(&app, &item, &code, &summary)?;
+                failed_items += 1;
+                continue;
+            }
+        };
+        // 类目预检前先用审查阶段 AI 产出补齐缺失属性，并写回发品 payload。
+        let mut requirement_check =
+            check_category_requirements_from_detail(&raw_detail, &draft.payload);
+        if requirement_check.has_missing_attrs() {
+            let conn = open_connection(&app)?;
+            let review_filled = match apply_review_ai_attr_suggestions_to_payload(
+                &conn,
+                &item,
+                &product,
+                &mut draft.payload,
+                &raw_detail,
+                &requirement_check,
+            ) {
+                Ok(filled) => filled,
+                Err(error) => {
+                    mark_publish_item_failed_for_app(
+                        &app,
+                        &item,
+                        "CATEGORY_ATTR_FILL_FAILED",
+                        &format!("审查阶段属性建议写入发品参数失败：{error}"),
+                    )?;
+                    failed_items += 1;
+                    continue;
+                }
+            };
+            if review_filled > 0 {
+                let summary =
+                    format!("已从审查阶段 AI 建议中补齐 {review_filled} 个必填属性并写入发品参数");
+                insert_task_log(
+                    &conn,
+                    &item.job_id,
+                    Some(&item.item_id),
+                    "info",
+                    &summary,
+                    Some(&serde_json::json!({
+                        "source": "review_ai_attr_suggestions",
+                        "filled_count": review_filled
+                    })),
+                )?;
+                requirement_check =
+                    check_category_requirements_from_detail(&raw_detail, &draft.payload);
+            }
+        }
+        if requirement_check.has_missing_attrs() {
+            let summary = requirement_check.failure_summary();
+            mark_publish_item_failed_for_app(&app, &item, "CATEGORY_ATTRS_NEED_AI_FILL", &summary)?;
+            failed_items += 1;
+            continue;
+        }
 
         let precheck_call = match client.category_precheck(&access_token, Some(cat_id)).await {
             Ok(call) => call,
@@ -1216,6 +1798,8 @@ pub async fn run_publish_asset_uploads_once(
     let mut uploaded_assets = 0i64;
     let mut reused_assets = 0i64;
     let mut failed_items = 0i64;
+    let mut after_sale_address_cache = BTreeMap::new();
+    let mut freight_template_cache = BTreeMap::new();
 
     for item in ready_items {
         job_ids.insert(item.job_id.clone());
@@ -1270,6 +1854,30 @@ pub async fn run_publish_asset_uploads_once(
             continue;
         }
 
+        let mut draft = match resolve_add_product_base_payload_relaxed_after_sale(&product) {
+            Ok(draft) => draft,
+            Err(error) => {
+                mark_publish_item_failed_for_app(
+                    &app,
+                    &item,
+                    add_product_payload_error_code(&error),
+                    &error,
+                )?;
+                failed_items += 1;
+                continue;
+            }
+        };
+        let Some(cat_id) = extract_leaf_category_id_from_payload(&draft.payload) else {
+            mark_publish_item_failed_for_app(
+                &app,
+                &item,
+                "MISSING_WECHAT_LEAF_CATEGORY_ID",
+                "微信发品参数缺少有效叶子类目 cat_id，不能上传素材",
+            )?;
+            failed_items += 1;
+            continue;
+        };
+
         let access_token = match ensure_access_token(&app, &item.shop_id, &client).await {
             Ok(access_token) => access_token,
             Err(error) => {
@@ -1283,6 +1891,70 @@ pub async fn run_publish_asset_uploads_once(
                 continue;
             }
         };
+
+        if let Err((code, summary)) = ensure_after_sale_address_for_publish(
+            &app,
+            &client,
+            &access_token,
+            &item,
+            &mut draft.payload,
+            &mut after_sale_address_cache,
+        )
+        .await?
+        {
+            mark_publish_item_failed_for_app(&app, &item, &code, &summary)?;
+            failed_items += 1;
+            continue;
+        }
+        if let Err((code, summary)) = ensure_freight_template_for_publish(
+            &app,
+            &client,
+            &access_token,
+            &item,
+            &mut draft.payload,
+            &mut freight_template_cache,
+        )
+        .await?
+        {
+            mark_publish_item_failed_for_app(&app, &item, &code, &summary)?;
+            failed_items += 1;
+            continue;
+        }
+        if let Err(error) = validate_publish_payload_value(&draft.payload) {
+            mark_publish_item_failed_for_app(
+                &app,
+                &item,
+                add_product_payload_error_code(&error),
+                &error,
+            )?;
+            failed_items += 1;
+            continue;
+        }
+
+        let raw_detail = match ensure_category_detail_payload_for_publish(
+            &app,
+            &client,
+            &access_token,
+            &item,
+            cat_id,
+        )
+        .await?
+        {
+            Ok(raw_detail) => raw_detail,
+            Err((code, summary)) => {
+                mark_publish_item_failed_for_app(&app, &item, &code, &summary)?;
+                failed_items += 1;
+                continue;
+            }
+        };
+        let requirement_check =
+            check_category_requirements_from_detail(&raw_detail, &draft.payload);
+        if requirement_check.has_missing_attrs() {
+            let summary = requirement_check.failure_summary();
+            mark_publish_item_failed_for_app(&app, &item, "CATEGORY_ATTRS_NEED_AI_FILL", &summary)?;
+            failed_items += 1;
+            continue;
+        }
 
         let mut item_failed = false;
         for asset in assets {
@@ -1356,6 +2028,8 @@ pub async fn run_publish_submits_once(
     let mut job_ids = BTreeSet::new();
     let mut submitted_items = 0i64;
     let mut failed_items = 0i64;
+    let mut after_sale_address_cache = BTreeMap::new();
+    let mut freight_template_cache = BTreeMap::new();
 
     for item in submit_items {
         job_ids.insert(item.job_id.clone());
@@ -1399,15 +2073,15 @@ pub async fn run_publish_submits_once(
         };
 
         let assets = load_prepared_assets(&app, &item.item_id)?;
-        let payload = match build_add_product_payload(&product, &assets) {
+        let mut payload = match build_add_product_payload_relaxed_after_sale(&product, &assets) {
             Ok(payload) => payload,
             Err(error) => {
-                mark_publish_item_failed_for_app(
-                    &app,
-                    &item,
-                    "MISSING_WECHAT_PRODUCT_PAYLOAD",
-                    &error,
-                )?;
+                let error_code = if error.contains("after_sale_info.after_sale_address_id") {
+                    "MISSING_AFTER_SALE_ADDRESS"
+                } else {
+                    "MISSING_WECHAT_PRODUCT_PAYLOAD"
+                };
+                mark_publish_item_failed_for_app(&app, &item, error_code, &error)?;
                 failed_items += 1;
                 continue;
             }
@@ -1427,7 +2101,103 @@ pub async fn run_publish_submits_once(
             }
         };
 
-        let call = match client.add_product(&access_token, &payload).await {
+        if let Err((code, summary)) = ensure_after_sale_address_for_publish(
+            &app,
+            &client,
+            &access_token,
+            &item,
+            &mut payload,
+            &mut after_sale_address_cache,
+        )
+        .await?
+        {
+            mark_publish_item_failed_for_app(&app, &item, &code, &summary)?;
+            failed_items += 1;
+            continue;
+        }
+        if let Err((code, summary)) = ensure_freight_template_for_publish(
+            &app,
+            &client,
+            &access_token,
+            &item,
+            &mut payload,
+            &mut freight_template_cache,
+        )
+        .await?
+        {
+            mark_publish_item_failed_for_app(&app, &item, &code, &summary)?;
+            failed_items += 1;
+            continue;
+        }
+        if let Err(error) = validate_publish_payload_value(&payload) {
+            mark_publish_item_failed_for_app(
+                &app,
+                &item,
+                add_product_payload_error_code(&error),
+                &error,
+            )?;
+            failed_items += 1;
+            continue;
+        }
+
+        let Some(cat_id) = extract_leaf_category_id_from_payload(&payload) else {
+            mark_publish_item_failed_for_app(
+                &app,
+                &item,
+                "MISSING_WECHAT_LEAF_CATEGORY_ID",
+                "微信发品参数缺少有效叶子类目 cat_id，不能提交 addproduct",
+            )?;
+            failed_items += 1;
+            continue;
+        };
+        let raw_detail = match ensure_category_detail_payload_for_publish(
+            &app,
+            &client,
+            &access_token,
+            &item,
+            cat_id,
+        )
+        .await?
+        {
+            Ok(raw_detail) => raw_detail,
+            Err((code, summary)) => {
+                mark_publish_item_failed_for_app(&app, &item, &code, &summary)?;
+                failed_items += 1;
+                continue;
+            }
+        };
+        let sanitize_report =
+            sanitize_payload_attrs_with_category_detail(&product, &mut payload, &raw_detail)?;
+        if sanitize_report.has_changes() {
+            insert_task_log_for_app(
+                &app,
+                &item.job_id,
+                Some(&item.item_id),
+                "info",
+                &format!(
+                    "已按微信类目选项清洗发品属性：{}",
+                    sanitize_report.summary()
+                ),
+                None,
+            )?;
+        }
+        let requirement_check = check_category_requirements_from_detail(&raw_detail, &payload);
+        if requirement_check.has_missing_attrs() {
+            let summary = if sanitize_report.has_removed() {
+                format!(
+                    "{}；{}",
+                    requirement_check.failure_summary(),
+                    sanitize_report.summary()
+                )
+            } else {
+                requirement_check.failure_summary()
+            };
+            mark_publish_item_failed_for_app(&app, &item, "CATEGORY_ATTRS_NEED_AI_FILL", &summary)?;
+            failed_items += 1;
+            continue;
+        }
+
+        let mut call = match client.add_product(&access_token, &payload).await {
             Ok(call) => call,
             Err(error) => {
                 mark_publish_item_failed_for_app(
@@ -1440,6 +2210,22 @@ pub async fn run_publish_submits_once(
                 continue;
             }
         };
+        if matches!(
+            &call.result,
+            WechatCallResult::ApiError(error) if is_freight_template_id_error(error)
+        ) {
+            if let Some(retry_call) = retry_add_product_with_alternative_freight_templates(
+                &app,
+                &client,
+                &access_token,
+                &item,
+                &mut payload,
+            )
+            .await?
+            {
+                call = retry_call;
+            }
+        }
 
         let conn = open_connection(&app)?;
         match &call.result {
@@ -1875,4 +2661,234 @@ pub async fn run_publish_listing_once(
         listing_submitted_items,
         failed_items,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn address_detail(
+        address_id: i64,
+        recv_addr: bool,
+        default_recv: bool,
+    ) -> MerchantAddressDetailSummary {
+        MerchantAddressDetailSummary {
+            address_id,
+            send_addr: true,
+            default_send: false,
+            recv_addr,
+            default_recv,
+        }
+    }
+
+    #[test]
+    fn select_after_sale_address_prefers_default_recv() {
+        let selection = select_after_sale_address(&[
+            address_detail(10, true, false),
+            address_detail(20, false, true),
+        ])
+        .expect("应选择默认退货地址");
+
+        assert_eq!(selection.address_id, 20);
+        assert_eq!(selection.source, "default_recv");
+    }
+
+    #[test]
+    fn select_after_sale_address_uses_only_recv_candidate() {
+        let selection = select_after_sale_address(&[
+            address_detail(10, false, false),
+            address_detail(20, true, false),
+        ])
+        .expect("唯一退货地址可自动选择");
+
+        assert_eq!(selection.address_id, 20);
+        assert_eq!(selection.source, "only_recv");
+    }
+
+    #[test]
+    fn select_after_sale_address_rejects_multiple_recv_candidates() {
+        let error = select_after_sale_address(&[
+            address_detail(10, true, false),
+            address_detail(20, true, false),
+        ])
+        .expect_err("多个退货地址不能猜测");
+
+        assert!(error.contains("多个退货/售后地址"));
+    }
+
+    #[test]
+    fn select_after_sale_address_rejects_multiple_default_recv_candidates() {
+        let error = select_after_sale_address(&[
+            address_detail(10, false, true),
+            address_detail(20, false, true),
+        ])
+        .expect_err("多个默认退货地址不能猜测");
+
+        assert!(error.contains("多个默认退货地址"));
+    }
+
+    #[test]
+    fn set_payload_freight_template_id_preserves_express_info() {
+        let mut payload = serde_json::json!({
+            "deliver_method": 0,
+            "express_info": {
+                "weight": 500
+            }
+        });
+
+        set_payload_freight_template_id(&mut payload, "tpl-1").expect("应能补齐运费模板");
+
+        assert_eq!(
+            payload
+                .pointer("/express_info/template_id")
+                .and_then(Value::as_str),
+            Some("tpl-1")
+        );
+        assert_eq!(
+            payload
+                .pointer("/express_info/weight")
+                .and_then(Value::as_i64),
+            Some(500)
+        );
+    }
+
+    #[test]
+    fn payload_freight_template_id_reads_non_empty_template() {
+        let payload = serde_json::json!({
+            "express_info": {
+                "template_id": " tpl-2 "
+            }
+        });
+
+        assert_eq!(
+            payload_freight_template_id(&payload).as_deref(),
+            Some("tpl-2")
+        );
+    }
+
+    #[test]
+    fn review_ai_attr_suggestions_persist_filled_payload() {
+        let conn = Connection::open_in_memory().expect("应能创建内存数据库");
+        conn.execute(
+            "CREATE TABLE publish_products (id TEXT PRIMARY KEY, raw_payload TEXT NOT NULL)",
+            [],
+        )
+        .expect("应能创建商品表");
+
+        let raw_payload = serde_json::json!({
+            "external_product_id": "external-1",
+            "metadata": {
+                "ai_attr_suggestions": {
+                    "颜色": "红色",
+                    "尺码": "均码"
+                }
+            }
+        })
+        .to_string();
+        conn.execute(
+            "INSERT INTO publish_products (id, raw_payload) VALUES (?1, ?2)",
+            params!["product-1", raw_payload.as_str()],
+        )
+        .expect("应能插入商品");
+
+        let item = PendingPublishItem {
+            item_id: "item-1".to_string(),
+            job_id: "job-1".to_string(),
+            product_row_id: "product-1".to_string(),
+            shop_id: "shop-1".to_string(),
+            shop_status: "connected".to_string(),
+            shop_has_secret: true,
+            external_product_id: "external-1".to_string(),
+            raw_payload,
+        };
+        let product = ExternalProductInput {
+            external_product_id: "external-1".to_string(),
+            title: "测试商品".to_string(),
+            source_url: "https://example.com/item".to_string(),
+            images: Vec::new(),
+            detail_images: Vec::new(),
+            skus: Vec::new(),
+            supplier_name: None,
+            supplier_product_id: None,
+            category_hint: None,
+            brand_hint: None,
+            weight_gram: None,
+            metadata: serde_json::json!({
+                "ai_attr_suggestions": {
+                    "颜色": "红色",
+                    "尺码": "均码"
+                }
+            }),
+        };
+        let mut payload = serde_json::json!({
+            "attrs": [],
+            "skus": [{}]
+        });
+        let check = CachedCategoryRequirementCheck {
+            missing_product_attrs: vec!["颜色".to_string()],
+            missing_sale_attrs: vec!["尺码".to_string()],
+        };
+        let raw_detail = serde_json::json!({
+            "attr": {
+                "product_attr_list": [
+                    {
+                        "name": "颜色",
+                        "is_required": true,
+                        "type_v2": "string",
+                        "value": ""
+                    }
+                ],
+                "sale_attr_list": [
+                    {
+                        "name": "尺码",
+                        "is_required": true,
+                        "type_v2": "string",
+                        "value": ""
+                    }
+                ]
+            }
+        });
+
+        let filled = apply_review_ai_attr_suggestions_to_payload(
+            &conn,
+            &item,
+            &product,
+            &mut payload,
+            &raw_detail,
+            &check,
+        )
+        .expect("应能应用审查阶段属性建议");
+
+        assert_eq!(filled, 2);
+        let saved: String = conn
+            .query_row(
+                "SELECT raw_payload FROM publish_products WHERE id = ?1",
+                ["product-1"],
+                |row| row.get(0),
+            )
+            .expect("应能读取更新后的商品");
+        let saved_value = serde_json::from_str::<Value>(&saved).expect("raw_payload 应为 JSON");
+        let saved_payload = saved_value
+            .pointer("/metadata/wechat_add_product_payload")
+            .expect("应持久化微信发品 payload");
+
+        assert_eq!(
+            saved_payload
+                .pointer("/attrs/0/attr_key")
+                .and_then(Value::as_str),
+            Some("颜色")
+        );
+        assert_eq!(
+            saved_payload
+                .pointer("/skus/0/sku_attrs/0/attr_key")
+                .and_then(Value::as_str),
+            Some("尺码")
+        );
+        assert_eq!(
+            saved_value
+                .pointer("/metadata/wechat_attr_fill_source")
+                .and_then(Value::as_str),
+            Some("review_ai_attr_suggestions")
+        );
+    }
 }

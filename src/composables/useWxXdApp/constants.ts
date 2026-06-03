@@ -1,4 +1,7 @@
-import type { OperationalAutomationSettings, PublishPricingStrategy } from "../../types/app";
+import type {
+  OperationalAutomationSettings,
+  PublishPricingStrategy,
+} from "../../types/app";
 export const defaultAutomationSettings = (): OperationalAutomationSettings => ({
   order_sync_enabled: true,
   order_detail_sync_enabled: true,
@@ -188,6 +191,8 @@ export const statusTone: Record<string, string> = {
   RETURN_CLOSED: "info",
   draft: "info",
   ready: "success",
+  listed: "success",
+  exception: "danger",
   used: "primary",
   archived: "info",
   contacted: "primary",
@@ -207,7 +212,6 @@ export const statusTone: Record<string, string> = {
   STATUS_NO_NEED_PAY: "success",
   STATUS_USER_CANCEL: "info",
   sync_failed: "danger",
-  exception: "danger",
   missing_purchase_task: "warning",
   missing_cost: "warning",
   loss: "danger",
@@ -238,77 +242,90 @@ export const statusTone: Record<string, string> = {
   unread: "warning",
   read: "info",
 };
-export const createDefaultPublishPayload = () => JSON.stringify({
-  request_id: `req-${Date.now()}`,
-  target_shop_group_ids: ["group-default"],
-  products: [
+export const createDefaultPublishPayload = () =>
+  JSON.stringify(
     {
-      external_product_id: "demo-1688-10001",
-      title: "夏季薄款防晒衣女",
-      source_url: "https://example.com/products/10001",
-      images: [
-        "https://example.com/images/1.jpg",
-        "https://example.com/images/2.jpg",
-        "https://example.com/images/3.jpg"
-      ],
-      detail_images: ["https://example.com/detail/1.jpg"],
-      supplier_name: "示例供应商",
-      supplier_product_id: "10001",
-      category_hint: "女装/防晒衣",
-      brand_hint: "无品牌",
-      weight_gram: 500,
-      skus: [
+      request_id: `req-${Date.now()}`,
+      target_shop_group_ids: ["group-default"],
+      products: [
         {
-          external_sku_id: "black-m",
-          specs: { "颜色": "黑色", "尺码": "M" },
-          cost_price: 12.5,
-          stock: 100
-        }
-      ],
-      metadata: {
-        wechat_category_ids: [1000001, 1000101, 1000102],
-        wechat_attrs: [
-          { attr_key: "材质", attr_value: "聚酯纤维" }
-        ],
-        freight_template_id: "replace-with-shop-freight-template-id",
-        extra_service: {
-          seven_day_return: 1,
-          freight_insurance: 0
+          external_product_id: "demo-1688-10001",
+          title: "夏季薄款防晒衣女",
+          source_url: "https://example.com/products/10001",
+          images: [
+            "https://example.com/images/1.jpg",
+            "https://example.com/images/2.jpg",
+            "https://example.com/images/3.jpg",
+          ],
+          detail_images: ["https://example.com/detail/1.jpg"],
+          supplier_name: "示例供应商",
+          supplier_product_id: "10001",
+          category_hint: "女装/防晒衣",
+          brand_hint: "无品牌",
+          weight_gram: 500,
+          skus: [
+            {
+              external_sku_id: "black-m",
+              specs: { 颜色: "黑色", 尺码: "M" },
+              cost_price: 12.5,
+              stock: 100,
+            },
+          ],
+          metadata: {
+            wechat_category_ids: [1000001, 1000101, 1000102],
+            wechat_attrs: [{ attr_key: "材质", attr_value: "聚酯纤维" }],
+            freight_template_id: "replace-with-shop-freight-template-id",
+            extra_service: {
+              seven_day_return: 1,
+              freight_insurance: 0,
+            },
+            sale_price_markup_rate: 1.8,
+            sale_price_fixed_cents: 500,
+          },
         },
-        sale_price_markup_rate: 1.8,
-        sale_price_fixed_cents: 500
-      }
-    }
-  ]
-}, null, 2);
-export const createDefaultPriceUpdatePayload = () => JSON.stringify({
-  request_id: `price-${Date.now()}`,
-  target_shop_group_ids: ["group-default"],
-  products: [
+      ],
+    },
+    null,
+    2,
+  );
+export const createDefaultPriceUpdatePayload = () =>
+  JSON.stringify(
     {
-      external_product_id: "demo-1688-10001",
-      target_price_cents: 3290,
-      reason: "测试商品售价调整"
-    }
-  ]
-}, null, 2);
-
-export const createDefaultOrderPriceAdjustmentPayload = () => JSON.stringify({
-  request_id: `order-price-${Date.now()}`,
-  orders: [
-    {
-      shop_id: "replace-with-shop-id",
-      wechat_order_id: "replace-with-unpaid-order-id",
-      change_express: false,
-      express_fee_cents: null,
-      note: "未付款订单人工让利",
-      lines: [
+      request_id: `price-${Date.now()}`,
+      target_shop_group_ids: ["group-default"],
+      products: [
         {
-          product_id: "replace-with-wechat-product-id",
-          sku_id: "replace-with-wechat-sku-id",
-          change_price_cents: 300
-        }
-      ]
-    }
-  ]
-}, null, 2);
+          external_product_id: "demo-1688-10001",
+          target_price_cents: 3290,
+          reason: "测试商品售价调整",
+        },
+      ],
+    },
+    null,
+    2,
+  );
+
+export const createDefaultOrderPriceAdjustmentPayload = () =>
+  JSON.stringify(
+    {
+      request_id: `order-price-${Date.now()}`,
+      orders: [
+        {
+          shop_id: "replace-with-shop-id",
+          wechat_order_id: "replace-with-unpaid-order-id",
+          change_express: false,
+          express_fee_cents: null,
+          note: "未付款订单人工让利",
+          lines: [
+            {
+              product_id: "replace-with-wechat-product-id",
+              sku_id: "replace-with-wechat-sku-id",
+              change_price_cents: 300,
+            },
+          ],
+        },
+      ],
+    },
+    null,
+    2,
+  );

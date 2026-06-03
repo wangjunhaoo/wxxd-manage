@@ -344,16 +344,18 @@ pub(in crate::commands) async fn request_pi_agent_json(
         "instructions": instructions,
         "output_schema": output_schema,
         "input": input,
-        "image_urls": image_urls.iter().take(12).cloned().collect::<Vec<_>>()
+        "image_urls": image_urls.iter().take(12).cloned().collect::<Vec<_>>(),
+        "agent_api_base_url": "http://127.0.0.1:17890"
     });
     let request_json = serde_json::to_vec(&request_body)
         .map_err(|error| AppError::Validation(format!("AI agent 请求无法序列化：{error}")))?;
-    let mut command = tokio::process::Command::new(resolve_agent_node_binary());
+    let mut command = tokio::process::Command::new(resolve_agent_node_binary(app));
     command
         .arg(&script_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    command.kill_on_drop(true);
     let mut child = command
         .spawn()
         .map_err(|error| AppError::Validation(format!("启动 pi-coding-agent 失败：{error}")))?;
@@ -365,7 +367,8 @@ pub(in crate::commands) async fn request_pi_agent_json(
         let _ = stdin.write_all(&request_json).await;
         let _ = stdin.shutdown().await;
     });
-    let output = tokio::time::timeout(StdDuration::from_secs(75), child.wait_with_output())
+    let timeout = ai_agent_timeout_duration();
+    let output = tokio::time::timeout(timeout, child.wait_with_output())
         .await
         .map_err(|_| AppError::Validation(format!("pi-coding-agent {} 执行超时", skill_name)))?
         .map_err(|error| AppError::Validation(format!("等待 pi-coding-agent 失败：{error}")))?;
@@ -384,7 +387,7 @@ pub(in crate::commands) async fn request_pi_agent_json(
             skill_name
         )));
     }
-    serde_json::from_str::<Value>(&stdout).map_err(|error| {
+    parse_agent_stdout_json(&stdout).map_err(|error| {
         AppError::Validation(format!(
             "pi-coding-agent {} 返回非 JSON：{}；{}",
             skill_name,
@@ -392,6 +395,96 @@ pub(in crate::commands) async fn request_pi_agent_json(
             truncate_for_summary(&stdout, 240)
         ))
     })
+}
+
+fn ai_agent_timeout_duration() -> StdDuration {
+    let seconds = std::env::var("WX_XD_AI_AGENT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(180)
+        .clamp(30, 600);
+    StdDuration::from_secs(seconds)
+}
+
+fn parse_agent_stdout_json(stdout: &str) -> Result<Value, serde_json::Error> {
+    let trimmed = stdout.trim();
+    match serde_json::from_str::<Value>(trimmed) {
+        Ok(value) => return Ok(value),
+        Err(error) => {
+            if let Some(candidate) = extract_json_candidate(trimmed) {
+                return serde_json::from_str::<Value>(&candidate);
+            }
+            Err(error)
+        }
+    }
+}
+
+fn extract_json_candidate(value: &str) -> Option<String> {
+    if let Some(start) = value.find("```") {
+        let after_start = &value[start + 3..];
+        let content = after_start.strip_prefix("json").unwrap_or(after_start);
+        if let Some(end) = content.find("```") {
+            let candidate = content[..end].trim();
+            if !candidate.is_empty() {
+                return Some(candidate.to_string());
+            }
+        }
+    }
+    let object = json_slice_between(value, '{', '}');
+    let array = json_slice_between(value, '[', ']');
+    match (object, array) {
+        (Some(object), Some(array)) => {
+            if object.0 <= array.0 {
+                Some(object.1)
+            } else {
+                Some(array.1)
+            }
+        }
+        (Some(object), None) => Some(object.1),
+        (None, Some(array)) => Some(array.1),
+        (None, None) => None,
+    }
+}
+
+fn json_slice_between(value: &str, left: char, right: char) -> Option<(usize, String)> {
+    let start = value.find(left)?;
+    let chars: Vec<char> = value[start..].chars().collect();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape = false;
+    let mut end_idx = 0usize;
+    for (i, ch) in chars.iter().enumerate() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if *ch == '\\' && in_string {
+            escape = true;
+            continue;
+        }
+        if *ch == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        if *ch == left {
+            depth += 1;
+        }
+        if *ch == right {
+            depth -= 1;
+            if depth == 0 {
+                end_idx = i;
+                break;
+            }
+        }
+    }
+    if depth != 0 {
+        return None;
+    }
+    let end_byte = start + chars[..=end_idx].iter().collect::<String>().len();
+    Some((start, value[start..end_byte].to_string()))
 }
 
 pub(in crate::commands) fn resolve_pi_agent_script_path(app: &AppHandle) -> PathBuf {
@@ -413,15 +506,25 @@ pub(in crate::commands) fn resolve_pi_agent_script_path(app: &AppHandle) -> Path
             return candidate;
         }
     }
-    PathBuf::from("/Users/wangjunhao/Code/project/wx-xd").join(relative)
+    relative
 }
 
-pub(in crate::commands) fn resolve_agent_node_binary() -> PathBuf {
+pub(in crate::commands) fn resolve_agent_node_binary(app: &AppHandle) -> PathBuf {
     if let Ok(path) = std::env::var("WX_XD_AGENT_NODE") {
         let candidate = PathBuf::from(path);
         if candidate.exists() {
             return candidate;
         }
+    }
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let candidate = resource_dir.join("bin").join("node");
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    let local_candidate = PathBuf::from("runtime").join("bin").join("node");
+    if local_candidate.exists() {
+        return local_candidate;
     }
     for path in [
         "/opt/homebrew/bin/node",
@@ -510,19 +613,32 @@ pub(in crate::commands) async fn fill_attribute_plan_with_ai(
     config: &AiProviderConfig,
     plan: &mut AttributeFillPlan,
 ) -> AppResult<i64> {
-    let mut generated = 0i64;
-    for suggestion in &mut plan.suggestions {
-        if suggestion.applied || suggestion.source != "needs_ai" {
-            continue;
-        }
-        if let Some(ai_suggestion) =
-            request_ai_attribute_suggestion(app, config, suggestion).await?
-        {
-            *suggestion = ai_suggestion;
-            generated += 1;
+    let pending = plan
+        .suggestions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, suggestion)| {
+            (!suggestion.applied && suggestion.source == "needs_ai").then_some(index)
+        })
+        .collect::<Vec<_>>();
+    if pending.is_empty() {
+        return Ok(0);
+    }
+    match request_ai_attribute_suggestions_batch(app, config, plan, &pending).await {
+        Ok(generated) => Ok(generated),
+        Err(error) => {
+            let summary = truncate_for_summary(&error.to_string(), 240);
+            for index in pending {
+                let request = plan.suggestions[index].prompt_json.clone();
+                plan.suggestions[index].prompt_json = serde_json::json!({
+                    "request": request,
+                    "ai_error": &summary
+                });
+            }
+            // 静默降级：AI 调用失败时不中断循环，让其他商品继续处理
+            Ok(0)
         }
     }
-    Ok(generated)
 }
 
 pub(in crate::commands) async fn request_ai_attribute_suggestion(
@@ -530,7 +646,9 @@ pub(in crate::commands) async fn request_ai_attribute_suggestion(
     config: &AiProviderConfig,
     base: &AttributeFillSuggestion,
 ) -> AppResult<Option<AttributeFillSuggestion>> {
-    let instruction = "请补齐单个微信小店发品必填属性。返回格式：{\"value\":\"属性值或null\",\"sku_values\":[{\"sku_index\":0,\"value\":\"值\"}],\"confidence\":0-100,\"reason\":\"一句话原因\"}。销售属性如果每个 SKU 不同，优先返回 sku_values。";
+    let instruction = "请补齐单个微信小店发品必填属性。返回格式：{\"value\":\"属性值或null\",\"sku_values\":[{\"sku_index\":0,\"value\":\"值\"}],\"confidence\":0-100,\"reason\":\"一句话原因\"}。\n\
+        【核心规则】allowed_values 非空时，value 必须从中**原样复制**一个值，不允许缩写、近义词或自己造值。例如 allowed_values=[\"纯棉\",\"涤纶\"]，必须返回\"纯棉\"，不能返回\"棉\"。\n\
+        基于标题、类目、SKU、外部元数据和 allowed_values 做语义推断。external_context.known_attrs 是已确定的同商品其他属性，请利用它们做关联推断。只有所有候选都明显不匹配时才返回 null。销售属性每个 SKU 不同时优先返回 sku_values。";
     let response = request_pi_agent_json(
         app,
         config,
@@ -542,17 +660,185 @@ pub(in crate::commands) async fn request_ai_attribute_suggestion(
         &[],
     )
     .await?;
-    let confidence = json_value_to_i64(response.get("confidence"))
+    Ok(Some(attribute_suggestion_from_ai_response(
+        config, base, &response,
+    )))
+}
+
+async fn request_ai_attribute_suggestions_batch(
+    app: &AppHandle,
+    config: &AiProviderConfig,
+    plan: &mut AttributeFillPlan,
+    pending: &[usize],
+) -> AppResult<i64> {
+    // 从第一个 suggestion 的 prompt_json 中提取商品上下文
+    let first_prompt = pending
+        .first()
+        .and_then(|i| plan.suggestions.get(*i))
+        .map(|s| &s.prompt_json);
+    let Some(first_prompt) = first_prompt else {
+        return Ok(0);
+    };
+
+    // 构建缺失属性列表（含类型和允许值）
+    let missing_attrs: Vec<Value> = pending
+        .iter()
+        .filter_map(|index| {
+            plan.suggestions.get(*index).map(|suggestion| {
+                let allowed_values = response_allowed_values(&suggestion.prompt_json);
+                let attr_type = suggestion
+                    .prompt_json
+                    .get("attr_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("string");
+                serde_json::json!({
+                    "index": index,
+                    "attr_kind": suggestion.attr_kind,
+                    "attr_key": &suggestion.attr_key,
+                    "attr_type": attr_type,
+                    "allowed_values": allowed_values,
+                })
+            })
+        })
+        .collect();
+
+    // 构建完整上下文：商品数据 + 缺失属性定义
+    let context = serde_json::json!({
+        "product": {
+            "title": first_prompt.get("title"),
+            "category_hint": first_prompt.get("category_hint"),
+            "brand_hint": first_prompt.get("brand_hint"),
+            "external_product_id": first_prompt.get("external_product_id"),
+            "skus": first_prompt.get("skus"),
+            "external_context": first_prompt.get("external_context"),
+        },
+        "missing_attrs": missing_attrs,
+    });
+
+    let instruction = "你是微信小店发品属性补齐助手。根据商品数据，一次性补齐所有缺失的必填属性。\n\n\
+        【核心规则 — 必须严格遵守】\n\
+        1. select_one / select_many 类型：value 必须从 allowed_values 数组中**原样复制**一个值，一个字都不能改。不允许缩写、不允许近义词、不允许自己造值。\n\
+        2. string 类型：根据商品信息填写合理的文本值。\n\
+        3. 销售属性(attr_kind=sale)：为每个 SKU 在 sku_values 中分别填写值，每个 value 也必须从 allowed_values 中原样选取。\n\
+        4. 基于标题、类目、SKU 规格、external_context 做语义推断。\n\
+        5. 各属性之间关联推断（如面料材质→成分含量、标题→适用年龄/风格）。\n\
+        6. 如果 allowed_values 中的所有选项都不匹配商品信息，才返回 null。\n\
+        7. confidence：确定能从 allowed_values 中找到匹配 → 85-95；有依据但略有不确定 → 65-84；完全无法判断 → 0。\n\n\
+        【错误示例】allowed_values 是 [\"纯棉\",\"涤纶\",\"锦纶\"]，你返回 \"棉\" → ❌ 错误！必须返回 \"纯棉\"。\n\
+        【正确示例】allowed_values 是 [\"纯棉\",\"涤纶\",\"锦纶\"]，你返回 \"纯棉\" → ✅ 正确！\n\n\
+        返回 JSON：{\"suggestions\":[{\"index\":0,\"attr_kind\":\"product或sale\",\"attr_key\":\"属性名\",\"value\":\"从allowed_values原样复制的值或null\",\"sku_values\":[{\"sku_index\":0,\"value\":\"从allowed_values原样复制的值\"}],\"confidence\":0-100,\"reason\":\"依据\"}]}";
+
+    let output_schema = r#"{
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "suggestions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "index": { "type": "integer", "minimum": 0 },
+              "attr_kind": { "type": "string" },
+              "attr_key": { "type": "string" },
+              "value": { "type": ["string", "null"] },
+              "sku_values": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "sku_index": { "type": "integer", "minimum": 0 },
+                    "value": { "type": "string" }
+                  },
+                  "required": ["sku_index", "value"]
+                }
+              },
+              "confidence": { "type": "integer", "minimum": 0, "maximum": 100 },
+              "reason": { "type": "string" }
+            },
+            "required": ["index", "attr_kind", "attr_key", "value", "sku_values", "confidence", "reason"]
+          }
+        }
+      },
+      "required": ["suggestions"]
+    }"#;
+    let response = request_pi_agent_json(
+        app,
+        config,
+        ATTRIBUTE_SUGGESTION_SKILL.name,
+        ATTRIBUTE_SUGGESTION_SKILL.version,
+        instruction,
+        output_schema,
+        &context,
+        &[],
+    )
+    .await?;
+    let Some(items) = response.get("suggestions").and_then(Value::as_array) else {
+        return Ok(0);
+    };
+    let mut generated = 0i64;
+    for (fallback_order, item) in items.iter().enumerate() {
+        let Some(index) = match_ai_batch_response_index(item, pending, fallback_order) else {
+            continue;
+        };
+        let Some(base) = plan.suggestions.get(index).cloned() else {
+            continue;
+        };
+        if !ai_batch_response_matches_base(item, &base) {
+            continue;
+        }
+        let next = attribute_suggestion_from_ai_response(config, &base, item);
+        if next.suggested_value.is_some() || !next.sku_values.is_empty() {
+            plan.suggestions[index] = next;
+            generated += 1;
+        }
+    }
+    Ok(generated)
+}
+
+fn match_ai_batch_response_index(
+    item: &Value,
+    pending: &[usize],
+    _fallback_order: usize,
+) -> Option<usize> {
+    json_value_to_i64(item.get("index"))
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|index| pending.contains(index))
+}
+
+fn ai_batch_response_matches_base(item: &Value, base: &AttributeFillSuggestion) -> bool {
+    let attr_kind = json_value_to_string(item.get("attr_kind"));
+    let attr_key = json_value_to_string(item.get("attr_key"));
+    attr_kind
+        .as_deref()
+        .is_none_or(|value| value == base.attr_kind)
+        && attr_key
+            .as_deref()
+            .is_none_or(|value| value == base.attr_key)
+}
+
+fn attribute_suggestion_from_ai_response(
+    config: &AiProviderConfig,
+    base: &AttributeFillSuggestion,
+    response: &Value,
+) -> AttributeFillSuggestion {
+    let mut confidence = json_value_to_i64(response.get("confidence"))
         .unwrap_or(0)
         .clamp(0, 100);
     let allowed_values = response_allowed_values(&base.prompt_json);
     let mut next = base.clone();
-    next.confidence = confidence;
     next.source = format!("ai_provider:{}", config.model);
     next.prompt_json = serde_json::json!({
         "request": &base.prompt_json,
         "response": response
     });
+
+    // 提取 AI 返回的原始值
+    let raw_value = json_value_to_string(response.get("value"))
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty() && v != "null");
+
     if base.attr_kind == "sale" {
         next.sku_values = response
             .get("sku_values")
@@ -566,18 +852,16 @@ pub(in crate::commands) async fn request_ai_attribute_suggestion(
                         let value = json_value_to_string(object.get("value"))?;
                         Some(SkuAttrFill {
                             sku_index: sku_index.max(0) as usize,
-                            value: normalize_suggested_value(&value, &allowed_values),
+                            value: force_match_allowed_value(&value, &allowed_values),
                         })
                     })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
         if next.sku_values.is_empty() {
-            if let Some(value) = json_value_to_string(response.get("value")) {
-                let value = normalize_suggested_value(&value, &allowed_values);
-                if !value.is_empty() && value != "null" {
-                    next.suggested_value = Some(value);
-                }
+            if let Some(value) = raw_value {
+                let matched = force_match_allowed_value(&value, &allowed_values);
+                next.suggested_value = Some(matched);
             }
         } else {
             let summary = next
@@ -590,16 +874,38 @@ pub(in crate::commands) async fn request_ai_attribute_suggestion(
                 .join("/");
             next.suggested_value = Some(format!("按 SKU 映射：{summary}"));
         }
-    } else if let Some(value) = json_value_to_string(response.get("value")) {
-        let value = normalize_suggested_value(&value, &allowed_values);
-        if !value.is_empty() && value != "null" {
-            next.suggested_value = Some(value);
+    } else if let Some(value) = raw_value {
+        let matched = force_match_allowed_value(&value, &allowed_values);
+        // 如果 forced match 返回的值和 AI 原始值不同，说明 AI 没有严格从列表中选，降低置信度
+        if matched != value && !allowed_values.is_empty() {
+            confidence = (confidence - 10).max(60);
         }
+        next.suggested_value = Some(matched);
     }
-    next.applied = confidence >= 85
+
+    next.confidence = confidence;
+    next.applied = confidence >= 65
         && (next.suggested_value.is_some() || !next.sku_values.is_empty())
         && suggestion_values_allowed(&next, &allowed_values);
-    Ok(Some(next))
+    next
+}
+
+/// 将 AI 返回值强制匹配到 allowed_values 中：先尝试 normalize_suggested_value，
+/// 如果仍不匹配则返回原值（由 can_auto_apply 决定是否采纳）
+fn force_match_allowed_value(raw: &str, allowed_values: &[String]) -> String {
+    if allowed_values.is_empty() {
+        return raw.trim().to_string();
+    }
+    let normalized = normalize_suggested_value(raw, allowed_values);
+    // 归一化后的值是否在允许列表中（完全匹配或包含匹配）
+    if allowed_values
+        .iter()
+        .any(|opt| opt.trim() == normalized.trim())
+    {
+        return normalized;
+    }
+    // 仍不匹配：保留归一化值，由后续 suggestion_values_allowed 判断
+    normalized
 }
 
 pub(in crate::commands) fn response_allowed_values(prompt_json: &Value) -> Vec<String> {
@@ -632,4 +938,27 @@ pub(in crate::commands) fn suggestion_values_allowed(
         .suggested_value
         .as_ref()
         .is_some_and(|value| allowed_values.contains(value))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_agent_stdout_json_accepts_fenced_json() {
+        let raw = "```json\n{\"value\":\"A类\",\"sku_values\":[],\"confidence\":90,\"reason\":\"标题包含\"}\n```";
+
+        let parsed = parse_agent_stdout_json(raw).expect("应能提取代码块 JSON");
+
+        assert_eq!(parsed.get("value").and_then(Value::as_str), Some("A类"));
+    }
+
+    #[test]
+    fn parse_agent_stdout_json_accepts_json_with_leading_text() {
+        let raw = "结果如下：{\"value\":\"纯棉\",\"sku_values\":[],\"confidence\":88,\"reason\":\"标题包含纯棉\"}";
+
+        let parsed = parse_agent_stdout_json(raw).expect("应能提取文本中的 JSON 对象");
+
+        assert_eq!(parsed.get("value").and_then(Value::as_str), Some("纯棉"));
+    }
 }

@@ -2,7 +2,16 @@ import { computed, onMounted, reactive, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Bell, CircleCheck, CircleClose, Plus, Refresh, Search, UploadFilled } from "@element-plus/icons-vue";
+import {
+  Bell,
+  CircleCheck,
+  CircleClose,
+  Delete,
+  Plus,
+  Refresh,
+  Search,
+  UploadFilled,
+} from "@element-plus/icons-vue";
 import type {
   DashboardSummary,
   ShopGroup,
@@ -12,22 +21,14 @@ import type {
   ApiQuotaCheckResult,
   CategoryCatalogShopSummary,
   CategoryCacheView,
+  CategoryRelationView,
   FreightTemplateView,
   CategoryCatalogListResult,
   CategoryCatalogSyncResult,
   CategoryRuleSyncResult,
   PublishJobCreated,
   TaskRunView,
-  PublishTaskBatchResult,
-  PublishAttributeFillBatchResult,
-  PublishAttributeSuggestionView,
-  PublishAttributeSuggestionListResult,
-  PublishAttributeSuggestionApplyResult,
-  PublishCategoryPrecheckBatchResult,
-  AssetUploadBatchResult,
-  ProductSubmitBatchResult,
-  ProductStatusSyncBatchResult,
-  ProductListingBatchResult,
+  PublishPipelineRunResult,
   PriceUpdateJobCreated,
   PriceUpdatePrecheckBatchResult,
   PriceUpdateSubmitBatchResult,
@@ -71,15 +72,15 @@ import type {
   InventoryRiskView,
   InventoryRiskListResult,
   InventoryRiskScanResult,
-	  ProductSalesAnalysisView,
-	  ProductSalesAnalysisTotals,
-	  ProductSalesAnalysisListResult,
-	  ProductManagementView,
-	  ProductManagementListResult,
-	  OrderManagementView,
-	  OrderManagementListResult,
-	  OrderProfitAdjustmentResult,
-	  DeliverySettings,
+  ProductSalesAnalysisView,
+  ProductSalesAnalysisTotals,
+  ProductSalesAnalysisListResult,
+  ProductManagementView,
+  ProductManagementListResult,
+  OrderManagementView,
+  OrderManagementListResult,
+  OrderProfitAdjustmentResult,
+  DeliverySettings,
   DeliveryCompanyView,
   DeliveryCompanySyncResult,
   LocalApiConfig,
@@ -97,6 +98,7 @@ import type {
   BackupInfo,
   BackupCreateResult,
   BackupRestoreResult,
+  CollectionPublishWorkspaceResetResult,
   ShipmentRecordResult,
   ShipmentView,
   ShipmentListResult,
@@ -105,8 +107,6 @@ import type {
   OperationalAutomationSettings,
   OperationalAutomationRunResult,
   PublishJobView,
-  PublishJobProductView,
-  PublishJobItemRow,
   PublishPricingStrategy,
   PriceUpdateJobView,
   CollectionTaskView,
@@ -123,18 +123,24 @@ import {
   evidenceTargetTypeOptions,
   evidenceTypeOptions,
   fallbackDeliveryCompanyOptions,
-	  guaranteeHandlingStatusOptions,
-	  inventoryRiskStatusOptions,
-	  orderManagementStatusOptions,
-	  productManagementStatusOptions,
-	  productSalesStatusOptions,
+  guaranteeHandlingStatusOptions,
+  inventoryRiskStatusOptions,
+  orderManagementStatusOptions,
+  productManagementStatusOptions,
+  productSalesStatusOptions,
   profitAdjustmentKindOptions,
   purchaseIssueTypeOptions,
   statusTone,
   supplierFollowupStatusOptions,
   supplierFollowupTypeOptions,
 } from "./useWxXdApp/constants";
-import { formatBytes, formatCents, formatDateTime, formatSignedCents, formatUnixTime } from "./useWxXdApp/formatters";
+import {
+  formatBytes,
+  formatCents,
+  formatDateTime,
+  formatSignedCents,
+  formatUnixTime,
+} from "./useWxXdApp/formatters";
 import { useCollectionWorkflow } from "./useWxXdApp/collectionWorkflow";
 import { createPreviewMode } from "./useWxXdApp/previewMode";
 import {
@@ -152,57 +158,39 @@ import {
   createPreviewProfitAdjustments,
   createPreviewDatabaseBackups,
   createPreviewExternalApiLogs,
-  createPreviewAttributeSuggestions,
   createPreviewNotifications,
   createPreviewCategoryCatalogShops,
   createPreviewCategoryCache,
+  createPreviewCategoryRelations,
   createPreviewFreightTemplates,
 } from "./useWxXdApp/previewFixtures";
 
 export function useWxXdApp() {
-  
-
   const dashboard = ref<DashboardSummary | null>(null);
   const groups = ref<ShopGroup[]>([]);
   const shops = ref<ShopListItem[]>([]);
   const selectedSection = ref("workbench");
   const loading = ref(false);
   const backupRunning = ref(false);
+  const workspaceResetRunning = ref(false);
+  const publishRetryRunning = ref(false);
   const latestTaskId = ref("");
   const queriedTaskId = ref("");
   const currentJob = ref<PublishJobView | null>(null);
-  const publishPricingStrategy = ref<PublishPricingStrategy>(defaultPublishPricingStrategy());
+  const publishPricingStrategy = ref<PublishPricingStrategy>(
+    defaultPublishPricingStrategy(),
+  );
   const publishPricingSaving = ref(false);
 
   // 采集与导入相关状态
 
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
   const latestPriceTaskId = ref("");
   const queriedPriceTaskId = ref("");
   const currentPriceJob = ref<PriceUpdateJobView | null>(null);
   const latestOrderPriceAdjustmentTaskId = ref("");
   const queriedOrderPriceAdjustmentTaskId = ref("");
-  const currentOrderPriceAdjustmentJob = ref<OrderPriceAdjustmentJobView | null>(null);
+  const currentOrderPriceAdjustmentJob =
+    ref<OrderPriceAdjustmentJobView | null>(null);
   const taskRuns = ref<TaskRunView[]>([]);
   const purchaseTasks = ref<PurchaseTaskView[]>([]);
   const purchaseTaskTotal = ref(0);
@@ -281,7 +269,9 @@ export function useWxXdApp() {
     actual_profit_cents: 0,
     unknown_actual_order_count: 0,
   });
-  const automationSettings = ref<OperationalAutomationSettings>(defaultAutomationSettings());
+  const automationSettings = ref<OperationalAutomationSettings>(
+    defaultAutomationSettings(),
+  );
   const automationRunning = ref(false);
   const lastAutomationResult = ref<OperationalAutomationRunResult | null>(null);
   const deliverySettings = ref<DeliverySettings>({ auto_send_delivery: false });
@@ -300,18 +290,54 @@ export function useWxXdApp() {
   });
   const rotatedLocalApiKey = ref("");
   const aiProviderOptions = [
-    { value: "xiaomi", label: "Xiaomi MiMo", modelPlaceholder: "mimo-v2.5-pro" },
-    { value: "xiaomi-token-plan-cn", label: "Xiaomi Token Plan CN", modelPlaceholder: "mimo-v2.5-pro" },
+    {
+      value: "xiaomi",
+      label: "Xiaomi MiMo",
+      modelPlaceholder: "mimo-v2.5-pro",
+    },
+    {
+      value: "xiaomi-token-plan-cn",
+      label: "Xiaomi Token Plan CN",
+      modelPlaceholder: "mimo-v2.5-pro",
+    },
     { value: "openai", label: "OpenAI", modelPlaceholder: "gpt-5.1-mini" },
-    { value: "anthropic", label: "Anthropic", modelPlaceholder: "claude-sonnet-4-5" },
-    { value: "google", label: "Google Gemini", modelPlaceholder: "gemini-3-pro" },
-    { value: "deepseek", label: "DeepSeek", modelPlaceholder: "deepseek-v4-pro" },
-    { value: "openrouter", label: "OpenRouter", modelPlaceholder: "anthropic/claude-sonnet-4.5" },
+    {
+      value: "anthropic",
+      label: "Anthropic",
+      modelPlaceholder: "claude-sonnet-4-5",
+    },
+    {
+      value: "google",
+      label: "Google Gemini",
+      modelPlaceholder: "gemini-3-pro",
+    },
+    {
+      value: "deepseek",
+      label: "DeepSeek",
+      modelPlaceholder: "deepseek-v4-pro",
+    },
+    {
+      value: "openrouter",
+      label: "OpenRouter",
+      modelPlaceholder: "anthropic/claude-sonnet-4.5",
+    },
     { value: "xai", label: "xAI", modelPlaceholder: "grok-4" },
     { value: "zai", label: "ZAI", modelPlaceholder: "glm-4.6" },
-    { value: "kimi-coding", label: "Kimi For Coding", modelPlaceholder: "kimi-k2.5" },
-    { value: "moonshotai", label: "Moonshot AI", modelPlaceholder: "kimi-k2.5" },
-    { value: "mistral", label: "Mistral", modelPlaceholder: "mistral-large-latest" },
+    {
+      value: "kimi-coding",
+      label: "Kimi For Coding",
+      modelPlaceholder: "kimi-k2.5",
+    },
+    {
+      value: "moonshotai",
+      label: "Moonshot AI",
+      modelPlaceholder: "kimi-k2.5",
+    },
+    {
+      value: "mistral",
+      label: "Mistral",
+      modelPlaceholder: "mistral-large-latest",
+    },
     { value: "groq", label: "Groq", modelPlaceholder: "openai/gpt-oss-120b" },
     { value: "custom", label: "Custom", modelPlaceholder: "mimo-v2.5-pro" },
   ];
@@ -336,7 +362,12 @@ export function useWxXdApp() {
     updated_at: null,
   });
   function aiProviderLabel(providerType: string) {
-    return aiProviderOptions.find((option) => option.value === providerType)?.label || providerType || "Custom";
+    return (
+      aiProviderOptions.find((option) => option.value === providerType)
+        ?.label ||
+      providerType ||
+      "Custom"
+    );
   }
   const aiProviderRuntimeLabel = computed(() => {
     return `pi-coding-agent / ${aiProviderLabel(aiProviderSettings.value.provider_type)}`;
@@ -345,11 +376,12 @@ export function useWxXdApp() {
     return false;
   });
   const aiProviderCanTest = computed(() => {
-    if (!aiProviderSettings.value.enabled)
-      return false;
-    if (!aiProviderSettings.value.model)
-      return false;
-    if (aiProviderSettings.value.provider_type === "custom" && !aiProviderSettings.value.base_url)
+    if (!aiProviderSettings.value.enabled) return false;
+    if (!aiProviderSettings.value.model) return false;
+    if (
+      aiProviderSettings.value.provider_type === "custom" &&
+      !aiProviderSettings.value.base_url
+    )
       return false;
     if (aiProviderRequiresApiKey.value && !aiProviderSettings.value.has_api_key)
       return false;
@@ -371,11 +403,17 @@ export function useWxXdApp() {
   const aiProviderFormRuntimeLabel = computed(() => {
     return `pi-coding-agent / ${aiProviderLabel(aiProviderForm.provider_type)}`;
   });
-  const aiProviderFormIsCustom = computed(() => aiProviderForm.provider_type === "custom");
-  const aiProviderFormRequiresBaseUrl = computed(() => aiProviderFormIsCustom.value);
+  const aiProviderFormIsCustom = computed(
+    () => aiProviderForm.provider_type === "custom",
+  );
+  const aiProviderFormRequiresBaseUrl = computed(
+    () => aiProviderFormIsCustom.value,
+  );
   const aiProviderFormRequiresApiKey = computed(() => false);
   const aiProviderModelPlaceholder = computed(() => {
-    const option = aiProviderOptions.find((item) => item.value === aiProviderForm.provider_type);
+    const option = aiProviderOptions.find(
+      (item) => item.value === aiProviderForm.provider_type,
+    );
     return `模型，例如 ${option?.modelPlaceholder || "gpt-5.1-mini"}`;
   });
   const aiProviderBaseUrlPlaceholder = computed(() => {
@@ -386,12 +424,17 @@ export function useWxXdApp() {
   const aiProviderFormMatchesSavedCredential = computed(() => {
     if (aiProviderForm.provider_type !== aiProviderSettings.value.provider_type)
       return false;
-    if (aiProviderForm.provider_type !== "custom")
-      return true;
-    return aiProviderForm.custom_provider_id === aiProviderSettings.value.custom_provider_id;
+    if (aiProviderForm.provider_type !== "custom") return true;
+    return (
+      aiProviderForm.custom_provider_id ===
+      aiProviderSettings.value.custom_provider_id
+    );
   });
   const aiProviderApiKeyPlaceholder = computed(() => {
-    if (aiProviderSettings.value.has_api_key && aiProviderFormMatchesSavedCredential.value)
+    if (
+      aiProviderSettings.value.has_api_key &&
+      aiProviderFormMatchesSavedCredential.value
+    )
       return "留空则继续使用已保存 Key";
     if (aiProviderFormIsCustom.value)
       return "API Key，可选；本地兼容网关无鉴权可留空";
@@ -408,14 +451,6 @@ export function useWxXdApp() {
   const agentRunsLoading = ref(false);
   const agentRunSceneFilter = ref("all");
   const agentRunStatusFilter = ref("all");
-  const attributeSuggestions = ref<PublishAttributeSuggestionView[]>([]);
-  const attributeSuggestionTotal = ref(0);
-  const pendingAttributeSuggestionCount = ref(0);
-  const appliedAttributeSuggestionCount = ref(0);
-  const attributeSuggestionStatusFilter = ref("pending");
-  const selectedAttributeSuggestions = ref<PublishAttributeSuggestionView[]>([]);
-  const attributeSuggestionApplying = ref(false);
-  const jobAttributeSuggestions = ref<PublishAttributeSuggestionView[]>([]);
   const externalApiLogs = ref<ExternalApiLogView[]>([]);
   const notifications = ref<NotificationView[]>([]);
   const notificationTotal = ref(0);
@@ -426,47 +461,91 @@ export function useWxXdApp() {
   const databaseBackups = ref<BackupInfo[]>([]);
   const categoryCatalogShops = ref<CategoryCatalogShopSummary[]>([]);
   const categoryCache = ref<CategoryCacheView[]>([]);
+  const categoryRelations = ref<CategoryRelationView[]>([]);
   const freightTemplates = ref<FreightTemplateView[]>([]);
   const selectedCategoryShopId = ref("shop-preview");
   const categoryKeyword = ref("");
   const categoryRuleCatId = ref("");
   const isTauriRuntime = "__TAURI_INTERNALS__" in window;
-  const runtimeLabel = computed(() => isTauriRuntime ? "Tauri 主控机" : "浏览器预览");
+  const runtimeLabel = computed(() =>
+    isTauriRuntime ? "Tauri 主控机" : "浏览器预览",
+  );
   const selectedAgentSkill = computed(() => {
-    return agentSkills.value.find((skill) => skill.name === selectedAgentSkillName.value)
-      || agentSkills.value[0]
-      || null;
+    return (
+      agentSkills.value.find(
+        (skill) => skill.name === selectedAgentSkillName.value,
+      ) ||
+      agentSkills.value[0] ||
+      null
+    );
   });
-  const enabledAgentSkillCount = computed(() => agentSkills.value.filter((skill) => skill.enabled).length);
+  const enabledAgentSkillCount = computed(
+    () => agentSkills.value.filter((skill) => skill.enabled).length,
+  );
   const readyAgentSkillCount = computed(() => {
-    return agentSkills.value.filter((skill) => skill.file_status === "ready" && skill.runtime_status === "ready").length;
+    return agentSkills.value.filter(
+      (skill) =>
+        skill.file_status === "ready" && skill.runtime_status === "ready",
+    ).length;
   });
-  const selectedCategoryShop = computed(() => shops.value.find((shop) => shop.id === selectedCategoryShopId.value) || null);
+  const selectedCategoryShop = computed(
+    () =>
+      shops.value.find((shop) => shop.id === selectedCategoryShopId.value) ||
+      null,
+  );
   const previewGroups = ref<ShopGroup[]>(createPreviewGroups());
   const previewShops = ref<ShopListItem[]>(createPreviewShops());
   const previewTaskRuns = ref<TaskRunView[]>(createPreviewTaskRuns());
-  const previewCollectionTasks = ref<CollectionTaskView[]>(createPreviewCollectionTasks());
+  const previewCollectionTasks = ref<CollectionTaskView[]>(
+    createPreviewCollectionTasks(),
+  );
   const previewShipments = ref<ShipmentView[]>(createPreviewShipments());
-  const previewPurchaseTasks = ref<PurchaseTaskView[]>(createPreviewPurchaseTasks());
+  const previewPurchaseTasks = ref<PurchaseTaskView[]>(
+    createPreviewPurchaseTasks(),
+  );
   const previewAftersales = ref<AftersaleView[]>(createPreviewAftersales());
-  const previewAftersaleRejectReasons = ref<AftersaleRejectReasonView[]>(createPreviewAftersaleRejectReasons());
-  const previewGuaranteeOrders = ref<GuaranteeOrderView[]>(createPreviewGuaranteeOrders());
-  const previewAftersaleEvidence = ref<AftersaleEvidenceView[]>(createPreviewAftersaleEvidence());
-  const previewSupplierAftersaleFollowups = ref<SupplierAftersaleFollowupView[]>(createPreviewSupplierAftersaleFollowups());
-  const previewProfitAdjustments = ref<Array<{
-    order_id: string;
-    kind: string;
-    amount_cents: number;
-  }>>(createPreviewProfitAdjustments());
+  const previewAftersaleRejectReasons = ref<AftersaleRejectReasonView[]>(
+    createPreviewAftersaleRejectReasons(),
+  );
+  const previewGuaranteeOrders = ref<GuaranteeOrderView[]>(
+    createPreviewGuaranteeOrders(),
+  );
+  const previewAftersaleEvidence = ref<AftersaleEvidenceView[]>(
+    createPreviewAftersaleEvidence(),
+  );
+  const previewSupplierAftersaleFollowups = ref<
+    SupplierAftersaleFollowupView[]
+  >(createPreviewSupplierAftersaleFollowups());
+  const previewProfitAdjustments = ref<
+    Array<{
+      order_id: string;
+      kind: string;
+      amount_cents: number;
+    }>
+  >(createPreviewProfitAdjustments());
   const previewPendingOrderCount = ref(0);
   const previewLastOrderSyncAt = ref<string | null>(null);
-  const previewDatabaseBackups = ref<BackupInfo[]>(createPreviewDatabaseBackups());
-  const previewExternalApiLogs = ref<ExternalApiLogView[]>(createPreviewExternalApiLogs());
-  const previewAttributeSuggestions = ref<PublishAttributeSuggestionView[]>(createPreviewAttributeSuggestions());
-  const previewNotifications = ref<NotificationView[]>(createPreviewNotifications());
-  const previewCategoryCatalogShops = ref<CategoryCatalogShopSummary[]>(createPreviewCategoryCatalogShops());
-  const previewCategoryCache = ref<CategoryCacheView[]>(createPreviewCategoryCache());
-  const previewFreightTemplates = ref<FreightTemplateView[]>(createPreviewFreightTemplates());
+  const previewDatabaseBackups = ref<BackupInfo[]>(
+    createPreviewDatabaseBackups(),
+  );
+  const previewExternalApiLogs = ref<ExternalApiLogView[]>(
+    createPreviewExternalApiLogs(),
+  );
+  const previewNotifications = ref<NotificationView[]>(
+    createPreviewNotifications(),
+  );
+  const previewCategoryCatalogShops = ref<CategoryCatalogShopSummary[]>(
+    createPreviewCategoryCatalogShops(),
+  );
+  const previewCategoryCache = ref<CategoryCacheView[]>(
+    createPreviewCategoryCache(),
+  );
+  const previewCategoryRelations = ref<CategoryRelationView[]>(
+    createPreviewCategoryRelations(),
+  );
+  const previewFreightTemplates = ref<FreightTemplateView[]>(
+    createPreviewFreightTemplates(),
+  );
 
   const {
     canSelectCollectionTask,
@@ -482,16 +561,21 @@ export function useWxXdApp() {
     collectionFilePath,
     collectionImporting,
     collectionImportVisible,
+    collectionImageSrc,
+    collectionImageUpdating,
     collectionLoggingIn,
     collectionProductSummary,
     collectionPublishedShopNames,
     collectionPublishJobText,
+    collectionReviewCategoryKeyword,
+    collectionReviewCategorySearching,
     collectionPublishing,
     collectionPublishTargetShopIds,
     collectionReviewConfirming,
     collectionReviewing,
     collectionReviewStatusLabel,
     collectionReviewStatusType,
+    collectionTargetShopSelectionRequired,
     publishPricingDialogVisible,
     publishPricingForm,
     publishPricingPreviewRows,
@@ -516,12 +600,17 @@ export function useWxXdApp() {
     refreshCollectionTasks,
     refreshTaobaoAccessLimitState,
     resumeCollectionTasks,
+    retryAllFailedCollections,
     retryCollection,
+    deleteTaobaoProfile,
+    removeCollectionImage,
+    resetAllPassedReviews,
     resetSelectedCollectionReview,
     reviewSingleCollectionTask,
     reviewSelectedCollectionTasks,
     runTestCollect,
     savePublishPricingStrategyFromForm,
+    searchCollectionReviewCategories,
     selectCollectionExcelFile,
     selectedCollectionDetailImages,
     selectedCollectionDetailJson,
@@ -533,6 +622,7 @@ export function useWxXdApp() {
     selectedCollectionReviewIssues,
     selectedCollectionReviewResult,
     selectedCollectionCategoryCandidates,
+    selectedCollectionReviewCategoryOptions,
     selectedReviewCategoryKey,
     selectedCollectionMainImages,
     selectedCollectionSkuPreview,
@@ -546,6 +636,7 @@ export function useWxXdApp() {
     testCollectVisible,
     toggleCurrentCollectionPageSelection,
     triggerTaobaoLogin,
+    uploadCollectionImage,
     confirmSelectedCollectionReview,
   } = useCollectionWorkflow({
     command,
@@ -556,6 +647,7 @@ export function useWxXdApp() {
     queryJob,
     refreshAll,
     savePublishPricingStrategy,
+    selectedSection,
     shops,
   });
 
@@ -588,9 +680,9 @@ export function useWxXdApp() {
     previewAftersaleEvidence,
     previewAftersaleRejectReasons,
     previewAftersales,
-    previewAttributeSuggestions,
     previewCategoryCache,
     previewCategoryCatalogShops,
+    previewCategoryRelations,
     previewCollectionTasks,
     previewDatabaseBackups,
     previewExternalApiLogs,
@@ -614,7 +706,12 @@ export function useWxXdApp() {
   });
 
   const groupForm = reactive({ name: "" });
-  const shopForm = reactive({ name: "", appid: "", app_secret: "", group_id: "group-default" });
+  const shopForm = reactive({
+    name: "",
+    appid: "",
+    app_secret: "",
+    group_id: "group-default",
+  });
   const shipmentForm = reactive({
     order_id: "",
     shop_id: "shop-preview",
@@ -693,8 +790,6 @@ export function useWxXdApp() {
     note: "",
   });
 
-  
-
   const deliveryCompanyOptions = computed(() => {
     const options = new Map<string, { value: string; label: string }>();
     for (const company of deliveryCompanies.value) {
@@ -711,34 +806,12 @@ export function useWxXdApp() {
     return Array.from(options.values());
   });
 
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
   const aftersaleRejectReasonOptions = computed(() => {
     const shopId = aftersaleActionForm.shop_id.trim();
     const reasons = shopId
-      ? aftersaleRejectReasons.value.filter((reason) => reason.shop_id === shopId)
+      ? aftersaleRejectReasons.value.filter(
+          (reason) => reason.shop_id === shopId,
+        )
       : aftersaleRejectReasons.value;
     return reasons.length > 0 ? reasons : aftersaleRejectReasons.value;
   });
@@ -746,39 +819,26 @@ export function useWxXdApp() {
   const publishPayload = ref(createDefaultPublishPayload());
 
   const priceUpdatePayload = ref(createDefaultPriceUpdatePayload());
-  const orderPriceAdjustmentPayload = ref(createDefaultOrderPriceAdjustmentPayload());
+  const orderPriceAdjustmentPayload = ref(
+    createDefaultOrderPriceAdjustmentPayload(),
+  );
 
-  
-
-  async function command<T>(name: string, args?: Record<string, unknown>): Promise<T> {
+  async function command<T>(
+    name: string,
+    args?: Record<string, unknown>,
+  ): Promise<T> {
     if (isTauriRuntime) {
       return invoke<T>(name, args);
     }
     return previewCommand<T>(name, args);
   }
 
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  const selectedGroupOptions = computed(() => groups.value.map((group) => ({
-    label: `${group.name} (${group.shop_count})`,
-    value: group.id,
-  })));
-
-  
+  const selectedGroupOptions = computed(() =>
+    groups.value.map((group) => ({
+      label: `${group.name} (${group.shop_count})`,
+      value: group.id,
+    })),
+  );
 
   async function refreshAll() {
     loading.value = true;
@@ -835,7 +895,13 @@ export function useWxXdApp() {
       if (!shipmentForm.shop_id && shops.value.length > 0) {
         shipmentForm.shop_id = shops.value[0].id;
       }
-      if ((!selectedCategoryShopId.value || !shops.value.some((shop) => shop.id === selectedCategoryShopId.value)) && shops.value.length > 0) {
+      if (
+        (!selectedCategoryShopId.value ||
+          !shops.value.some(
+            (shop) => shop.id === selectedCategoryShopId.value,
+          )) &&
+        shops.value.length > 0
+      ) {
         selectedCategoryShopId.value = shops.value[0].id;
       }
       await Promise.all([
@@ -854,7 +920,6 @@ export function useWxXdApp() {
         refreshProductSalesAnalysis(),
         refreshProductManagementItems(),
         refreshCategoryCatalog(),
-        refreshAttributeSuggestions(),
         refreshCollectionTasks(),
       ]);
     } catch (error) {
@@ -879,7 +944,8 @@ export function useWxXdApp() {
   function syncAiProviderForm(settings: AiProviderSettings) {
     aiProviderForm.enabled = settings.enabled;
     aiProviderForm.provider_type = settings.provider_type || "custom";
-    aiProviderForm.custom_provider_id = settings.custom_provider_id || "wx-xd-custom";
+    aiProviderForm.custom_provider_id =
+      settings.custom_provider_id || "wx-xd-custom";
     aiProviderForm.api = settings.api || "openai-completions";
     aiProviderForm.base_url = settings.base_url || "";
     aiProviderForm.model = settings.model || aiProviderForm.model;
@@ -892,7 +958,10 @@ export function useWxXdApp() {
 
   function syncAgentSkills(skills: AgentSkillView[]) {
     agentSkills.value = skills;
-    if (!selectedAgentSkillName.value || !skills.some((skill) => skill.name === selectedAgentSkillName.value)) {
+    if (
+      !selectedAgentSkillName.value ||
+      !skills.some((skill) => skill.name === selectedAgentSkillName.value)
+    ) {
       selectedAgentSkillName.value = skills[0]?.name || "";
     }
   }
@@ -923,7 +992,10 @@ export function useWxXdApp() {
     }
   }
 
-  async function saveAgentSkill(skill: AgentSkillView, enabled = skill.enabled) {
+  async function saveAgentSkill(
+    skill: AgentSkillView,
+    enabled = skill.enabled,
+  ) {
     agentSkillSaving.value = skill.name;
     try {
       const request: AgentSkillSettingsRequest = {
@@ -932,8 +1004,13 @@ export function useWxXdApp() {
         model: skill.model,
         temperature: skill.temperature,
       };
-      const updated = await command<AgentSkillView>("save_agent_skill_settings", { request });
-      agentSkills.value = agentSkills.value.map((item) => item.name === updated.name ? updated : item);
+      const updated = await command<AgentSkillView>(
+        "save_agent_skill_settings",
+        { request },
+      );
+      agentSkills.value = agentSkills.value.map((item) =>
+        item.name === updated.name ? updated : item,
+      );
       selectedAgentSkillName.value = updated.name;
       ElMessage.success(enabled ? "技能已启用" : "技能已停用");
     } catch (error) {
@@ -946,14 +1023,18 @@ export function useWxXdApp() {
 
   async function testAgentSkill(skill: AgentSkillView) {
     if (!aiProviderCanTest.value) {
-      ElMessage.warning(aiProviderRequiresApiKey.value
-        ? "请先在 AI Agent 设置里启用并保存 API Key"
-        : "请先在 AI Agent 设置里启用可用运行时并保存配置");
+      ElMessage.warning(
+        aiProviderRequiresApiKey.value
+          ? "请先在 AI Agent 设置里启用并保存 API Key"
+          : "请先在 AI Agent 设置里启用可用运行时并保存配置",
+      );
       return;
     }
     agentSkillTesting.value = skill.name;
     try {
-      const result = await command<AgentSkillTestResult>("test_agent_skill", { name: skill.name });
+      const result = await command<AgentSkillTestResult>("test_agent_skill", {
+        name: skill.name,
+      });
       ElMessage.success(`技能试跑成功：${result.summary}`);
       await Promise.all([refreshAgentSkills(), refreshAgentRuns()]);
     } catch (error) {
@@ -964,48 +1045,29 @@ export function useWxXdApp() {
     }
   }
 
-  async function refreshAttributeSuggestions() {
-    const result = await command<PublishAttributeSuggestionListResult>("list_publish_attribute_suggestions", {
-      status: attributeSuggestionStatusFilter.value,
-      limit: 200,
-    });
-    attributeSuggestions.value = result.items;
-    attributeSuggestionTotal.value = result.total;
-    pendingAttributeSuggestionCount.value = result.pending_count;
-    appliedAttributeSuggestionCount.value = result.applied_count;
-    selectedAttributeSuggestions.value = [];
-  }
-
-  async function refreshJobAttributeSuggestions() {
-    const taskId = currentJob.value?.id || queriedTaskId.value.trim();
-    if (!taskId) {
-      jobAttributeSuggestions.value = [];
-      return;
-    }
-    const result = await command<PublishAttributeSuggestionListResult>("list_publish_attribute_suggestions", {
-      status: "all",
-      jobId: taskId,
-      limit: 500,
-    });
-    jobAttributeSuggestions.value = result.items;
-  }
-
   async function refreshCategoryCatalog() {
-    const result = await command<CategoryCatalogListResult>("list_category_catalog", {
-      shopId: selectedCategoryShopId.value,
-      keyword: categoryKeyword.value.trim() || null,
-      limit: 150,
-    });
+    const result = await command<CategoryCatalogListResult>(
+      "list_category_catalog",
+      {
+        shopId: selectedCategoryShopId.value,
+        keyword: categoryKeyword.value.trim() || null,
+        limit: 1000,
+      },
+    );
     categoryCatalogShops.value = result.shops;
     categoryCache.value = result.categories;
+    categoryRelations.value = result.category_relations;
     freightTemplates.value = result.freight_templates;
   }
 
   async function refreshPurchaseTasks() {
-    const result = await command<PurchaseTaskListResult>("list_purchase_tasks", {
-      status: purchaseStatusFilter.value,
-      limit: 200,
-    });
+    const result = await command<PurchaseTaskListResult>(
+      "list_purchase_tasks",
+      {
+        status: purchaseStatusFilter.value,
+        limit: 200,
+      },
+    );
     purchaseTasks.value = result.items;
     purchaseTaskTotal.value = result.total;
   }
@@ -1020,79 +1082,116 @@ export function useWxXdApp() {
   }
 
   async function refreshAftersaleEvidence() {
-    const result = await command<AftersaleEvidenceListResult>("list_aftersale_evidence", {
-      targetType: evidenceTargetTypeFilter.value === "all" ? null : evidenceTargetTypeFilter.value,
-      targetId: evidenceTargetIdFilter.value.trim() || null,
-      status: evidenceStatusFilter.value === "all" ? null : evidenceStatusFilter.value,
-      limit: 200,
-    });
+    const result = await command<AftersaleEvidenceListResult>(
+      "list_aftersale_evidence",
+      {
+        targetType:
+          evidenceTargetTypeFilter.value === "all"
+            ? null
+            : evidenceTargetTypeFilter.value,
+        targetId: evidenceTargetIdFilter.value.trim() || null,
+        status:
+          evidenceStatusFilter.value === "all"
+            ? null
+            : evidenceStatusFilter.value,
+        limit: 200,
+      },
+    );
     aftersaleEvidence.value = result.items;
     aftersaleEvidenceTotal.value = result.total;
   }
 
   async function refreshSupplierAftersaleFollowups() {
-    const result = await command<SupplierAftersaleFollowupListResult>("list_supplier_aftersale_followups", {
-      targetType: supplierFollowupTargetTypeFilter.value === "all" ? null : supplierFollowupTargetTypeFilter.value,
-      targetId: supplierFollowupTargetIdFilter.value.trim() || null,
-      status: supplierFollowupStatusFilter.value === "all" ? null : supplierFollowupStatusFilter.value,
-      limit: 200,
-    });
+    const result = await command<SupplierAftersaleFollowupListResult>(
+      "list_supplier_aftersale_followups",
+      {
+        targetType:
+          supplierFollowupTargetTypeFilter.value === "all"
+            ? null
+            : supplierFollowupTargetTypeFilter.value,
+        targetId: supplierFollowupTargetIdFilter.value.trim() || null,
+        status:
+          supplierFollowupStatusFilter.value === "all"
+            ? null
+            : supplierFollowupStatusFilter.value,
+        limit: 200,
+      },
+    );
     supplierAftersaleFollowups.value = result.items;
     supplierAftersaleFollowupTotal.value = result.total;
   }
 
   async function refreshAftersaleRejectReasons() {
-    aftersaleRejectReasons.value = await command<AftersaleRejectReasonView[]>("list_aftersale_reject_reasons");
+    aftersaleRejectReasons.value = await command<AftersaleRejectReasonView[]>(
+      "list_aftersale_reject_reasons",
+    );
   }
 
   async function refreshGuaranteeOrders() {
-    const result = await command<GuaranteeOrderListResult>("list_guarantee_orders", {
-      status: guaranteeStatusFilter.value,
-      limit: 200,
-    });
+    const result = await command<GuaranteeOrderListResult>(
+      "list_guarantee_orders",
+      {
+        status: guaranteeStatusFilter.value,
+        limit: 200,
+      },
+    );
     guaranteeOrders.value = result.items;
     guaranteeOrderTotal.value = result.total;
   }
 
   async function refreshDeliveryCompanies() {
-    deliveryCompanies.value = await command<DeliveryCompanyView[]>("list_delivery_companies");
+    deliveryCompanies.value = await command<DeliveryCompanyView[]>(
+      "list_delivery_companies",
+    );
   }
 
   async function refreshDeliveryShipments() {
-    const result = await command<ShipmentListResult>("list_delivery_shipments", {
-      status: deliveryStatusFilter.value,
-      limit: 200,
-    });
+    const result = await command<ShipmentListResult>(
+      "list_delivery_shipments",
+      {
+        status: deliveryStatusFilter.value,
+        limit: 200,
+      },
+    );
     deliveryShipments.value = result.items;
     deliveryShipmentTotal.value = result.total;
   }
 
   async function refreshOrderProfits() {
-    const result = await command<OrderProfitListResult>("list_order_profit_summaries", {
-      status: orderProfitStatusFilter.value,
-      limit: 200,
-    });
+    const result = await command<OrderProfitListResult>(
+      "list_order_profit_summaries",
+      {
+        status: orderProfitStatusFilter.value,
+        limit: 200,
+      },
+    );
     orderProfits.value = result.items;
     orderProfitTotal.value = result.total;
     orderProfitTotals.value = result.totals;
   }
 
   async function refreshOrderManagementItems() {
-    const result = await command<OrderManagementListResult>("list_order_management_items", {
-      status: orderManagementStatusFilter.value,
-      shop_id: orderManagementShopFilter.value,
-      keyword: orderManagementKeyword.value,
-      limit: 200,
-    });
+    const result = await command<OrderManagementListResult>(
+      "list_order_management_items",
+      {
+        status: orderManagementStatusFilter.value,
+        shop_id: orderManagementShopFilter.value,
+        keyword: orderManagementKeyword.value,
+        limit: 200,
+      },
+    );
     orderManagementItems.value = result.items;
     orderManagementTotal.value = result.total;
   }
 
   async function refreshInventoryRisks() {
-    const result = await command<InventoryRiskListResult>("list_inventory_risks", {
-      status: inventoryRiskStatusFilter.value,
-      limit: 200,
-    });
+    const result = await command<InventoryRiskListResult>(
+      "list_inventory_risks",
+      {
+        status: inventoryRiskStatusFilter.value,
+        limit: 200,
+      },
+    );
     inventoryRisks.value = result.items;
     inventoryRiskTotal.value = result.total;
     inventoryRiskStats.value = {
@@ -1103,31 +1202,46 @@ export function useWxXdApp() {
   }
 
   async function refreshProductSalesAnalysis() {
-    const result = await command<ProductSalesAnalysisListResult>("list_product_sales_analysis", {
-      status: productSalesAnalysisStatusFilter.value,
-      limit: 200,
-    });
+    const result = await command<ProductSalesAnalysisListResult>(
+      "list_product_sales_analysis",
+      {
+        status: productSalesAnalysisStatusFilter.value,
+        limit: 200,
+      },
+    );
     productSalesAnalysis.value = result.items;
     productSalesAnalysisTotal.value = result.total;
     productSalesAnalysisTotals.value = result.totals;
   }
 
   async function refreshProductManagementItems() {
-    const result = await command<ProductManagementListResult>("list_product_management_items", {
-      status: productManagementStatusFilter.value,
-      shop_id: productManagementShopFilter.value,
-      keyword: productManagementKeyword.value,
-      limit: 200,
-    });
+    const result = await command<ProductManagementListResult>(
+      "list_product_management_items",
+      {
+        status: productManagementStatusFilter.value,
+        shop_id: productManagementShopFilter.value,
+        keyword: productManagementKeyword.value,
+        limit: 200,
+      },
+    );
     productManagementItems.value = result.items;
     productManagementTotal.value = result.total;
   }
 
   async function runInventoryRiskScan() {
     try {
-      const result = await command<InventoryRiskScanResult>("run_inventory_risk_scan_once");
-      ElMessage.success(`库存扫描完成：商品 ${result.scanned_products} 个，通知 ${result.notifications_created} 条`);
-      await Promise.all([refreshInventoryRisks(), refreshProductSalesAnalysis(), refreshNotifications(), refreshAll()]);
+      const result = await command<InventoryRiskScanResult>(
+        "run_inventory_risk_scan_once",
+      );
+      ElMessage.success(
+        `库存扫描完成：商品 ${result.scanned_products} 个，通知 ${result.notifications_created} 条`,
+      );
+      await Promise.all([
+        refreshInventoryRisks(),
+        refreshProductSalesAnalysis(),
+        refreshNotifications(),
+        refreshAll(),
+      ]);
     } catch (error) {
       ElMessage.error(String(error));
     }
@@ -1171,14 +1285,19 @@ export function useWxXdApp() {
       return;
     }
     try {
-      const result = await command<ShopCredentialCheck>("verify_shop_credentials", {
-        shopId: shop.id,
-        forceRefresh: false,
-      });
+      const result = await command<ShopCredentialCheck>(
+        "verify_shop_credentials",
+        {
+          shopId: shop.id,
+          forceRefresh: false,
+        },
+      );
       if (result.status === "active") {
         ElMessage.success(`凭证验证成功，到期时间：${result.expires_at}`);
       } else {
-        ElMessage.error(`凭证验证失败：${result.errmsg || result.errcode || "未知错误"}`);
+        ElMessage.error(
+          `凭证验证失败：${result.errmsg || result.errcode || "未知错误"}`,
+        );
       }
       await refreshAll();
     } catch (error) {
@@ -1192,13 +1311,18 @@ export function useWxXdApp() {
       return;
     }
     try {
-      const result = await command<ShopBasicInfoSyncResult>("sync_shop_basic_info", {
-        shopId: shop.id,
-      });
+      const result = await command<ShopBasicInfoSyncResult>(
+        "sync_shop_basic_info",
+        {
+          shopId: shop.id,
+        },
+      );
       if (result.status === "active") {
         ElMessage.success(`店铺资料已同步：${result.nickname || shop.name}`);
       } else {
-        ElMessage.error(`资料同步失败：${result.errmsg || result.errcode || "未知错误"}`);
+        ElMessage.error(
+          `资料同步失败：${result.errmsg || result.errcode || "未知错误"}`,
+        );
       }
       await refreshAll();
     } catch (error) {
@@ -1212,12 +1336,15 @@ export function useWxXdApp() {
       return;
     }
     try {
-      const result = await command<ApiQuotaCheckResult>("check_shop_api_quota", {
-        request: {
-          shop_id: shop.id,
-          cgi_path: "/channels/ec/basics/info/get",
+      const result = await command<ApiQuotaCheckResult>(
+        "check_shop_api_quota",
+        {
+          request: {
+            shop_id: shop.id,
+            cgi_path: "/channels/ec/basics/info/get",
+          },
         },
-      });
+      );
       if (result.errcode === null) {
         ElMessage.success(`额度剩余：${result.remain ?? "-"}`);
       } else {
@@ -1240,13 +1367,20 @@ export function useWxXdApp() {
       return;
     }
     try {
-      const result = await command<CategoryCatalogSyncResult>("sync_shop_category_catalog", {
-        shopId: shop.id,
-      });
+      const result = await command<CategoryCatalogSyncResult>(
+        "sync_shop_category_catalog",
+        {
+          shopId: shop.id,
+        },
+      );
       if (result.failed_steps.length > 0) {
-        ElMessage.warning(`类目同步部分完成：类目 ${result.synced_categories}，运费模板 ${result.synced_freight_templates}`);
+        ElMessage.warning(
+          `类目同步部分完成：店铺类目节点 ${result.synced_categories}，生效权限 ${result.synced_category_relations}，运费模板 ${result.synced_freight_templates}`,
+        );
       } else {
-        ElMessage.success(`类目同步完成：类目 ${result.synced_categories}，运费模板 ${result.synced_freight_templates}`);
+        ElMessage.success(
+          `类目同步完成：店铺类目节点 ${result.synced_categories}，生效权限 ${result.synced_category_relations}，运费模板 ${result.synced_freight_templates}`,
+        );
       }
       await Promise.all([refreshCategoryCatalog(), refreshAll()]);
     } catch (error) {
@@ -1271,14 +1405,21 @@ export function useWxXdApp() {
     }
     try {
       categoryRuleCatId.value = String(targetCatId);
-      const result = await command<CategoryRuleSyncResult>("sync_category_rules", {
-        shopId: shop.id,
-        catId: targetCatId,
-      });
+      const result = await command<CategoryRuleSyncResult>(
+        "sync_category_rules",
+        {
+          shopId: shop.id,
+          catId: targetCatId,
+        },
+      );
       if (result.failed_steps.length > 0) {
-        ElMessage.warning(`规则同步部分完成：${result.failed_steps.join("；")}`);
+        ElMessage.warning(
+          `规则同步部分完成：${result.failed_steps.join("；")}`,
+        );
       } else {
-        ElMessage.success(`规则同步完成：商品属性 ${result.product_attr_count}，销售属性 ${result.sale_attr_count}`);
+        ElMessage.success(
+          `规则同步完成：商品属性 ${result.product_attr_count}，销售属性 ${result.sale_attr_count}`,
+        );
       }
       await Promise.all([refreshCategoryCatalog(), refreshAll()]);
     } catch (error) {
@@ -1288,7 +1429,9 @@ export function useWxXdApp() {
 
   async function rotateLocalApiKey() {
     try {
-      const result = await command<LocalApiKeyRotationResult>("rotate_local_api_key");
+      const result = await command<LocalApiKeyRotationResult>(
+        "rotate_local_api_key",
+      );
       rotatedLocalApiKey.value = result.api_key;
       await refreshAll();
       ElMessage.success("本地 HTTP API Key 已生成，旧 Key 已失效");
@@ -1299,7 +1442,10 @@ export function useWxXdApp() {
 
   async function refreshExternalApiLogs() {
     try {
-      externalApiLogs.value = await command<ExternalApiLogView[]>("list_external_api_logs", { limit: 80 });
+      externalApiLogs.value = await command<ExternalApiLogView[]>(
+        "list_external_api_logs",
+        { limit: 80 },
+      );
     } catch (error) {
       ElMessage.error(String(error));
     }
@@ -1321,7 +1467,11 @@ export function useWxXdApp() {
       ElMessage.warning("max_tokens 必须是大于 0 的整数");
       return;
     }
-    if (aiProviderForm.enabled && aiProviderForm.provider_type === "custom" && !aiProviderForm.base_url.trim()) {
+    if (
+      aiProviderForm.enabled &&
+      aiProviderForm.provider_type === "custom" &&
+      !aiProviderForm.base_url.trim()
+    ) {
       ElMessage.warning("启用 Custom provider 前必须填写 Base URL");
       return;
     }
@@ -1331,21 +1481,24 @@ export function useWxXdApp() {
     }
     aiProviderSaving.value = true;
     try {
-      const result = await command<AiProviderSettings>("save_ai_provider_settings", {
-        request: {
-          enabled: aiProviderForm.enabled,
-          provider_type: aiProviderForm.provider_type,
-          custom_provider_id: aiProviderForm.custom_provider_id.trim(),
-          api: aiProviderForm.api,
-          base_url: aiProviderForm.base_url.trim(),
-          model: aiProviderForm.model.trim(),
-          temperature,
-          context_window: contextWindow,
-          max_tokens: maxTokens,
-          api_key: aiProviderForm.api_key.trim() || null,
-          clear_api_key: aiProviderForm.clear_api_key,
+      const result = await command<AiProviderSettings>(
+        "save_ai_provider_settings",
+        {
+          request: {
+            enabled: aiProviderForm.enabled,
+            provider_type: aiProviderForm.provider_type,
+            custom_provider_id: aiProviderForm.custom_provider_id.trim(),
+            api: aiProviderForm.api,
+            base_url: aiProviderForm.base_url.trim(),
+            model: aiProviderForm.model.trim(),
+            temperature,
+            context_window: contextWindow,
+            max_tokens: maxTokens,
+            api_key: aiProviderForm.api_key.trim() || null,
+            clear_api_key: aiProviderForm.clear_api_key,
+          },
         },
-      });
+      );
       aiProviderSettings.value = result;
       syncAiProviderForm(result);
       ElMessage.success("AI provider 配置已保存");
@@ -1370,7 +1523,9 @@ export function useWxXdApp() {
 
   async function refreshDatabaseBackups() {
     try {
-      databaseBackups.value = await command<BackupInfo[]>("list_database_backups");
+      databaseBackups.value = await command<BackupInfo[]>(
+        "list_database_backups",
+      );
     } catch (error) {
       ElMessage.error(String(error));
     }
@@ -1382,8 +1537,12 @@ export function useWxXdApp() {
     }
     backupRunning.value = true;
     try {
-      const result = await command<BackupCreateResult>("create_database_backup");
-      databaseBackups.value = await command<BackupInfo[]>("list_database_backups");
+      const result = await command<BackupCreateResult>(
+        "create_database_backup",
+      );
+      databaseBackups.value = await command<BackupInfo[]>(
+        "list_database_backups",
+      );
       ElMessage.success(`备份已创建：${result.backup.file_name}`);
       if (isTauriRuntime) {
         await revealItemInDir(result.backup.file_path);
@@ -1415,9 +1574,12 @@ export function useWxXdApp() {
     }
     backupRunning.value = true;
     try {
-      const result = await command<BackupRestoreResult>("restore_database_backup", {
-        request: { file_path: backup.file_path },
-      });
+      const result = await command<BackupRestoreResult>(
+        "restore_database_backup",
+        {
+          request: { file_path: backup.file_path },
+        },
+      );
       ElMessage.success(result.message);
       await refreshAll();
     } catch (error) {
@@ -1435,18 +1597,68 @@ export function useWxXdApp() {
     await revealItemInDir(backup.file_path);
   }
 
+  async function resetCollectionPublishWorkspace() {
+    if (workspaceResetRunning.value) {
+      return;
+    }
+    const confirmText = "确认清理采集和铺货数据";
+    let inputValue = "";
+    try {
+      const result = await ElMessageBox.prompt(
+        `这会清空采集任务、铺货任务、素材记录、自动补齐记录和相关通知/日志。系统会先自动备份，店铺、密钥、微信类目缓存、运费模板、订单、售后、采购和发货数据会保留。请输入“${confirmText}”继续。`,
+        "重置采集/铺货工作区",
+        {
+          confirmButtonText: "确认清理",
+          cancelButtonText: "取消",
+          inputPlaceholder: confirmText,
+          inputValidator: (value) =>
+            value.trim() === confirmText || `请输入：${confirmText}`,
+          type: "warning",
+        },
+      );
+      inputValue = result.value;
+    } catch {
+      return;
+    }
+
+    workspaceResetRunning.value = true;
+    try {
+      const result = await command<CollectionPublishWorkspaceResetResult>(
+        "reset_collection_publish_workspace",
+        {
+          request: { confirm_text: inputValue },
+        },
+      );
+      currentJob.value = null;
+      latestTaskId.value = "";
+      queriedTaskId.value = "";
+      selectedCollectionTasks.value = [];
+      ElMessage.success(`${result.message} 备份：${result.backup.file_name}`);
+      await refreshAll();
+    } catch (error) {
+      ElMessage.error(String(error));
+    } finally {
+      workspaceResetRunning.value = false;
+    }
+  }
+
   async function savePublishPricingStrategy(strategy: PublishPricingStrategy) {
     publishPricingSaving.value = true;
     try {
-      publishPricingStrategy.value = await command<PublishPricingStrategy>("save_publish_pricing_strategy", {
-        strategy,
-      });
+      publishPricingStrategy.value = await command<PublishPricingStrategy>(
+        "save_publish_pricing_strategy",
+        {
+          strategy,
+        },
+      );
       ElMessage.success("价格策略已保存");
       return true;
     } catch (error) {
       ElMessage.error(String(error));
       try {
-        publishPricingStrategy.value = await command<PublishPricingStrategy>("get_publish_pricing_strategy");
+        publishPricingStrategy.value = await command<PublishPricingStrategy>(
+          "get_publish_pricing_strategy",
+        );
       } catch {
         publishPricingStrategy.value = defaultPublishPricingStrategy();
       }
@@ -1458,9 +1670,12 @@ export function useWxXdApp() {
 
   async function saveAutomationSettings() {
     try {
-      automationSettings.value = await command<OperationalAutomationSettings>("set_automation_settings", {
-        settings: automationSettings.value,
-      });
+      automationSettings.value = await command<OperationalAutomationSettings>(
+        "set_automation_settings",
+        {
+          settings: automationSettings.value,
+        },
+      );
       ElMessage.success("自动推进设置已保存");
     } catch (error) {
       ElMessage.error(String(error));
@@ -1474,16 +1689,27 @@ export function useWxXdApp() {
     }
     automationRunning.value = true;
     try {
-      const result = await command<OperationalAutomationRunResult>("run_operational_automation_once");
+      const result = await command<OperationalAutomationRunResult>(
+        "run_operational_automation_once",
+      );
       lastAutomationResult.value = result;
       if (result.errors.length > 0) {
-        ElMessage.warning(`自动推进完成，但 ${result.errors.length} 个步骤失败，请查看错误。`);
+        ElMessage.warning(
+          `自动推进完成，但 ${result.errors.length} 个步骤失败，请查看错误。`,
+        );
       } else if (result.executed_steps.length === 0) {
         ElMessage.info("没有启用的自动推进步骤");
       } else {
-        ElMessage.success(`自动推进完成：执行 ${result.executed_steps.length} 步，跳过 ${result.skipped_steps.length} 步`);
+        ElMessage.success(
+          `自动推进完成：执行 ${result.executed_steps.length} 步，跳过 ${result.skipped_steps.length} 步`,
+        );
       }
-      await Promise.all([refreshAll(), queryJob(), queryPriceUpdateJob(), queryOrderPriceAdjustmentJob()]);
+      await Promise.all([
+        refreshAll(),
+        queryJob(),
+        queryPriceUpdateJob(),
+        queryOrderPriceAdjustmentJob(),
+      ]);
     } catch (error) {
       ElMessage.error(String(error));
     } finally {
@@ -1500,78 +1726,19 @@ export function useWxXdApp() {
       return;
     }
     try {
-      const result = await command<PublishJobCreated>("create_external_publish_job", { request });
+      const result = await command<PublishJobCreated>(
+        "create_external_publish_job",
+        { request },
+      );
       latestTaskId.value = result.task_id;
       queriedTaskId.value = result.task_id;
+      selectedSection.value = "publish-tasks";
       ElMessage.success(`铺货任务已创建：${result.task_id}`);
       await Promise.all([refreshAll(), queryJob()]);
     } catch (error) {
       ElMessage.error(String(error));
     }
   }
-
-  
-
-  
-  
-  
-  
-  
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
-
-  
 
   async function queryJob() {
     if (!queriedTaskId.value.trim()) {
@@ -1581,7 +1748,6 @@ export function useWxXdApp() {
       currentJob.value = await command<PublishJobView>("get_publish_job", {
         taskId: queriedTaskId.value.trim(),
       });
-      await refreshJobAttributeSuggestions();
     } catch (error) {
       ElMessage.error(String(error));
     }
@@ -1596,7 +1762,10 @@ export function useWxXdApp() {
       return;
     }
     try {
-      const result = await command<PriceUpdateJobCreated>("create_price_update_job", { request });
+      const result = await command<PriceUpdateJobCreated>(
+        "create_price_update_job",
+        { request },
+      );
       latestPriceTaskId.value = result.task_id;
       queriedPriceTaskId.value = result.task_id;
       ElMessage.success(`商品售价调整任务已创建：${result.task_id}`);
@@ -1611,9 +1780,12 @@ export function useWxXdApp() {
       return;
     }
     try {
-      currentPriceJob.value = await command<PriceUpdateJobView>("get_price_update_job", {
-        taskId: queriedPriceTaskId.value.trim(),
-      });
+      currentPriceJob.value = await command<PriceUpdateJobView>(
+        "get_price_update_job",
+        {
+          taskId: queriedPriceTaskId.value.trim(),
+        },
+      );
     } catch (error) {
       ElMessage.error(String(error));
     }
@@ -1628,7 +1800,10 @@ export function useWxXdApp() {
       return;
     }
     try {
-      const result = await command<OrderPriceAdjustmentJobCreated>("create_order_price_adjustment_job", { request });
+      const result = await command<OrderPriceAdjustmentJobCreated>(
+        "create_order_price_adjustment_job",
+        { request },
+      );
       latestOrderPriceAdjustmentTaskId.value = result.task_id;
       queriedOrderPriceAdjustmentTaskId.value = result.task_id;
       ElMessage.success(`订单改价任务已创建：${result.task_id}`);
@@ -1643,143 +1818,13 @@ export function useWxXdApp() {
       return;
     }
     try {
-      currentOrderPriceAdjustmentJob.value = await command<OrderPriceAdjustmentJobView>("get_order_price_adjustment_job", {
-        taskId: queriedOrderPriceAdjustmentTaskId.value.trim(),
-      });
-    } catch (error) {
-      ElMessage.error(String(error));
-    }
-  }
-
-  async function runPublishTasksOnce() {
-    try {
-      const result = await command<PublishTaskBatchResult>("run_publish_tasks_once", { limit: 20 });
-      if (result.processed_items === 0) {
-        ElMessage.info("没有待执行的铺货任务项");
-      } else {
-        ElMessage.success(`本批处理 ${result.processed_items} 项，通过 ${result.ready_items} 项，失败 ${result.failed_items} 项`);
-      }
-      await Promise.all([refreshAll(), queryJob()]);
-    } catch (error) {
-      ElMessage.error(String(error));
-    }
-  }
-
-  async function runPublishAttributeFillOnce() {
-    try {
-      const result = await command<PublishAttributeFillBatchResult>("run_publish_attribute_fill_once", { limit: 50 });
-      if (result.processed_items === 0) {
-        ElMessage.info("没有待补齐属性的铺货失败项");
-      } else {
-        ElMessage.success(`属性补齐 ${result.processed_items} 项，自动补齐 ${result.auto_filled_items} 项，待确认 ${result.suggestion_only_items} 项，失败 ${result.failed_items} 项`);
-      }
-      await Promise.all([refreshAll(), queryJob()]);
-    } catch (error) {
-      ElMessage.error(String(error));
-    }
-  }
-
-  async function runPublishAiAttributeSuggestionsOnce() {
-    try {
-      const result = await command<PublishAttributeFillBatchResult>("run_publish_ai_attribute_suggestions_once", { limit: 20 });
-      if (result.processed_items === 0) {
-        ElMessage.info("没有待 AI 生成建议的铺货失败项，或 AI provider 尚未启用");
-      } else {
-        ElMessage.success(`AI 建议处理 ${result.processed_items} 项，自动补齐 ${result.auto_filled_items} 项，待确认 ${result.suggestion_only_items} 项`);
-      }
-      await Promise.all([refreshAll(), queryJob()]);
-    } catch (error) {
-      ElMessage.error(String(error));
-    }
-  }
-
-  function handleAttributeSuggestionSelection(rows: PublishAttributeSuggestionView[]) {
-    selectedAttributeSuggestions.value = rows;
-  }
-
-  async function applyAttributeSuggestions(rows: PublishAttributeSuggestionView[]) {
-    const ids = rows.filter((row) => !row.applied).map((row) => row.id);
-    if (ids.length === 0) {
-      ElMessage.info("没有待采纳的属性建议");
-      return;
-    }
-    attributeSuggestionApplying.value = true;
-    try {
-      const result = await command<PublishAttributeSuggestionApplyResult>("apply_publish_attribute_suggestions", {
-        request: { suggestion_ids: ids },
-      });
-      if (result.failed_suggestions > 0) {
-        ElMessage.warning(`${result.message}，失败 ${result.failed_suggestions} 条`);
-      } else {
-        ElMessage.success(result.message);
-      }
-      await Promise.all([refreshAttributeSuggestions(), refreshAll()]);
-      await queryJob();
-    } catch (error) {
-      ElMessage.error(String(error));
-    } finally {
-      attributeSuggestionApplying.value = false;
-    }
-  }
-
-  async function applySelectedAttributeSuggestions() {
-    await applyAttributeSuggestions(selectedAttributeSuggestions.value);
-  }
-
-  async function applySingleAttributeSuggestion(row: PublishAttributeSuggestionView) {
-    await applyAttributeSuggestions([row]);
-  }
-
-  function attributeKindLabel(kind: string) {
-    return kind === "sale" ? "销售属性" : "商品属性";
-  }
-
-  function attributeSuggestionValue(row: PublishAttributeSuggestionView) {
-    if (row.sku_values.length > 0) {
-      return row.sku_values
-        .map((item) => `SKU${item.sku_index + 1}:${item.value}`)
-        .join(" / ");
-    }
-    return row.suggested_value || "-";
-  }
-
-  function allowedValuesText(values: string[]) {
-    if (values.length === 0) {
-      return "-";
-    }
-    return values.slice(0, 8).join(" / ") + (values.length > 8 ? " ..." : "");
-  }
-
-  function attributeSuggestionsForProduct(product: PublishJobProductView) {
-    const itemIds = new Set(product.items.map((item) => item.id));
-    return jobAttributeSuggestions.value.filter((suggestion) => itemIds.has(suggestion.item_id));
-  }
-
-  function pendingAttributeSuggestionsForProduct(product: PublishJobProductView) {
-    return attributeSuggestionsForProduct(product).filter((suggestion) => !suggestion.applied);
-  }
-
-  function attributeSuggestionsForItem(row: PublishJobItemRow) {
-    return jobAttributeSuggestions.value.filter((suggestion) => suggestion.item_id === row.id);
-  }
-
-  function pendingAttributeSuggestionCountForItem(row: PublishJobItemRow) {
-    return attributeSuggestionsForItem(row).filter((suggestion) => !suggestion.applied).length;
-  }
-
-  async function applyProductAttributeSuggestions(product: PublishJobProductView) {
-    await applyAttributeSuggestions(pendingAttributeSuggestionsForProduct(product));
-  }
-
-  async function runPublishCategoryPrechecksOnce() {
-    try {
-      const result = await command<PublishCategoryPrecheckBatchResult>("run_publish_category_prechecks_once", { limit: 20 });
-      if (result.processed_items === 0) {
-        ElMessage.info("没有待微信类目预检的铺货任务项");
-      } else {
-        ElMessage.success(`类目预检 ${result.processed_items} 项，通过 ${result.passed_items} 项，失败 ${result.failed_items} 项`);
-      }
-      await Promise.all([refreshAll(), queryJob()]);
+      currentOrderPriceAdjustmentJob.value =
+        await command<OrderPriceAdjustmentJobView>(
+          "get_order_price_adjustment_job",
+          {
+            taskId: queriedOrderPriceAdjustmentTaskId.value.trim(),
+          },
+        );
     } catch (error) {
       ElMessage.error(String(error));
     }
@@ -1787,11 +1832,16 @@ export function useWxXdApp() {
 
   async function runPriceUpdatePrecheckOnce() {
     try {
-      const result = await command<PriceUpdatePrecheckBatchResult>("run_price_update_precheck_once", { limit: 50 });
+      const result = await command<PriceUpdatePrecheckBatchResult>(
+        "run_price_update_precheck_once",
+        { limit: 50 },
+      );
       if (result.processed_items === 0) {
         ElMessage.info("没有待校验的商品售价任务项");
       } else {
-        ElMessage.success(`商品售价校验完成：处理 ${result.processed_items} 项，就绪 ${result.ready_items} 项，失败 ${result.failed_items} 项`);
+        ElMessage.success(
+          `商品售价校验完成：处理 ${result.processed_items} 项，就绪 ${result.ready_items} 项，失败 ${result.failed_items} 项`,
+        );
       }
       await Promise.all([refreshAll(), queryPriceUpdateJob()]);
     } catch (error) {
@@ -1801,11 +1851,16 @@ export function useWxXdApp() {
 
   async function runPriceUpdateSubmitOnce() {
     try {
-      const result = await command<PriceUpdateSubmitBatchResult>("run_price_update_submit_once", { limit: 20 });
+      const result = await command<PriceUpdateSubmitBatchResult>(
+        "run_price_update_submit_once",
+        { limit: 20 },
+      );
       if (result.processed_items === 0) {
         ElMessage.info("没有待提交 updateproduct 的商品售价任务项");
       } else {
-        ElMessage.success(`商品售价提交完成：处理 ${result.processed_items} 项，已提交 ${result.submitted_items} 项，失败 ${result.failed_items} 项`);
+        ElMessage.success(
+          `商品售价提交完成：处理 ${result.processed_items} 项，已提交 ${result.submitted_items} 项，失败 ${result.failed_items} 项`,
+        );
       }
       await Promise.all([refreshAll(), queryPriceUpdateJob()]);
     } catch (error) {
@@ -1815,11 +1870,16 @@ export function useWxXdApp() {
 
   async function runPriceUpdateConfirmOnce() {
     try {
-      const result = await command<PriceUpdateConfirmBatchResult>("run_price_update_confirm_once", { limit: 50 });
+      const result = await command<PriceUpdateConfirmBatchResult>(
+        "run_price_update_confirm_once",
+        { limit: 50 },
+      );
       if (result.processed_items === 0) {
         ElMessage.info("没有待确认价格的商品售价任务项");
       } else {
-        ElMessage.success(`商品售价确认完成：处理 ${result.processed_items} 项，已确认 ${result.confirmed_items} 项，待生效 ${result.pending_items} 项，失败 ${result.failed_items} 项`);
+        ElMessage.success(
+          `商品售价确认完成：处理 ${result.processed_items} 项，已确认 ${result.confirmed_items} 项，待生效 ${result.pending_items} 项，失败 ${result.failed_items} 项`,
+        );
       }
       await Promise.all([refreshAll(), queryPriceUpdateJob()]);
     } catch (error) {
@@ -1829,11 +1889,16 @@ export function useWxXdApp() {
 
   async function runOrderPriceAdjustmentOnce() {
     try {
-      const result = await command<OrderPriceAdjustmentBatchResult>("run_order_price_adjustment_once", { limit: 20 });
+      const result = await command<OrderPriceAdjustmentBatchResult>(
+        "run_order_price_adjustment_once",
+        { limit: 20 },
+      );
       if (result.processed_items === 0) {
         ElMessage.info("没有待提交的订单改价任务");
       } else {
-        ElMessage.success(`订单改价提交完成：处理 ${result.processed_items} 单，成功 ${result.success_items} 单，失败 ${result.failed_items} 单`);
+        ElMessage.success(
+          `订单改价提交完成：处理 ${result.processed_items} 单，成功 ${result.success_items} 单，失败 ${result.failed_items} 单`,
+        );
       }
       await Promise.all([refreshAll(), queryOrderPriceAdjustmentJob()]);
     } catch (error) {
@@ -1843,14 +1908,19 @@ export function useWxXdApp() {
 
   async function runOrderSyncOnce() {
     try {
-      const result = await command<OrderSyncBatchResult>("run_order_sync_once", {
-        lookbackDays: 1,
-        pageSize: 100,
-      });
+      const result = await command<OrderSyncBatchResult>(
+        "run_order_sync_once",
+        {
+          lookbackDays: 1,
+          pageSize: 100,
+        },
+      );
       if (result.processed_shops === 0) {
         ElMessage.info("没有可同步订单的 active 店铺");
       } else {
-        ElMessage.success(`订单同步完成：店铺 ${result.processed_shops} 个，待发货订单 ${result.synced_orders} 个，失败店铺 ${result.failed_shops} 个`);
+        ElMessage.success(
+          `订单同步完成：店铺 ${result.processed_shops} 个，待发货订单 ${result.synced_orders} 个，失败店铺 ${result.failed_shops} 个`,
+        );
       }
       await refreshAll();
     } catch (error) {
@@ -1860,15 +1930,20 @@ export function useWxXdApp() {
 
   async function runUnpaidOrderSyncOnce() {
     try {
-      const result = await command<OrderSyncBatchResult>("run_order_sync_once", {
-        lookbackDays: 1,
-        pageSize: 100,
-        orderStatus: 10,
-      });
+      const result = await command<OrderSyncBatchResult>(
+        "run_order_sync_once",
+        {
+          lookbackDays: 1,
+          pageSize: 100,
+          orderStatus: 10,
+        },
+      );
       if (result.processed_shops === 0) {
         ElMessage.info("没有可同步订单的 active 店铺");
       } else {
-        ElMessage.success(`待付款订单同步完成：店铺 ${result.processed_shops} 个，订单 ${result.synced_orders} 个，失败店铺 ${result.failed_shops} 个`);
+        ElMessage.success(
+          `待付款订单同步完成：店铺 ${result.processed_shops} 个，订单 ${result.synced_orders} 个，失败店铺 ${result.failed_shops} 个`,
+        );
       }
       await refreshAll();
     } catch (error) {
@@ -1878,11 +1953,16 @@ export function useWxXdApp() {
 
   async function runOrderDetailSyncOnce() {
     try {
-      const result = await command<OrderDetailSyncBatchResult>("run_order_detail_sync_once", { limit: 50 });
+      const result = await command<OrderDetailSyncBatchResult>(
+        "run_order_detail_sync_once",
+        { limit: 50 },
+      );
       if (result.processed_orders === 0) {
         ElMessage.info("没有待同步详情的订单");
       } else {
-        ElMessage.success(`订单详情同步完成：订单 ${result.synced_orders} 个，订单项 ${result.created_items} 个，失败 ${result.failed_orders} 个`);
+        ElMessage.success(
+          `订单详情同步完成：订单 ${result.synced_orders} 个，订单项 ${result.created_items} 个，失败 ${result.failed_orders} 个`,
+        );
       }
       await refreshAll();
     } catch (error) {
@@ -1892,16 +1972,25 @@ export function useWxXdApp() {
 
   async function runAftersaleSyncOnce() {
     try {
-      const result = await command<AftersaleSyncBatchResult>("run_aftersale_sync_once", {
-        lookbackHours: 24,
-        limit: 200,
-      });
+      const result = await command<AftersaleSyncBatchResult>(
+        "run_aftersale_sync_once",
+        {
+          lookbackHours: 24,
+          limit: 200,
+        },
+      );
       if (result.processed_shops === 0) {
         ElMessage.info("没有可同步售后的 active 店铺");
       } else {
-        ElMessage.success(`售后同步完成：店铺 ${result.processed_shops} 个，售后单 ${result.synced_aftersales} 个，失败店铺 ${result.failed_shops} 个，失败售后 ${result.failed_aftersales} 个`);
+        ElMessage.success(
+          `售后同步完成：店铺 ${result.processed_shops} 个，售后单 ${result.synced_aftersales} 个，失败店铺 ${result.failed_shops} 个，失败售后 ${result.failed_aftersales} 个`,
+        );
       }
-      await Promise.all([refreshAll(), refreshAftersales(), refreshOrderProfits()]);
+      await Promise.all([
+        refreshAll(),
+        refreshAftersales(),
+        refreshOrderProfits(),
+      ]);
     } catch (error) {
       ElMessage.error(String(error));
     }
@@ -1909,16 +1998,25 @@ export function useWxXdApp() {
 
   async function runGuaranteeSyncOnce() {
     try {
-      const result = await command<GuaranteeSyncBatchResult>("run_guarantee_sync_once", {
-        lookbackHours: 24,
-        limit: 200,
-      });
+      const result = await command<GuaranteeSyncBatchResult>(
+        "run_guarantee_sync_once",
+        {
+          lookbackHours: 24,
+          limit: 200,
+        },
+      );
       if (result.processed_shops === 0) {
         ElMessage.info("没有可同步纠纷单的 active 店铺");
       } else {
-        ElMessage.success(`纠纷单同步完成：店铺 ${result.processed_shops} 个，纠纷单 ${result.synced_guarantees} 个，失败店铺 ${result.failed_shops} 个，失败纠纷 ${result.failed_guarantees} 个`);
+        ElMessage.success(
+          `纠纷单同步完成：店铺 ${result.processed_shops} 个，纠纷单 ${result.synced_guarantees} 个，失败店铺 ${result.failed_shops} 个，失败纠纷 ${result.failed_guarantees} 个`,
+        );
       }
-      await Promise.all([refreshAll(), refreshGuaranteeOrders(), refreshNotifications()]);
+      await Promise.all([
+        refreshAll(),
+        refreshGuaranteeOrders(),
+        refreshNotifications(),
+      ]);
     } catch (error) {
       ElMessage.error(String(error));
     }
@@ -1926,11 +2024,14 @@ export function useWxXdApp() {
 
   function selectAftersaleResponsibility(row: AftersaleView) {
     aftersaleResponsibilityForm.aftersale_id = row.id;
-    aftersaleResponsibilityForm.responsibility_party = row.responsibility_party || "supplier";
-    aftersaleResponsibilityForm.supplier_compensation_cents = row.supplier_compensation_cents
-      ? String(row.supplier_compensation_cents)
-      : "";
-    aftersaleResponsibilityForm.responsibility_note = row.responsibility_note || row.reason || "";
+    aftersaleResponsibilityForm.responsibility_party =
+      row.responsibility_party || "supplier";
+    aftersaleResponsibilityForm.supplier_compensation_cents =
+      row.supplier_compensation_cents
+        ? String(row.supplier_compensation_cents)
+        : "";
+    aftersaleResponsibilityForm.responsibility_note =
+      row.responsibility_note || row.reason || "";
   }
 
   function selectAftersaleAction(row: AftersaleView) {
@@ -1938,22 +2039,30 @@ export function useWxXdApp() {
     aftersaleActionForm.shop_id = row.shop_id;
     aftersaleActionForm.address_id = "";
     aftersaleActionForm.accept_type = "";
-    aftersaleActionForm.reject_reason_type = aftersaleActionForm.reject_reason_type || "1";
+    aftersaleActionForm.reject_reason_type =
+      aftersaleActionForm.reject_reason_type || "1";
     aftersaleActionForm.reject_reason = row.reason || "";
     aftersaleActionForm.note = row.reason || "";
   }
 
   function selectGuaranteeFollowup(row: GuaranteeOrderView) {
     guaranteeFollowupForm.guarantee_order_id = row.id;
-    guaranteeFollowupForm.handling_status = row.handling_status || "in_progress";
-    guaranteeFollowupForm.responsibility_party = row.responsibility_party || "unknown";
-    guaranteeFollowupForm.supplier_compensation_cents = row.supplier_compensation_cents
-      ? String(row.supplier_compensation_cents)
-      : "";
-    guaranteeFollowupForm.handling_note = row.handling_note || row.apply_reason || row.merchant_refuse_reason || "";
+    guaranteeFollowupForm.handling_status =
+      row.handling_status || "in_progress";
+    guaranteeFollowupForm.responsibility_party =
+      row.responsibility_party || "unknown";
+    guaranteeFollowupForm.supplier_compensation_cents =
+      row.supplier_compensation_cents
+        ? String(row.supplier_compensation_cents)
+        : "";
+    guaranteeFollowupForm.handling_note =
+      row.handling_note || row.apply_reason || row.merchant_refuse_reason || "";
   }
 
-  function selectEvidenceTarget(targetType: "aftersale" | "guarantee", row: AftersaleView | GuaranteeOrderView) {
+  function selectEvidenceTarget(
+    targetType: "aftersale" | "guarantee",
+    row: AftersaleView | GuaranteeOrderView,
+  ) {
     evidenceForm.target_type = targetType;
     evidenceForm.target_id = row.id;
     evidenceTargetTypeFilter.value = targetType;
@@ -1961,11 +2070,13 @@ export function useWxXdApp() {
     if (targetType === "guarantee") {
       const guarantee = row as GuaranteeOrderView;
       evidenceForm.title = evidenceForm.title || "纠纷举证资料";
-      evidenceForm.content_text = guarantee.apply_reason || guarantee.handling_note || "";
+      evidenceForm.content_text =
+        guarantee.apply_reason || guarantee.handling_note || "";
     } else {
       const aftersale = row as AftersaleView;
       evidenceForm.title = evidenceForm.title || "售后处理凭证";
-      evidenceForm.content_text = aftersale.reason || aftersale.responsibility_note || "";
+      evidenceForm.content_text =
+        aftersale.reason || aftersale.responsibility_note || "";
     }
     void refreshAftersaleEvidence();
     ElMessage.info("已切换到当前单据的凭证列表");
@@ -1976,17 +2087,28 @@ export function useWxXdApp() {
     void refreshAftersaleEvidence();
   }
 
-  function selectSupplierFollowupTarget(targetType: "aftersale" | "guarantee", row: AftersaleView | GuaranteeOrderView) {
+  function selectSupplierFollowupTarget(
+    targetType: "aftersale" | "guarantee",
+    row: AftersaleView | GuaranteeOrderView,
+  ) {
     supplierFollowupForm.target_type = targetType;
     supplierFollowupForm.target_id = row.id;
     supplierFollowupTargetTypeFilter.value = targetType;
     supplierFollowupTargetIdFilter.value = row.id;
     if (targetType === "guarantee") {
       const guarantee = row as GuaranteeOrderView;
-      supplierFollowupForm.note = supplierFollowupForm.note || guarantee.handling_note || guarantee.apply_reason || "";
+      supplierFollowupForm.note =
+        supplierFollowupForm.note ||
+        guarantee.handling_note ||
+        guarantee.apply_reason ||
+        "";
     } else {
       const aftersale = row as AftersaleView;
-      supplierFollowupForm.note = supplierFollowupForm.note || aftersale.responsibility_note || aftersale.reason || "";
+      supplierFollowupForm.note =
+        supplierFollowupForm.note ||
+        aftersale.responsibility_note ||
+        aftersale.reason ||
+        "";
     }
     void refreshSupplierAftersaleFollowups();
     ElMessage.info("已切换到当前单据的供应商协同记录");
@@ -2002,8 +2124,13 @@ export function useWxXdApp() {
     if (!Number.isInteger(type) || type <= 0) {
       return;
     }
-    const reason = aftersaleRejectReasonOptions.value.find((item) => item.reject_reason_type === type)
-      || aftersaleRejectReasons.value.find((item) => item.reject_reason_type === type);
+    const reason =
+      aftersaleRejectReasonOptions.value.find(
+        (item) => item.reject_reason_type === type,
+      ) ||
+      aftersaleRejectReasons.value.find(
+        (item) => item.reject_reason_type === type,
+      );
     if (!reason) {
       return;
     }
@@ -2012,18 +2139,22 @@ export function useWxXdApp() {
   }
 
   async function syncAftersaleRejectReasons() {
-    const shopId = aftersaleActionForm.shop_id.trim()
-      || aftersales.value[0]?.shop_id
-      || shops.value[0]?.id
-      || "";
+    const shopId =
+      aftersaleActionForm.shop_id.trim() ||
+      aftersales.value[0]?.shop_id ||
+      shops.value[0]?.id ||
+      "";
     if (!shopId) {
       ElMessage.warning("先添加店铺或选择一条售后单，再同步拒绝原因");
       return;
     }
     try {
-      const result = await command<AftersaleRejectReasonSyncResult>("sync_aftersale_reject_reasons", {
-        shopId,
-      });
+      const result = await command<AftersaleRejectReasonSyncResult>(
+        "sync_aftersale_reject_reasons",
+        {
+          shopId,
+        },
+      );
       if (result.failed_steps.length > 0) {
         ElMessage.warning(result.failed_steps.join("；"));
       } else {
@@ -2041,29 +2172,45 @@ export function useWxXdApp() {
       ElMessage.warning("先选择或填写纠纷单 ID");
       return;
     }
-    const compensation = guaranteeFollowupForm.supplier_compensation_cents.trim()
-      ? Number(guaranteeFollowupForm.supplier_compensation_cents)
-      : 0;
-    if (!Number.isFinite(compensation) || compensation < 0 || !Number.isInteger(compensation)) {
+    const compensation =
+      guaranteeFollowupForm.supplier_compensation_cents.trim()
+        ? Number(guaranteeFollowupForm.supplier_compensation_cents)
+        : 0;
+    if (
+      !Number.isFinite(compensation) ||
+      compensation < 0 ||
+      !Number.isInteger(compensation)
+    ) {
       ElMessage.warning("供应商赔付金额必须是非负整数，单位分");
       return;
     }
-    if (compensation > 0 && guaranteeFollowupForm.responsibility_party !== "supplier") {
+    if (
+      compensation > 0 &&
+      guaranteeFollowupForm.responsibility_party !== "supplier"
+    ) {
       ElMessage.warning("只有供应商责任才能记录纠纷供应商赔付金额");
       return;
     }
     try {
-      const result = await command<GuaranteeFollowupResult>("record_guarantee_followup", {
-        request: {
-          guarantee_order_id: guaranteeFollowupForm.guarantee_order_id.trim(),
-          handling_status: guaranteeFollowupForm.handling_status,
-          responsibility_party: guaranteeFollowupForm.responsibility_party || null,
-          handling_note: guaranteeFollowupForm.handling_note.trim() || null,
-          supplier_compensation_cents: compensation,
+      const result = await command<GuaranteeFollowupResult>(
+        "record_guarantee_followup",
+        {
+          request: {
+            guarantee_order_id: guaranteeFollowupForm.guarantee_order_id.trim(),
+            handling_status: guaranteeFollowupForm.handling_status,
+            responsibility_party:
+              guaranteeFollowupForm.responsibility_party || null,
+            handling_note: guaranteeFollowupForm.handling_note.trim() || null,
+            supplier_compensation_cents: compensation,
+          },
         },
-      });
+      );
       ElMessage.success(result.message);
-      await Promise.all([refreshGuaranteeOrders(), refreshOrderProfits(), refreshNotifications()]);
+      await Promise.all([
+        refreshGuaranteeOrders(),
+        refreshOrderProfits(),
+        refreshNotifications(),
+      ]);
     } catch (error) {
       ElMessage.error(String(error));
     }
@@ -2079,26 +2226,29 @@ export function useWxXdApp() {
       return;
     }
     if (
-      !evidenceForm.content_text.trim()
-      && !evidenceForm.local_file_path.trim()
-      && !evidenceForm.source_url.trim()
+      !evidenceForm.content_text.trim() &&
+      !evidenceForm.local_file_path.trim() &&
+      !evidenceForm.source_url.trim()
     ) {
       ElMessage.warning("凭证说明、本地文件路径和来源链接至少填写一项");
       return;
     }
     try {
-      const result = await command<AftersaleEvidenceRecordResult>("record_aftersale_evidence", {
-        request: {
-          target_type: evidenceForm.target_type,
-          target_id: evidenceForm.target_id.trim(),
-          evidence_type: evidenceForm.evidence_type,
-          title: evidenceForm.title.trim(),
-          content_text: evidenceForm.content_text.trim() || null,
-          local_file_path: evidenceForm.local_file_path.trim() || null,
-          source_url: evidenceForm.source_url.trim() || null,
-          status: evidenceForm.status,
+      const result = await command<AftersaleEvidenceRecordResult>(
+        "record_aftersale_evidence",
+        {
+          request: {
+            target_type: evidenceForm.target_type,
+            target_id: evidenceForm.target_id.trim(),
+            evidence_type: evidenceForm.evidence_type,
+            title: evidenceForm.title.trim(),
+            content_text: evidenceForm.content_text.trim() || null,
+            local_file_path: evidenceForm.local_file_path.trim() || null,
+            source_url: evidenceForm.source_url.trim() || null,
+            status: evidenceForm.status,
+          },
         },
-      });
+      );
       ElMessage.success(result.message);
       evidenceForm.title = "";
       evidenceForm.content_text = "";
@@ -2125,33 +2275,46 @@ export function useWxXdApp() {
       return;
     }
     try {
-      const result = await command<SupplierAftersaleFollowupRecordResult>("record_supplier_aftersale_followup", {
-        request: {
-          target_type: supplierFollowupForm.target_type,
-          target_id: supplierFollowupForm.target_id.trim(),
-          followup_type: supplierFollowupForm.followup_type,
-          status: supplierFollowupForm.status,
-          note: supplierFollowupForm.note.trim(),
-          purchase_task_id: supplierFollowupForm.purchase_task_id.trim() || null,
-          supplier_name: supplierFollowupForm.supplier_name.trim() || null,
+      const result = await command<SupplierAftersaleFollowupRecordResult>(
+        "record_supplier_aftersale_followup",
+        {
+          request: {
+            target_type: supplierFollowupForm.target_type,
+            target_id: supplierFollowupForm.target_id.trim(),
+            followup_type: supplierFollowupForm.followup_type,
+            status: supplierFollowupForm.status,
+            note: supplierFollowupForm.note.trim(),
+            purchase_task_id:
+              supplierFollowupForm.purchase_task_id.trim() || null,
+            supplier_name: supplierFollowupForm.supplier_name.trim() || null,
+          },
         },
-      });
+      );
       ElMessage.success(result.message);
       supplierFollowupForm.note = "";
-      await Promise.all([refreshSupplierAftersaleFollowups(), refreshNotifications()]);
+      await Promise.all([
+        refreshSupplierAftersaleFollowups(),
+        refreshNotifications(),
+      ]);
     } catch (error) {
       ElMessage.error(String(error));
     }
   }
 
-  async function updateAftersaleEvidenceStatus(row: AftersaleEvidenceView, status: string) {
+  async function updateAftersaleEvidenceStatus(
+    row: AftersaleEvidenceView,
+    status: string,
+  ) {
     try {
-      const result = await command<AftersaleEvidenceStatusUpdateResult>("update_aftersale_evidence_status", {
-        request: {
-          evidence_id: row.id,
-          status,
+      const result = await command<AftersaleEvidenceStatusUpdateResult>(
+        "update_aftersale_evidence_status",
+        {
+          request: {
+            evidence_id: row.id,
+            status,
+          },
         },
-      });
+      );
       ElMessage.success(result.message);
       await Promise.all([refreshAftersaleEvidence(), refreshNotifications()]);
     } catch (error) {
@@ -2166,14 +2329,27 @@ export function useWxXdApp() {
   ) {
     try {
       const filteredTargetId = evidenceTargetIdFilter.value.trim() || null;
-      const result = await command<AftersaleEvidenceExportResult>("export_aftersale_evidence", {
-        targetType: targetType ?? (evidenceTargetTypeFilter.value === "all" ? null : evidenceTargetTypeFilter.value),
-        targetId: targetId ?? filteredTargetId,
-        status: targetId ? null : (evidenceStatusFilter.value === "all" ? null : evidenceStatusFilter.value),
-        format: evidenceExportFormat.value,
-      });
+      const result = await command<AftersaleEvidenceExportResult>(
+        "export_aftersale_evidence",
+        {
+          targetType:
+            targetType ??
+            (evidenceTargetTypeFilter.value === "all"
+              ? null
+              : evidenceTargetTypeFilter.value),
+          targetId: targetId ?? filteredTargetId,
+          status: targetId
+            ? null
+            : evidenceStatusFilter.value === "all"
+              ? null
+              : evidenceStatusFilter.value,
+          format: evidenceExportFormat.value,
+        },
+      );
       evidenceExportPath.value = result.file_path;
-      ElMessage.success(`${targetLabel ? `${targetLabel}：` : ""}已导出 ${result.exported_count} 条凭证资料`);
+      ElMessage.success(
+        `${targetLabel ? `${targetLabel}：` : ""}已导出 ${result.exported_count} 条凭证资料`,
+      );
       if (isTauriRuntime) {
         await revealItemInDir(result.file_path);
       }
@@ -2187,28 +2363,45 @@ export function useWxXdApp() {
       ElMessage.warning("先选择或填写售后单 ID");
       return;
     }
-    const compensation = aftersaleResponsibilityForm.supplier_compensation_cents.trim()
-      ? Number(aftersaleResponsibilityForm.supplier_compensation_cents)
-      : 0;
-    if (!Number.isFinite(compensation) || compensation < 0 || !Number.isInteger(compensation)) {
+    const compensation =
+      aftersaleResponsibilityForm.supplier_compensation_cents.trim()
+        ? Number(aftersaleResponsibilityForm.supplier_compensation_cents)
+        : 0;
+    if (
+      !Number.isFinite(compensation) ||
+      compensation < 0 ||
+      !Number.isInteger(compensation)
+    ) {
       ElMessage.warning("供应商赔付金额必须是非负整数，单位分");
       return;
     }
-    if (compensation > 0 && aftersaleResponsibilityForm.responsibility_party !== "supplier") {
+    if (
+      compensation > 0 &&
+      aftersaleResponsibilityForm.responsibility_party !== "supplier"
+    ) {
       ElMessage.warning("只有供应商责任才能记录供应商赔付金额");
       return;
     }
     try {
-      const result = await command<AftersaleResponsibilityResult>("record_aftersale_responsibility", {
-        request: {
-          aftersale_id: aftersaleResponsibilityForm.aftersale_id.trim(),
-          responsibility_party: aftersaleResponsibilityForm.responsibility_party,
-          responsibility_note: aftersaleResponsibilityForm.responsibility_note.trim() || null,
-          supplier_compensation_cents: compensation,
+      const result = await command<AftersaleResponsibilityResult>(
+        "record_aftersale_responsibility",
+        {
+          request: {
+            aftersale_id: aftersaleResponsibilityForm.aftersale_id.trim(),
+            responsibility_party:
+              aftersaleResponsibilityForm.responsibility_party,
+            responsibility_note:
+              aftersaleResponsibilityForm.responsibility_note.trim() || null,
+            supplier_compensation_cents: compensation,
+          },
         },
-      });
+      );
       ElMessage.success(result.message);
-      await Promise.all([refreshAftersales(), refreshOrderProfits(), refreshNotifications()]);
+      await Promise.all([
+        refreshAftersales(),
+        refreshOrderProfits(),
+        refreshNotifications(),
+      ]);
     } catch (error) {
       ElMessage.error(String(error));
     }
@@ -2222,7 +2415,10 @@ export function useWxXdApp() {
     const acceptType = aftersaleActionForm.accept_type
       ? Number(aftersaleActionForm.accept_type)
       : null;
-    if (acceptType !== null && (![1, 2].includes(acceptType) || !Number.isInteger(acceptType))) {
+    if (
+      acceptType !== null &&
+      (![1, 2].includes(acceptType) || !Number.isInteger(acceptType))
+    ) {
       ElMessage.warning("同意类型只能选择同意退货或同意退款");
       return;
     }
@@ -2240,7 +2436,11 @@ export function useWxXdApp() {
       } else {
         ElMessage.warning(result.message);
       }
-      await Promise.all([refreshAftersales(), refreshNotifications(), refreshDashboardOnly()]);
+      await Promise.all([
+        refreshAftersales(),
+        refreshNotifications(),
+        refreshDashboardOnly(),
+      ]);
     } catch (error) {
       ElMessage.error(String(error));
     }
@@ -2256,13 +2456,18 @@ export function useWxXdApp() {
       ElMessage.warning("拒绝原因类型必须是正整数");
       return;
     }
-    const selectedReason = aftersaleRejectReasonOptions.value.find((item) => item.reject_reason_type === rejectReasonType);
+    const selectedReason = aftersaleRejectReasonOptions.value.find(
+      (item) => item.reject_reason_type === rejectReasonType,
+    );
     try {
       const result = await command<AftersaleActionResult>("reject_aftersale", {
         request: {
           aftersale_id: aftersaleActionForm.aftersale_id.trim(),
           reject_reason_type: rejectReasonType,
-          reject_reason: aftersaleActionForm.reject_reason.trim() || selectedReason?.reject_reason || null,
+          reject_reason:
+            aftersaleActionForm.reject_reason.trim() ||
+            selectedReason?.reject_reason ||
+            null,
           note: aftersaleActionForm.note.trim() || null,
         },
       });
@@ -2271,7 +2476,11 @@ export function useWxXdApp() {
       } else {
         ElMessage.warning(result.message);
       }
-      await Promise.all([refreshAftersales(), refreshNotifications(), refreshDashboardOnly()]);
+      await Promise.all([
+        refreshAftersales(),
+        refreshNotifications(),
+        refreshDashboardOnly(),
+      ]);
     } catch (error) {
       ElMessage.error(String(error));
     }
@@ -2279,11 +2488,16 @@ export function useWxXdApp() {
 
   async function runPurchaseTaskGenerationOnce() {
     try {
-      const result = await command<PurchaseTaskBatchResult>("run_purchase_task_generation_once", { limit: 100 });
+      const result = await command<PurchaseTaskBatchResult>(
+        "run_purchase_task_generation_once",
+        { limit: 100 },
+      );
       if (result.processed_items === 0) {
         ElMessage.info("没有待生成采购任务的订单项");
       } else {
-        ElMessage.success(`采购任务生成完成：处理 ${result.processed_items} 项，生成 ${result.created_tasks} 项，跳过 ${result.skipped_items} 项`);
+        ElMessage.success(
+          `采购任务生成完成：处理 ${result.processed_items} 项，生成 ${result.created_tasks} 项，跳过 ${result.skipped_items} 项`,
+        );
       }
       await refreshAll();
     } catch (error) {
@@ -2293,9 +2507,12 @@ export function useWxXdApp() {
 
   async function exportPurchaseTasks() {
     try {
-      const result = await command<PurchaseTaskExportResult>("export_purchase_tasks", {
-        status: purchaseStatusFilter.value,
-      });
+      const result = await command<PurchaseTaskExportResult>(
+        "export_purchase_tasks",
+        {
+          status: purchaseStatusFilter.value,
+        },
+      );
       purchaseExportPath.value = result.file_path;
       ElMessage.success(`已导出 ${result.exported_count} 条采购任务`);
       if (isTauriRuntime) {
@@ -2308,10 +2525,13 @@ export function useWxXdApp() {
 
   async function exportSupplierAgentTasks() {
     try {
-      const result = await command<SupplierAgentExportResult>("export_supplier_agent_tasks", {
-        status: purchaseStatusFilter.value,
-        format: supplierAgentExportFormat.value,
-      });
+      const result = await command<SupplierAgentExportResult>(
+        "export_supplier_agent_tasks",
+        {
+          status: purchaseStatusFilter.value,
+          format: supplierAgentExportFormat.value,
+        },
+      );
       supplierAgentExportPath.value = result.file_path;
       ElMessage.success(`已导出 ${result.exported_count} 条供应商 agent 任务`);
       await refreshAgentRuns();
@@ -2325,7 +2545,9 @@ export function useWxXdApp() {
 
   async function fillSupplierAgentTemplate() {
     try {
-      supplierAgentApplyText.value = await command<string>("get_supplier_agent_result_template");
+      supplierAgentApplyText.value = await command<string>(
+        "get_supplier_agent_result_template",
+      );
       supplierAgentApplyResult.value = null;
       ElMessage.success("已填入供应商 agent 结果模板");
     } catch (error) {
@@ -2339,16 +2561,21 @@ export function useWxXdApp() {
       return;
     }
     try {
-      const result = await command<SupplierAgentApplyResult>("apply_supplier_agent_results", {
-        request: {
-          raw_results: supplierAgentApplyText.value,
-          dry_run: supplierAgentDryRun.value,
-          continue_on_error: supplierAgentContinueOnError.value,
+      const result = await command<SupplierAgentApplyResult>(
+        "apply_supplier_agent_results",
+        {
+          request: {
+            raw_results: supplierAgentApplyText.value,
+            dry_run: supplierAgentDryRun.value,
+            continue_on_error: supplierAgentContinueOnError.value,
+          },
         },
-      });
+      );
       supplierAgentApplyResult.value = result;
       if (result.failed > 0) {
-        ElMessage.warning(`处理 ${result.processed} 条，失败 ${result.failed} 条`);
+        ElMessage.warning(
+          `处理 ${result.processed} 条，失败 ${result.failed} 条`,
+        );
         await refreshAgentRuns();
       } else if (result.dry_run) {
         ElMessage.success(`干跑通过 ${result.succeeded} 条`);
@@ -2369,9 +2596,10 @@ export function useWxXdApp() {
     purchaseMappingForm.source_url = task.source_url || "";
     purchaseMappingForm.supplier_name = task.supplier_name || "";
     purchaseMappingForm.supplier_product_id = task.supplier_product_id || "";
-    purchaseMappingForm.estimated_cost = task.estimated_cost !== null && task.estimated_cost !== undefined
-      ? String(task.estimated_cost)
-      : "";
+    purchaseMappingForm.estimated_cost =
+      task.estimated_cost !== null && task.estimated_cost !== undefined
+        ? String(task.estimated_cost)
+        : "";
     purchaseMappingForm.note = task.error_summary || "";
   }
 
@@ -2380,32 +2608,46 @@ export function useWxXdApp() {
       ElMessage.warning("先选择或填写采购任务 ID");
       return;
     }
-    if (!purchaseMappingForm.external_product_id.trim() || !purchaseMappingForm.external_sku_id.trim()) {
+    if (
+      !purchaseMappingForm.external_product_id.trim() ||
+      !purchaseMappingForm.external_sku_id.trim()
+    ) {
       ElMessage.warning("外部商品 ID 和外部 SKU 必填");
       return;
     }
     const estimatedCost = purchaseMappingForm.estimated_cost.trim()
       ? Number(purchaseMappingForm.estimated_cost)
       : null;
-    if (estimatedCost !== null && (!Number.isFinite(estimatedCost) || estimatedCost < 0)) {
+    if (
+      estimatedCost !== null &&
+      (!Number.isFinite(estimatedCost) || estimatedCost < 0)
+    ) {
       ElMessage.warning("采购成本必须是非负数字");
       return;
     }
     try {
-      const result = await command<PurchaseTaskMappingResult>("resolve_purchase_task_mapping", {
-        request: {
-          purchase_task_id: purchaseMappingForm.purchase_task_id.trim(),
-          external_product_id: purchaseMappingForm.external_product_id.trim(),
-          external_sku_id: purchaseMappingForm.external_sku_id.trim(),
-          source_url: purchaseMappingForm.source_url.trim() || null,
-          supplier_name: purchaseMappingForm.supplier_name.trim() || null,
-          supplier_product_id: purchaseMappingForm.supplier_product_id.trim() || null,
-          estimated_cost: estimatedCost,
-          note: purchaseMappingForm.note.trim() || null,
+      const result = await command<PurchaseTaskMappingResult>(
+        "resolve_purchase_task_mapping",
+        {
+          request: {
+            purchase_task_id: purchaseMappingForm.purchase_task_id.trim(),
+            external_product_id: purchaseMappingForm.external_product_id.trim(),
+            external_sku_id: purchaseMappingForm.external_sku_id.trim(),
+            source_url: purchaseMappingForm.source_url.trim() || null,
+            supplier_name: purchaseMappingForm.supplier_name.trim() || null,
+            supplier_product_id:
+              purchaseMappingForm.supplier_product_id.trim() || null,
+            estimated_cost: estimatedCost,
+            note: purchaseMappingForm.note.trim() || null,
+          },
         },
-      });
+      );
       ElMessage.success(result.message);
-      await Promise.all([refreshPurchaseTasks(), refreshNotifications(), refreshDashboardOnly()]);
+      await Promise.all([
+        refreshPurchaseTasks(),
+        refreshNotifications(),
+        refreshDashboardOnly(),
+      ]);
     } catch (error) {
       ElMessage.error(String(error));
     }
@@ -2449,15 +2691,22 @@ export function useWxXdApp() {
       return;
     }
     try {
-      const result = await command<PurchaseTaskIssueResult>("mark_purchase_task_issue", {
-        request: {
-          purchase_task_id: purchaseIssueForm.purchase_task_id.trim(),
-          issue_type: purchaseIssueForm.issue_type,
-          note: purchaseIssueForm.note.trim() || null,
+      const result = await command<PurchaseTaskIssueResult>(
+        "mark_purchase_task_issue",
+        {
+          request: {
+            purchase_task_id: purchaseIssueForm.purchase_task_id.trim(),
+            issue_type: purchaseIssueForm.issue_type,
+            note: purchaseIssueForm.note.trim() || null,
+          },
         },
-      });
+      );
       ElMessage.success(result.message);
-      await Promise.all([refreshPurchaseTasks(), refreshNotifications(), refreshDashboardOnly()]);
+      await Promise.all([
+        refreshPurchaseTasks(),
+        refreshNotifications(),
+        refreshDashboardOnly(),
+      ]);
     } catch (error) {
       ElMessage.error(String(error));
     }
@@ -2478,14 +2727,17 @@ export function useWxXdApp() {
       return;
     }
     try {
-      const result = await command<OrderProfitAdjustmentResult>("record_order_profit_adjustment", {
-        request: {
-          order_id: orderProfitAdjustmentForm.order_id.trim(),
-          kind: orderProfitAdjustmentForm.kind,
-          amount_cents: amountCents,
-          note: orderProfitAdjustmentForm.note.trim() || null,
+      const result = await command<OrderProfitAdjustmentResult>(
+        "record_order_profit_adjustment",
+        {
+          request: {
+            order_id: orderProfitAdjustmentForm.order_id.trim(),
+            kind: orderProfitAdjustmentForm.kind,
+            amount_cents: amountCents,
+            note: orderProfitAdjustmentForm.note.trim() || null,
+          },
         },
-      });
+      );
       ElMessage.success(result.message);
       orderProfitAdjustmentForm.amount_cents = "";
       orderProfitAdjustmentForm.note = "";
@@ -2500,29 +2752,50 @@ export function useWxXdApp() {
       ElMessage.warning("先选择或填写采购任务 ID");
       return;
     }
-    if (purchaseShipmentForm.deliver_type === 1 && (!purchaseShipmentForm.delivery_id.trim() || !purchaseShipmentForm.waybill_id.trim())) {
+    if (
+      purchaseShipmentForm.deliver_type === 1 &&
+      (!purchaseShipmentForm.delivery_id.trim() ||
+        !purchaseShipmentForm.waybill_id.trim())
+    ) {
       ElMessage.warning("自寄快递必须填写快递公司和快递单号");
       return;
     }
-    const selectedCompany = deliveryCompanyOptions.value.find((item) => item.value === purchaseShipmentForm.delivery_id);
+    const selectedCompany = deliveryCompanyOptions.value.find(
+      (item) => item.value === purchaseShipmentForm.delivery_id,
+    );
     const estimatedCost = purchaseShipmentForm.estimated_cost.trim()
       ? Number(purchaseShipmentForm.estimated_cost)
       : null;
-    if (estimatedCost !== null && (!Number.isFinite(estimatedCost) || estimatedCost < 0)) {
+    if (
+      estimatedCost !== null &&
+      (!Number.isFinite(estimatedCost) || estimatedCost < 0)
+    ) {
       ElMessage.warning("采购成本必须是非负数字");
       return;
     }
     try {
-      const result = await command<PurchaseTaskShipmentResult>("record_purchase_task_shipment", {
-        request: {
-          purchase_task_id: purchaseShipmentForm.purchase_task_id.trim(),
-          delivery_id: purchaseShipmentForm.deliver_type === 1 ? purchaseShipmentForm.delivery_id : null,
-          delivery_name: purchaseShipmentForm.deliver_type === 1 ? selectedCompany?.label || null : null,
-          waybill_id: purchaseShipmentForm.deliver_type === 1 ? purchaseShipmentForm.waybill_id.trim() : null,
-          deliver_type: purchaseShipmentForm.deliver_type,
-          estimated_cost: estimatedCost,
+      const result = await command<PurchaseTaskShipmentResult>(
+        "record_purchase_task_shipment",
+        {
+          request: {
+            purchase_task_id: purchaseShipmentForm.purchase_task_id.trim(),
+            delivery_id:
+              purchaseShipmentForm.deliver_type === 1
+                ? purchaseShipmentForm.delivery_id
+                : null,
+            delivery_name:
+              purchaseShipmentForm.deliver_type === 1
+                ? selectedCompany?.label || null
+                : null,
+            waybill_id:
+              purchaseShipmentForm.deliver_type === 1
+                ? purchaseShipmentForm.waybill_id.trim()
+                : null,
+            deliver_type: purchaseShipmentForm.deliver_type,
+            estimated_cost: estimatedCost,
+          },
         },
-      });
+      );
       ElMessage.success(result.message);
       await refreshAll();
     } catch (error) {
@@ -2533,11 +2806,15 @@ export function useWxXdApp() {
   async function setAutoSendDelivery(value: boolean | string | number) {
     try {
       const enabled = Boolean(value);
-      deliverySettings.value = await command<DeliverySettings>("set_auto_send_delivery", { enabled });
+      deliverySettings.value = await command<DeliverySettings>(
+        "set_auto_send_delivery",
+        { enabled },
+      );
       ElMessage.success(enabled ? "自动微信发货已开启" : "自动微信发货已关闭");
       await refreshAll();
     } catch (error) {
-      deliverySettings.value.auto_send_delivery = !deliverySettings.value.auto_send_delivery;
+      deliverySettings.value.auto_send_delivery =
+        !deliverySettings.value.auto_send_delivery;
       ElMessage.error(String(error));
     }
   }
@@ -2549,10 +2826,13 @@ export function useWxXdApp() {
       return;
     }
     try {
-      const result = await command<DeliveryCompanySyncResult>("sync_delivery_companies", {
-        shopId,
-        ewaybillOnly: false,
-      });
+      const result = await command<DeliveryCompanySyncResult>(
+        "sync_delivery_companies",
+        {
+          shopId,
+          ewaybillOnly: false,
+        },
+      );
       if (result.failed_steps.length > 0) {
         ElMessage.warning(result.failed_steps.join("；"));
       } else {
@@ -2565,27 +2845,45 @@ export function useWxXdApp() {
   }
 
   async function recordOrderShipment() {
-    const selectedCompany = deliveryCompanyOptions.value.find((item) => item.value === shipmentForm.delivery_id);
-    if (!shipmentForm.order_id.trim() && (!shipmentForm.shop_id.trim() || !shipmentForm.wechat_order_id.trim())) {
+    const selectedCompany = deliveryCompanyOptions.value.find(
+      (item) => item.value === shipmentForm.delivery_id,
+    );
+    if (
+      !shipmentForm.order_id.trim() &&
+      (!shipmentForm.shop_id.trim() || !shipmentForm.wechat_order_id.trim())
+    ) {
       ElMessage.warning("填写本地订单 ID，或填写店铺 ID + 微信订单号");
       return;
     }
-    if (shipmentForm.deliver_type === 1 && (!shipmentForm.delivery_id.trim() || !shipmentForm.waybill_id.trim())) {
+    if (
+      shipmentForm.deliver_type === 1 &&
+      (!shipmentForm.delivery_id.trim() || !shipmentForm.waybill_id.trim())
+    ) {
       ElMessage.warning("自寄快递必须填写快递公司和快递单号");
       return;
     }
     try {
-      const result = await command<ShipmentRecordResult>("record_order_shipment", {
-        request: {
-          order_id: shipmentForm.order_id.trim() || null,
-          shop_id: shipmentForm.shop_id.trim() || null,
-          wechat_order_id: shipmentForm.wechat_order_id.trim() || null,
-          delivery_id: shipmentForm.deliver_type === 1 ? shipmentForm.delivery_id : null,
-          delivery_name: shipmentForm.deliver_type === 1 ? selectedCompany?.label || null : null,
-          waybill_id: shipmentForm.deliver_type === 1 ? shipmentForm.waybill_id.trim() : null,
-          deliver_type: shipmentForm.deliver_type,
+      const result = await command<ShipmentRecordResult>(
+        "record_order_shipment",
+        {
+          request: {
+            order_id: shipmentForm.order_id.trim() || null,
+            shop_id: shipmentForm.shop_id.trim() || null,
+            wechat_order_id: shipmentForm.wechat_order_id.trim() || null,
+            delivery_id:
+              shipmentForm.deliver_type === 1 ? shipmentForm.delivery_id : null,
+            delivery_name:
+              shipmentForm.deliver_type === 1
+                ? selectedCompany?.label || null
+                : null,
+            waybill_id:
+              shipmentForm.deliver_type === 1
+                ? shipmentForm.waybill_id.trim()
+                : null,
+            deliver_type: shipmentForm.deliver_type,
+          },
         },
-      });
+      );
       ElMessage.success(result.message);
       await refreshAll();
     } catch (error) {
@@ -2595,11 +2893,20 @@ export function useWxXdApp() {
 
   async function runDeliverySubmissionOnce() {
     try {
-      const result = await command<DeliverySubmitBatchResult>("run_delivery_submission_once", { limit: 20 });
+      const result = await command<DeliverySubmitBatchResult>(
+        "run_delivery_submission_once",
+        { limit: 20 },
+      );
       if (result.processed_shipments === 0) {
-        ElMessage.info(deliverySettings.value.auto_send_delivery ? "没有待提交微信发货的物流单" : "自动发货开关关闭，未提交微信发货");
+        ElMessage.info(
+          deliverySettings.value.auto_send_delivery
+            ? "没有待提交微信发货的物流单"
+            : "自动发货开关关闭，未提交微信发货",
+        );
       } else {
-        ElMessage.success(`微信发货完成：处理 ${result.processed_shipments} 单，成功 ${result.submitted_shipments} 单，失败 ${result.failed_shipments} 单`);
+        ElMessage.success(
+          `微信发货完成：处理 ${result.processed_shipments} 单，成功 ${result.submitted_shipments} 单，失败 ${result.failed_shipments} 单`,
+        );
       }
       await refreshAll();
     } catch (error) {
@@ -2609,9 +2916,12 @@ export function useWxXdApp() {
 
   async function retryDeliveryShipment(shipment: ShipmentView) {
     try {
-      const result = await command<ShipmentRetryResult>("retry_delivery_shipment", {
-        shipmentId: shipment.id,
-      });
+      const result = await command<ShipmentRetryResult>(
+        "retry_delivery_shipment",
+        {
+          shipmentId: shipment.id,
+        },
+      );
       ElMessage.success(result.message);
       await refreshDeliveryShipments();
     } catch (error) {
@@ -2619,59 +2929,53 @@ export function useWxXdApp() {
     }
   }
 
-  async function runPublishAssetUploadsOnce() {
-    try {
-      const result = await command<AssetUploadBatchResult>("run_publish_asset_uploads_once", { limit: 10 });
-      if (result.processed_items === 0) {
-        ElMessage.info("没有待上传素材的铺货任务项");
-      } else {
-        ElMessage.success(`素材处理 ${result.processed_items} 项，新上传 ${result.uploaded_assets} 张，复用 ${result.reused_assets} 张，失败 ${result.failed_items} 项`);
-      }
-      await Promise.all([refreshAll(), queryJob()]);
-    } catch (error) {
-      ElMessage.error(String(error));
+  async function resumePublishFailuresOnce() {
+    if (publishRetryRunning.value) {
+      return;
     }
-  }
-
-  async function runPublishSubmitsOnce() {
+    publishRetryRunning.value = true;
     try {
-      const result = await command<ProductSubmitBatchResult>("run_publish_submits_once", { limit: 10 });
-      if (result.processed_items === 0) {
-        ElMessage.info("没有待提交 addproduct 的铺货任务项");
+      const result = await command<PublishPipelineRunResult>(
+        "run_publish_pipeline_once",
+      );
+      const stepResults = [
+        result.publish_precheck,
+        result.publish_attribute_fill,
+        result.publish_category_precheck,
+        result.publish_asset_upload,
+        result.publish_submit,
+        result.publish_status_sync,
+        result.publish_listing,
+      ].filter(Boolean) as Array<{
+        processed_items?: number;
+        failed_items?: number;
+      }>;
+      const processedItems = stepResults.reduce(
+        (sum, stepResult) => sum + Number(stepResult.processed_items || 0),
+        0,
+      );
+      const failedItems = stepResults.reduce(
+        (sum, stepResult) => sum + Number(stepResult.failed_items || 0),
+        0,
+      );
+      if (result.errors.length > 0) {
+        ElMessage.warning(
+          `铺货推进完成，但 ${result.errors.length} 个步骤异常，请看当前任务异常原因`,
+        );
+      } else if (processedItems === 0) {
+        ElMessage.info("没有待推进的铺货任务项");
+      } else if (failedItems > 0) {
+        ElMessage.warning(
+          `已推进 ${processedItems} 项，其中 ${failedItems} 项进入异常`,
+        );
       } else {
-        ElMessage.success(`发品提交 ${result.processed_items} 项，已提交 ${result.submitted_items} 项，失败 ${result.failed_items} 项`);
+        ElMessage.success(`已推进 ${processedItems} 个铺货任务项`);
       }
       await Promise.all([refreshAll(), queryJob()]);
     } catch (error) {
       ElMessage.error(String(error));
-    }
-  }
-
-  async function runPublishStatusSyncOnce() {
-    try {
-      const result = await command<ProductStatusSyncBatchResult>("run_publish_status_sync_once", { limit: 20 });
-      if (result.processed_items === 0) {
-        ElMessage.info("没有待同步审核状态的铺货任务项");
-      } else {
-        ElMessage.success(`审核同步 ${result.processed_items} 项，通过/上架 ${result.success_items} 项，审核中 ${result.pending_items} 项，失败 ${result.failed_items} 项`);
-      }
-      await Promise.all([refreshAll(), queryJob()]);
-    } catch (error) {
-      ElMessage.error(String(error));
-    }
-  }
-
-  async function runPublishListingOnce() {
-    try {
-      const result = await command<ProductListingBatchResult>("run_publish_listing_once", { limit: 10 });
-      if (result.processed_items === 0) {
-        ElMessage.info("没有审核通过待上架的铺货任务项");
-      } else {
-        ElMessage.success(`上架处理 ${result.processed_items} 项，已提交上架 ${result.listing_submitted_items} 项，失败 ${result.failed_items} 项`);
-      }
-      await Promise.all([refreshAll(), queryJob()]);
-    } catch (error) {
-      ElMessage.error(String(error));
+    } finally {
+      publishRetryRunning.value = false;
     }
   }
 
@@ -2699,17 +3003,37 @@ export function useWxXdApp() {
       return;
     }
     if (
-      task.task_type.startsWith("orders.")
-      || task.task_type.startsWith("procurement.")
-      || task.task_type.startsWith("delivery.")
+      task.task_type.startsWith("orders.") ||
+      task.task_type.startsWith("procurement.") ||
+      task.task_type.startsWith("delivery.")
     ) {
       selectedSection.value = "procurement";
       await Promise.all([refreshPurchaseTasks(), refreshDeliveryShipments()]);
       return;
     }
+    if (task.task_type.startsWith("collection.")) {
+      selectedSection.value = "publish";
+      await refreshCollectionTasks();
+      return;
+    }
+    if (task.task_type.startsWith("publish.")) {
+      selectedSection.value = "publish-tasks";
+      if (currentJob.value?.id === task.id) {
+        closeCurrentPublishJob();
+        return;
+      }
+      queriedTaskId.value = task.id;
+      await queryJob();
+      return;
+    }
     queriedTaskId.value = task.id;
-    selectedSection.value = "publish";
+    selectedSection.value = "publish-tasks";
     await queryJob();
+  }
+
+  function closeCurrentPublishJob() {
+    currentJob.value = null;
+    queriedTaskId.value = "";
   }
 
   function statusType(status: string) {
@@ -2762,30 +3086,47 @@ export function useWxXdApp() {
     if (!party) {
       return "未归因";
     }
-    return aftersaleResponsibilityOptions.find((item) => item.value === party)?.label || party;
+    return (
+      aftersaleResponsibilityOptions.find((item) => item.value === party)
+        ?.label || party
+    );
   }
 
   function guaranteeHandlingStatusLabel(status: string | null) {
     if (!status) {
       return "未跟进";
     }
-    return guaranteeHandlingStatusOptions.find((item) => item.value === status)?.label || status;
+    return (
+      guaranteeHandlingStatusOptions.find((item) => item.value === status)
+        ?.label || status
+    );
   }
 
   function evidenceTypeLabel(type: string) {
-    return evidenceTypeOptions.find((item) => item.value === type)?.label || type;
+    return (
+      evidenceTypeOptions.find((item) => item.value === type)?.label || type
+    );
   }
 
   function evidenceStatusLabel(status: string) {
-    return evidenceStatusOptions.find((item) => item.value === status)?.label || status;
+    return (
+      evidenceStatusOptions.find((item) => item.value === status)?.label ||
+      status
+    );
   }
 
   function supplierFollowupTypeLabel(type: string) {
-    return supplierFollowupTypeOptions.find((item) => item.value === type)?.label || type;
+    return (
+      supplierFollowupTypeOptions.find((item) => item.value === type)?.label ||
+      type
+    );
   }
 
   function supplierFollowupStatusLabel(status: string) {
-    return supplierFollowupStatusOptions.find((item) => item.value === status)?.label || status;
+    return (
+      supplierFollowupStatusOptions.find((item) => item.value === status)
+        ?.label || status
+    );
   }
 
   function aftersaleActionLabel(action: string | null) {
@@ -2815,7 +3156,12 @@ export function useWxXdApp() {
   }
 
   function isActiveGuaranteeStatus(status: string) {
-    return !["STATUS_NO_NEED_PAY", "STATUS_PAY_SUCC", "STATUS_USER_CANCEL", "sync_failed"].includes(status);
+    return ![
+      "STATUS_NO_NEED_PAY",
+      "STATUS_PAY_SUCC",
+      "STATUS_USER_CANCEL",
+      "sync_failed",
+    ].includes(status);
   }
 
   function aftersaleRejectReasonLabel(reason: AftersaleRejectReasonView) {
@@ -2824,9 +3170,12 @@ export function useWxXdApp() {
 
   async function markNotificationRead(notification: NotificationView) {
     try {
-      const result = await command<NotificationMarkResult>("mark_notification_read", {
-        notificationId: notification.id,
-      });
+      const result = await command<NotificationMarkResult>(
+        "mark_notification_read",
+        {
+          notificationId: notification.id,
+        },
+      );
       if (result.updated_count > 0) {
         ElMessage.success(result.message);
       } else {
@@ -2840,7 +3189,9 @@ export function useWxXdApp() {
 
   async function markAllNotificationsRead() {
     try {
-      const result = await command<NotificationMarkResult>("mark_all_notifications_read");
+      const result = await command<NotificationMarkResult>(
+        "mark_all_notifications_read",
+      );
       ElMessage.success(result.message);
       await Promise.all([refreshNotifications(), refreshDashboardOnly()]);
     } catch (error) {
@@ -2854,7 +3205,19 @@ export function useWxXdApp() {
 
   async function openNotification(notification: NotificationView) {
     if (notification.source_type === "publish_item") {
-      selectedSection.value = "publish";
+      selectedSection.value = "publish-tasks";
+      if (notification.data_json) {
+        try {
+          const data = JSON.parse(notification.data_json) as {
+            job_id?: unknown;
+          };
+          if (typeof data.job_id === "string" && data.job_id.trim()) {
+            queriedTaskId.value = data.job_id;
+          }
+        } catch {
+          // 通知摘要异常不阻断页面跳转，任务页仍可手工查询。
+        }
+      }
       await queryJob();
       return;
     }
@@ -2876,44 +3239,49 @@ export function useWxXdApp() {
       await refreshInventoryRisks();
       return;
     }
-    if (notification.source_type === "delivery_order" || notification.source_type === "delivery_shipment") {
+    if (
+      notification.source_type === "delivery_order" ||
+      notification.source_type === "delivery_shipment"
+    ) {
       selectedSection.value = "procurement";
       deliveryStatusFilter.value = "all";
       await refreshDeliveryShipments();
       return;
     }
     if (
-      notification.source_type === "aftersale"
-      || notification.source_type === "aftersale_sync"
-      || notification.source_type === "aftersale_evidence"
-      || notification.source_type === "aftersale_responsibility"
-      || notification.source_type === "aftersale_action"
-      || notification.source_type === "guarantee_order"
-      || notification.source_type === "guarantee_sync"
-      || notification.source_type === "guarantee_followup"
+      notification.source_type === "aftersale" ||
+      notification.source_type === "aftersale_sync" ||
+      notification.source_type === "aftersale_evidence" ||
+      notification.source_type === "aftersale_responsibility" ||
+      notification.source_type === "aftersale_action" ||
+      notification.source_type === "guarantee_order" ||
+      notification.source_type === "guarantee_sync" ||
+      notification.source_type === "guarantee_followup"
     ) {
       selectedSection.value = "exceptions";
       if (notification.source_type === "guarantee_sync") {
         guaranteeStatusFilter.value = "sync_failed";
-      } else if (notification.source_type === "guarantee_order" || notification.source_type === "guarantee_followup") {
+      } else if (
+        notification.source_type === "guarantee_order" ||
+        notification.source_type === "guarantee_followup"
+      ) {
         guaranteeStatusFilter.value = "active";
       } else {
-        aftersaleStatusFilter.value = notification.source_type === "aftersale_sync" ? "sync_failed" : "active";
+        aftersaleStatusFilter.value =
+          notification.source_type === "aftersale_sync"
+            ? "sync_failed"
+            : "active";
       }
-      await Promise.all([refreshAftersales(), refreshGuaranteeOrders(), refreshAftersaleEvidence()]);
+      await Promise.all([
+        refreshAftersales(),
+        refreshGuaranteeOrders(),
+        refreshAftersaleEvidence(),
+      ]);
       return;
     }
     selectedSection.value = "workbench";
     await refreshAll();
   }
-
-  
-
-  
-
-  
-
-  
 
   function profitStatusLabel(status: string) {
     const labels: Record<string, string> = {
@@ -2926,19 +3294,31 @@ export function useWxXdApp() {
   }
 
   function inventoryRiskLabel(status: string) {
-    return inventoryRiskStatusOptions.find((item) => item.value === status)?.label || status;
+    return (
+      inventoryRiskStatusOptions.find((item) => item.value === status)?.label ||
+      status
+    );
   }
 
   function productSalesStatusLabel(status: string) {
-    return productSalesStatusOptions.find((item) => item.value === status)?.label || status;
+    return (
+      productSalesStatusOptions.find((item) => item.value === status)?.label ||
+      status
+    );
   }
 
   function productManagementStatusLabel(status: string) {
-    return productManagementStatusOptions.find((item) => item.value === status)?.label || status;
+    return (
+      productManagementStatusOptions.find((item) => item.value === status)
+        ?.label || status
+    );
   }
 
   function orderManagementStatusLabel(status: string) {
-    return orderManagementStatusOptions.find((item) => item.value === status)?.label || status;
+    return (
+      orderManagementStatusOptions.find((item) => item.value === status)
+        ?.label || status
+    );
   }
 
   function purchaseManagementStatusLabel(status: string) {
@@ -3009,25 +3389,12 @@ export function useWxXdApp() {
     aiProviderSaving,
     aiProviderSettings,
     aiProviderTesting,
-    allowedValuesText,
-    appliedAttributeSuggestionCount,
     applyAftersaleRejectReason,
-    applyAttributeSuggestions,
-    applyProductAttributeSuggestions,
-    applySelectedAttributeSuggestions,
-    applySingleAttributeSuggestion,
     applySupplierAgentResults,
-    attributeKindLabel,
-    attributeSuggestionApplying,
-    attributeSuggestions,
-    attributeSuggestionsForItem,
-    attributeSuggestionsForProduct,
-    attributeSuggestionStatusFilter,
-    attributeSuggestionTotal,
-    attributeSuggestionValue,
     automationRunning,
     automationSettings,
     backupRunning,
+    workspaceResetRunning,
     Bell,
     buildPreviewInventoryRisks,
     buildPreviewJob,
@@ -3037,13 +3404,16 @@ export function useWxXdApp() {
     canSubmitAftersaleAction,
     categoryCache,
     categoryCatalogShops,
+    categoryRelations,
     categoryKeyword,
     categoryRuleCatId,
     checkShopQuota,
     checkTaobaoLoginState,
+    closeCurrentPublishJob,
     CircleCheck,
     CircleClose,
     clearCollectionHistory,
+    Delete,
     clearTaobaoAccessLimitState,
     clearEvidenceTargetFilter,
     clearSupplierFollowupTargetFilter,
@@ -3053,10 +3423,13 @@ export function useWxXdApp() {
     collectionPublishJobText,
     collectionPublishing,
     collectionPublishTargetShopIds,
+    collectionReviewCategoryKeyword,
+    collectionReviewCategorySearching,
     collectionReviewConfirming,
     collectionReviewing,
     collectionReviewStatusLabel,
     collectionReviewStatusType,
+    collectionTargetShopSelectionRequired,
     collectionAccessLimitChecking,
     collectionAccessLimitState,
     collectionCheckingLogin,
@@ -3065,6 +3438,8 @@ export function useWxXdApp() {
     collectionFileName,
     collectionImporting,
     collectionImportVisible,
+    collectionImageSrc,
+    collectionImageUpdating,
     collectionLoggingIn,
     collectionTaskPage,
     collectionTaskPageSize,
@@ -3133,7 +3508,6 @@ export function useWxXdApp() {
     guaranteeOrders,
     guaranteeOrderTotal,
     guaranteeStatusFilter,
-    handleAttributeSuggestionSelection,
     handleCollectionTaskPageChange,
     handleCollectionTaskPageSizeChange,
     inventoryRiskLabel,
@@ -3147,7 +3521,6 @@ export function useWxXdApp() {
     isCurrentCollectionPageAllSelected,
     isCurrentCollectionPageIndeterminate,
     isTauriRuntime,
-    jobAttributeSuggestions,
     lastAutomationResult,
     latestPriceTaskId,
     latestOrderPriceAdjustmentTaskId,
@@ -3181,17 +3554,14 @@ export function useWxXdApp() {
     orderProfitStatusFilter,
     orderProfitTotal,
     orderProfitTotals,
-    pendingAttributeSuggestionCount,
-    pendingAttributeSuggestionCountForItem,
-    pendingAttributeSuggestionsForProduct,
     paginatedCollectionTasks,
     Plus,
     previewAftersaleEvidence,
     previewAftersaleRejectReasons,
     previewAftersales,
-    previewAttributeSuggestions,
     previewCategoryCache,
     previewCategoryCatalogShops,
+    previewCategoryRelations,
     previewDatabaseBackups,
     previewExternalApiLogs,
     previewFreightTemplates,
@@ -3224,6 +3594,7 @@ export function useWxXdApp() {
     profitAdjustmentKindOptions,
     profitStatusLabel,
     publishPayload,
+    publishRetryRunning,
     purchaseExportPath,
     purchaseIssueForm,
     purchaseIssueTypeOptions,
@@ -3246,13 +3617,13 @@ export function useWxXdApp() {
     recordPurchaseTaskShipment,
     recordSupplierAftersaleFollowup,
     Refresh,
+    resetCollectionPublishWorkspace,
     refreshAftersaleEvidence,
     refreshAftersaleRejectReasons,
     refreshAftersales,
     refreshAll,
     refreshAgentRuns,
     refreshAgentSkills,
-    refreshAttributeSuggestions,
     refreshCategoryCatalog,
     refreshCollectionTasks,
     refreshDashboardOnly,
@@ -3262,7 +3633,6 @@ export function useWxXdApp() {
     refreshExternalApiLogs,
     refreshGuaranteeOrders,
     refreshInventoryRisks,
-    refreshJobAttributeSuggestions,
     refreshNotifications,
     refreshOrderManagementItems,
     refreshOrderProfits,
@@ -3275,7 +3645,12 @@ export function useWxXdApp() {
     resolvePurchaseTaskMapping,
     restoreDatabaseBackup,
     resumeCollectionTasks,
+    resumePublishFailuresOnce,
+    retryAllFailedCollections,
     retryCollection,
+    deleteTaobaoProfile,
+    removeCollectionImage,
+    resetAllPassedReviews,
     resetSelectedCollectionReview,
     reviewSingleCollectionTask,
     reviewSelectedCollectionTasks,
@@ -3295,14 +3670,6 @@ export function useWxXdApp() {
     runPriceUpdateConfirmOnce,
     runPriceUpdatePrecheckOnce,
     runPriceUpdateSubmitOnce,
-    runPublishAiAttributeSuggestionsOnce,
-    runPublishAssetUploadsOnce,
-    runPublishAttributeFillOnce,
-    runPublishCategoryPrechecksOnce,
-    runPublishListingOnce,
-    runPublishStatusSyncOnce,
-    runPublishSubmitsOnce,
-    runPublishTasksOnce,
     runPurchaseTaskGenerationOnce,
     runTestCollect,
     runtimeLabel,
@@ -3310,12 +3677,12 @@ export function useWxXdApp() {
     saveAiProviderSettings,
     saveAutomationSettings,
     savePublishPricingStrategyFromForm,
+    searchCollectionReviewCategories,
     Search,
     selectAftersaleAction,
     selectAftersaleResponsibility,
     selectedAgentSkill,
     selectedAgentSkillName,
-    selectedAttributeSuggestions,
     selectedCollectionDetailImages,
     selectedCollectionDetailJson,
     selectedCollectionDetailProduct,
@@ -3326,6 +3693,7 @@ export function useWxXdApp() {
     selectedCollectionReviewIssues,
     selectedCollectionReviewResult,
     selectedCollectionCategoryCandidates,
+    selectedCollectionReviewCategoryOptions,
     selectedReviewCategoryKey,
     selectedCollectionMainImages,
     selectedCollectionSkuPreview,
@@ -3390,6 +3758,7 @@ export function useWxXdApp() {
     unreadNotificationCount,
     updateAftersaleEvidenceStatus,
     UploadFilled,
+    uploadCollectionImage,
     upsertPreviewShipment,
     verifyShop,
   };

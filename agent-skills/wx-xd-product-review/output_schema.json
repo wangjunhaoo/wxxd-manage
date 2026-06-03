@@ -3,7 +3,8 @@
   "additionalProperties": false,
   "properties": {
     "title": {
-      "type": ["string", "null"]
+      "type": ["string", "null"],
+      "description": "清洗后的商品标题"
     },
     "remove_image_urls": {
       "type": "array",
@@ -33,6 +34,11 @@
       },
       "required": ["category_ids", "category_path", "confidence", "reason"]
     },
+    "ai_attr_suggestions": {
+      "type": "object",
+      "description": "补齐的微信类目必填属性，key 为属性名，value 为属性值。销售属性（如尺码/颜色）的值用分号分隔多个 SKU 值",
+      "additionalProperties": { "type": "string" }
+    },
     "needs_human_review": { "type": "boolean" },
     "notes": {
       "type": "array",
@@ -44,6 +50,7 @@
     "title",
     "remove_image_urls",
     "category",
+    "ai_attr_suggestions",
     "needs_human_review",
     "notes",
     "confidence"

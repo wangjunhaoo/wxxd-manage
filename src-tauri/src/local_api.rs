@@ -405,36 +405,8 @@ async fn serve(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Send + 
             post(run_delivery_submit_handler),
         )
         .route(
-            "/api/runners/publish-precheck",
-            post(run_publish_precheck_handler),
-        )
-        .route(
-            "/api/runners/publish-category-precheck",
-            post(run_publish_category_precheck_handler),
-        )
-        .route(
-            "/api/runners/publish-attribute-fill",
-            post(run_publish_attribute_fill_handler),
-        )
-        .route(
-            "/api/runners/publish-ai-attributes",
-            post(run_publish_ai_attributes_handler),
-        )
-        .route(
-            "/api/runners/publish-assets",
-            post(run_publish_assets_handler),
-        )
-        .route(
-            "/api/runners/publish-submit",
-            post(run_publish_submit_handler),
-        )
-        .route(
-            "/api/runners/publish-status-sync",
-            post(run_publish_status_sync_handler),
-        )
-        .route(
-            "/api/runners/publish-listing",
-            post(run_publish_listing_handler),
+            "/api/runners/publish-pipeline",
+            post(run_publish_pipeline_handler),
         )
         .route(
             "/api/runners/price-precheck",
@@ -454,6 +426,77 @@ async fn serve(app: AppHandle) -> Result<(), Box<dyn std::error::Error + Send + 
             post(run_guarantee_sync_handler),
         )
         .route("/api/runners/operations", post(run_operations_handler))
+        // ── Agent 工具端点 ──────────────────────────────────
+        .route(
+            "/api/agent/products/{task_id}",
+            get(get_agent_product_handler),
+        )
+        .route(
+            "/api/agent/shops/{shop_id}/categories/search",
+            get(search_agent_categories_handler),
+        )
+        .route(
+            "/api/agent/shops/{shop_id}/categories/{cat_id}",
+            get(get_agent_category_detail_handler),
+        )
+        .route("/api/agent/shops/{shop_id}", get(get_agent_shop_handler))
+        .route("/api/agent/docs/search", get(search_agent_docs_handler))
+        .route(
+            "/api/agent/shops/{shop_id}/categories/active",
+            get(get_agent_active_categories_handler),
+        )
+        .route(
+            "/api/agent/shops/{shop_id}/categories/tree",
+            get(get_agent_category_tree_handler),
+        )
+        .route(
+            "/api/agent/shops/{shop_id}/freight-templates",
+            get(get_agent_freight_templates_handler),
+        )
+        .route(
+            "/api/agent/shops/{shop_id}/after-sale-addresses",
+            get(get_agent_after_sale_addresses_handler),
+        )
+        .route(
+            "/api/agent/shops/{shop_id}/delivery-companies",
+            get(get_agent_delivery_companies_handler),
+        )
+        // P2：订单 / 售后 / 采购 / 商品 / 分析
+        .route("/api/agent/orders/{order_id}", get(get_agent_order_handler))
+        .route("/api/agent/orders", get(list_agent_orders_handler))
+        .route(
+            "/api/agent/aftersales/{aftersale_id}",
+            get(get_agent_aftersale_handler),
+        )
+        .route("/api/agent/aftersales", get(list_agent_aftersales_handler))
+        .route(
+            "/api/agent/shops/{shop_id}/reject-reasons",
+            get(get_agent_reject_reasons_handler),
+        )
+        .route(
+            "/api/agent/purchase-tasks/{task_id}",
+            get(get_agent_purchase_task_handler),
+        )
+        .route(
+            "/api/agent/shops/{shop_id}/products/{external_product_id}",
+            get(get_agent_shop_product_handler),
+        )
+        .route(
+            "/api/agent/collection-tasks",
+            get(list_agent_collections_handler),
+        )
+        .route(
+            "/api/agent/product-sales/{product_id}",
+            get(get_agent_product_sales_handler),
+        )
+        .route(
+            "/api/agent/inventory-risks",
+            get(get_agent_inventory_risk_handler),
+        )
+        .route(
+            "/api/agent/profit-summary",
+            get(get_agent_profit_summary_handler),
+        )
         .with_state(state)
         .layer(cors);
 
@@ -1536,21 +1579,7 @@ async fn run_delivery_submit_handler(
     .await
 }
 
-async fn run_publish_precheck_handler(
-    State(state): State<LocalApiState>,
-    headers: HeaderMap,
-) -> Response {
-    authenticated(
-        &state,
-        &headers,
-        "POST",
-        "/api/runners/publish-precheck",
-        Some("limit=50".to_string()),
-        |app| commands::run_publish_tasks_once(app, Some(50)),
-    )
-}
-
-async fn run_publish_category_precheck_handler(
+async fn run_publish_pipeline_handler(
     State(state): State<LocalApiState>,
     headers: HeaderMap,
 ) -> Response {
@@ -1558,7 +1587,7 @@ async fn run_publish_category_precheck_handler(
     let response = if let Err(response) = authorize(&state.app, &headers) {
         response
     } else {
-        match commands::run_publish_category_prechecks_once(state.app.clone(), Some(20)).await {
+        match commands::run_publish_pipeline_once(state.app.clone()).await {
             Ok(payload) => json_success(payload),
             Err(error) => app_error_response(error),
         }
@@ -1566,138 +1595,8 @@ async fn run_publish_category_precheck_handler(
     audit_response(
         &state.app,
         "POST",
-        "/api/runners/publish-category-precheck",
-        Some("limit=20".to_string()),
-        response,
-        started,
-    )
-}
-
-async fn run_publish_attribute_fill_handler(
-    State(state): State<LocalApiState>,
-    headers: HeaderMap,
-) -> Response {
-    authenticated(
-        &state,
-        &headers,
-        "POST",
-        "/api/runners/publish-attribute-fill",
-        Some("limit=50".to_string()),
-        |app| commands::run_publish_attribute_fill_once(app, Some(50)),
-    )
-}
-
-async fn run_publish_ai_attributes_handler(
-    State(state): State<LocalApiState>,
-    headers: HeaderMap,
-) -> Response {
-    let started = Instant::now();
-    let response = if let Err(response) = authorize(&state.app, &headers) {
-        response
-    } else {
-        match commands::run_publish_ai_attribute_suggestions_once(state.app.clone(), Some(20)).await
-        {
-            Ok(payload) => json_success(payload),
-            Err(error) => app_error_response(error),
-        }
-    };
-    audit_response(
-        &state.app,
-        "POST",
-        "/api/runners/publish-ai-attributes",
-        Some("limit=20".to_string()),
-        response,
-        started,
-    )
-}
-
-async fn run_publish_assets_handler(
-    State(state): State<LocalApiState>,
-    headers: HeaderMap,
-) -> Response {
-    let started = Instant::now();
-    let response = if let Err(response) = authorize(&state.app, &headers) {
-        response
-    } else {
-        match commands::run_publish_asset_uploads_once(state.app.clone(), Some(10)).await {
-            Ok(payload) => json_success(payload),
-            Err(error) => app_error_response(error),
-        }
-    };
-    audit_response(
-        &state.app,
-        "POST",
-        "/api/runners/publish-assets",
-        Some("limit=10".to_string()),
-        response,
-        started,
-    )
-}
-
-async fn run_publish_submit_handler(
-    State(state): State<LocalApiState>,
-    headers: HeaderMap,
-) -> Response {
-    let started = Instant::now();
-    let response = if let Err(response) = authorize(&state.app, &headers) {
-        response
-    } else {
-        match commands::run_publish_submits_once(state.app.clone(), Some(10)).await {
-            Ok(payload) => json_success(payload),
-            Err(error) => app_error_response(error),
-        }
-    };
-    audit_response(
-        &state.app,
-        "POST",
-        "/api/runners/publish-submit",
-        Some("limit=10".to_string()),
-        response,
-        started,
-    )
-}
-
-async fn run_publish_status_sync_handler(
-    State(state): State<LocalApiState>,
-    headers: HeaderMap,
-) -> Response {
-    let started = Instant::now();
-    let response = if let Err(response) = authorize(&state.app, &headers) {
-        response
-    } else {
-        match commands::run_publish_status_sync_once(state.app.clone(), Some(20)).await {
-            Ok(payload) => json_success(payload),
-            Err(error) => app_error_response(error),
-        }
-    };
-    audit_response(
-        &state.app,
-        "POST",
-        "/api/runners/publish-status-sync",
-        Some("limit=20".to_string()),
-        response,
-        started,
-    )
-}
-
-async fn run_publish_listing_handler(
-    State(state): State<LocalApiState>,
-    headers: HeaderMap,
-) -> Response {
-    let started = Instant::now();
-    let response = if let Err(response) = authorize(&state.app, &headers) {
-        response
-    } else {
-        match commands::run_publish_listing_once(state.app.clone(), Some(10)).await {
-            Ok(payload) => json_success(payload),
-            Err(error) => app_error_response(error),
-        }
-    };
-    audit_response(
-        &state.app,
-        "POST",
-        "/api/runners/publish-listing",
-        Some("limit=10".to_string()),
+        "/api/runners/publish-pipeline",
+        Some("publish_pipeline=true".to_string()),
         response,
         started,
     )
@@ -1814,6 +1713,322 @@ async fn run_operations_handler(
         started,
     )
 }
+
+// ── Agent 工具处理器（无需认证，仅 localhost 可访问）─────────
+
+#[derive(Debug, Deserialize)]
+struct AgentCategorySearchQuery {
+    q: Option<String>,
+    limit: Option<String>,
+    query: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentDocsQuery {
+    q: Option<String>,
+    query: Option<String>,
+}
+
+async fn get_agent_product_handler(
+    State(state): State<LocalApiState>,
+    Path(task_id): Path<String>,
+) -> Response {
+    match commands::get_agent_product_detail(&state.app, &task_id) {
+        Ok(data) => json_success(data),
+        Err(err) => app_error_response(err),
+    }
+}
+
+async fn get_agent_shop_handler(
+    State(state): State<LocalApiState>,
+    Path(shop_id): Path<String>,
+) -> Response {
+    match commands::get_agent_shop_info(&state.app, &shop_id) {
+        Ok(Some(data)) => json_success(data),
+        Ok(None) => json_error(
+            StatusCode::NOT_FOUND,
+            "SHOP_NOT_FOUND",
+            &format!("店铺不存在：{shop_id}"),
+        ),
+        Err(err) => app_error_response(err),
+    }
+}
+
+async fn search_agent_categories_handler(
+    State(state): State<LocalApiState>,
+    Path(shop_id): Path<String>,
+    Query(query): Query<AgentCategorySearchQuery>,
+) -> Response {
+    let q = query
+        .q
+        .or(query.query)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let limit = query
+        .limit
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(20)
+        .clamp(1, 100);
+    match commands::search_agent_categories(&state.app, &shop_id, &q, limit) {
+        Ok(data) => json_success(data),
+        Err(err) => app_error_response(err),
+    }
+}
+
+async fn get_agent_category_detail_handler(
+    State(state): State<LocalApiState>,
+    Path((shop_id, cat_id)): Path<(String, i64)>,
+) -> Response {
+    match commands::get_agent_category_detail(&state.app, &shop_id, cat_id) {
+        Ok(Some(data)) => json_success(data),
+        Ok(None) => json_error(
+            StatusCode::NOT_FOUND,
+            "CATEGORY_DETAIL_NOT_FOUND",
+            &format!("类目详情不存在：shop_id={shop_id}, cat_id={cat_id}"),
+        ),
+        Err(err) => app_error_response(err),
+    }
+}
+
+async fn search_agent_docs_handler(
+    State(state): State<LocalApiState>,
+    Query(query): Query<AgentDocsQuery>,
+) -> Response {
+    let q = query
+        .q
+        .or(query.query)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    match commands::search_agent_docs(&state.app, &q) {
+        Ok(data) => json_success(data),
+        Err(err) => app_error_response(err),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentCategoryTreeQuery {
+    parent_cat_id: Option<i64>,
+}
+
+async fn get_agent_active_categories_handler(
+    State(state): State<LocalApiState>,
+    Path(shop_id): Path<String>,
+) -> Response {
+    match commands::get_agent_active_categories(&state.app, &shop_id) {
+        Ok(data) => json_success(data),
+        Err(err) => app_error_response(err),
+    }
+}
+
+async fn get_agent_category_tree_handler(
+    State(state): State<LocalApiState>,
+    Path(shop_id): Path<String>,
+    Query(query): Query<AgentCategoryTreeQuery>,
+) -> Response {
+    match commands::get_agent_category_tree(&state.app, &shop_id, query.parent_cat_id) {
+        Ok(data) => json_success(data),
+        Err(err) => app_error_response(err),
+    }
+}
+
+async fn get_agent_freight_templates_handler(
+    State(state): State<LocalApiState>,
+    Path(shop_id): Path<String>,
+) -> Response {
+    match commands::get_agent_freight_templates(&state.app, &shop_id) {
+        Ok(data) => json_success(data),
+        Err(err) => app_error_response(err),
+    }
+}
+
+async fn get_agent_after_sale_addresses_handler(
+    State(state): State<LocalApiState>,
+    Path(shop_id): Path<String>,
+) -> Response {
+    match commands::get_agent_after_sale_addresses(&state.app, &shop_id) {
+        Ok(data) => json_success(data),
+        Err(err) => app_error_response(err),
+    }
+}
+
+async fn get_agent_delivery_companies_handler(
+    State(state): State<LocalApiState>,
+    Path(shop_id): Path<String>,
+) -> Response {
+    match commands::get_agent_delivery_companies(&state.app, &shop_id) {
+        Ok(data) => json_success(data),
+        Err(err) => app_error_response(err),
+    }
+}
+
+// ── P2 Agent 处理器 ──────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct AgentListQuery {
+    shop_id: Option<String>,
+    status: Option<String>,
+    limit: Option<String>,
+    external_product_id: Option<String>,
+    order_id: Option<String>,
+}
+
+async fn get_agent_order_handler(
+    State(state): State<LocalApiState>,
+    Path(order_id): Path<String>,
+) -> Response {
+    match commands::get_agent_order(&state.app, &order_id) {
+        Ok(Some(data)) => json_success(data),
+        Ok(None) => json_error(StatusCode::NOT_FOUND, "ORDER_NOT_FOUND", "订单不存在"),
+        Err(err) => app_error_response(err),
+    }
+}
+
+async fn list_agent_orders_handler(
+    State(state): State<LocalApiState>,
+    Query(query): Query<AgentListQuery>,
+) -> Response {
+    let limit = query
+        .limit
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(20)
+        .clamp(1, 100);
+    match commands::list_agent_orders(
+        &state.app,
+        query.shop_id.as_deref(),
+        query.status.as_deref(),
+        limit,
+    ) {
+        Ok(data) => json_success(data),
+        Err(err) => app_error_response(err),
+    }
+}
+
+async fn get_agent_aftersale_handler(
+    State(state): State<LocalApiState>,
+    Path(aftersale_id): Path<String>,
+) -> Response {
+    match commands::get_agent_aftersale(&state.app, &aftersale_id) {
+        Ok(Some(data)) => json_success(data),
+        Ok(None) => json_error(StatusCode::NOT_FOUND, "AFTERSALE_NOT_FOUND", "售后单不存在"),
+        Err(err) => app_error_response(err),
+    }
+}
+
+async fn list_agent_aftersales_handler(
+    State(state): State<LocalApiState>,
+    Query(query): Query<AgentListQuery>,
+) -> Response {
+    let limit = query
+        .limit
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(20)
+        .clamp(1, 100);
+    match commands::list_agent_aftersales(
+        &state.app,
+        query.shop_id.as_deref(),
+        query.status.as_deref(),
+        limit,
+    ) {
+        Ok(data) => json_success(data),
+        Err(err) => app_error_response(err),
+    }
+}
+
+async fn get_agent_reject_reasons_handler(
+    State(state): State<LocalApiState>,
+    Path(shop_id): Path<String>,
+) -> Response {
+    match commands::get_agent_reject_reasons(&state.app, &shop_id) {
+        Ok(data) => json_success(data),
+        Err(err) => app_error_response(err),
+    }
+}
+
+async fn get_agent_purchase_task_handler(
+    State(state): State<LocalApiState>,
+    Path(task_id): Path<String>,
+) -> Response {
+    match commands::get_agent_purchase_task(&state.app, &task_id) {
+        Ok(Some(data)) => json_success(data),
+        Ok(None) => json_error(
+            StatusCode::NOT_FOUND,
+            "PURCHASE_TASK_NOT_FOUND",
+            "采购任务不存在",
+        ),
+        Err(err) => app_error_response(err),
+    }
+}
+
+async fn get_agent_shop_product_handler(
+    State(state): State<LocalApiState>,
+    Path((shop_id, external_product_id)): Path<(String, String)>,
+) -> Response {
+    match commands::get_agent_shop_product(&state.app, &shop_id, &external_product_id) {
+        Ok(Some(data)) => json_success(data),
+        Ok(None) => json_error(
+            StatusCode::NOT_FOUND,
+            "SHOP_PRODUCT_NOT_FOUND",
+            "铺货记录不存在",
+        ),
+        Err(err) => app_error_response(err),
+    }
+}
+
+async fn list_agent_collections_handler(
+    State(state): State<LocalApiState>,
+    Query(query): Query<AgentListQuery>,
+) -> Response {
+    let limit = query
+        .limit
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(20)
+        .clamp(1, 50);
+    match commands::list_agent_collections(&state.app, query.status.as_deref(), limit) {
+        Ok(data) => json_success(data),
+        Err(err) => app_error_response(err),
+    }
+}
+
+async fn get_agent_product_sales_handler(
+    State(state): State<LocalApiState>,
+    Path(product_id): Path<String>,
+    Query(query): Query<AgentListQuery>,
+) -> Response {
+    match commands::get_agent_product_sales(&state.app, &product_id, query.shop_id.as_deref()) {
+        Ok(Some(data)) => json_success(data),
+        Ok(None) => json_error(StatusCode::NOT_FOUND, "PRODUCT_NOT_FOUND", "商品无销售数据"),
+        Err(err) => app_error_response(err),
+    }
+}
+
+async fn get_agent_inventory_risk_handler(
+    State(state): State<LocalApiState>,
+    Query(query): Query<AgentListQuery>,
+) -> Response {
+    match commands::get_agent_inventory_risk(&state.app, query.external_product_id.as_deref()) {
+        Ok(data) => json_success(data),
+        Err(err) => app_error_response(err),
+    }
+}
+
+async fn get_agent_profit_summary_handler(
+    State(state): State<LocalApiState>,
+    Query(query): Query<AgentListQuery>,
+) -> Response {
+    let limit = query
+        .limit
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(20)
+        .clamp(1, 50);
+    match commands::get_agent_profit_summary(&state.app, query.order_id.as_deref(), limit) {
+        Ok(data) => json_success(data),
+        Err(err) => app_error_response(err),
+    }
+}
+
+// ── 认证处理器 ──────────────────────────────────────────────
 
 fn authenticated<T, F>(
     state: &LocalApiState,

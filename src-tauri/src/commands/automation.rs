@@ -74,6 +74,221 @@ pub fn set_automation_settings(
     Ok(settings)
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PublishPipelineStepSwitches {
+    precheck: bool,
+    attribute_fill: bool,
+    category_precheck: bool,
+    asset_upload: bool,
+    submit: bool,
+    status_sync: bool,
+    listing: bool,
+}
+
+impl PublishPipelineStepSwitches {
+    fn all_enabled() -> Self {
+        Self {
+            precheck: true,
+            attribute_fill: true,
+            category_precheck: true,
+            asset_upload: true,
+            submit: true,
+            status_sync: true,
+            listing: true,
+        }
+    }
+
+    fn from_automation_settings(settings: &OperationalAutomationSettings) -> Self {
+        Self {
+            precheck: settings.publish_precheck_enabled,
+            attribute_fill: settings.publish_attribute_fill_enabled,
+            category_precheck: settings.publish_category_precheck_enabled,
+            asset_upload: settings.publish_asset_upload_enabled,
+            submit: settings.publish_submit_enabled,
+            status_sync: settings.publish_status_sync_enabled,
+            listing: settings.publish_listing_enabled,
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn run_publish_pipeline_once(app: AppHandle) -> AppResult<PublishPipelineRunResult> {
+    Ok(run_publish_pipeline_steps(app, PublishPipelineStepSwitches::all_enabled()).await)
+}
+
+async fn run_publish_pipeline_steps(
+    app: AppHandle,
+    switches: PublishPipelineStepSwitches,
+) -> PublishPipelineRunResult {
+    let mut result = PublishPipelineRunResult {
+        executed_steps: Vec::new(),
+        skipped_steps: Vec::new(),
+        errors: Vec::new(),
+        publish_precheck: None,
+        publish_attribute_fill: None,
+        publish_category_precheck: None,
+        publish_asset_upload: None,
+        publish_submit: None,
+        publish_status_sync: None,
+        publish_listing: None,
+    };
+
+    if switches.precheck {
+        match run_publish_tasks_once(app.clone(), Some(50)) {
+            Ok(step_result) => {
+                result
+                    .executed_steps
+                    .push("publish.precheck_products".to_string());
+                result.publish_precheck = Some(step_result);
+            }
+            Err(error) => {
+                push_publish_pipeline_error(&mut result, "publish.precheck_products", error)
+            }
+        }
+    } else {
+        result
+            .skipped_steps
+            .push("publish.precheck_products".to_string());
+    }
+
+    if switches.attribute_fill {
+        match run_publish_ai_attribute_suggestions_once(app.clone(), Some(20)).await {
+            Ok(ai_result) => match run_publish_attribute_fill_once(app.clone(), Some(50)) {
+                Ok(rule_result) => {
+                    let step_result = merge_attribute_fill_results(ai_result, rule_result);
+                    result
+                        .executed_steps
+                        .push("publish.fill_required_attributes".to_string());
+                    result.publish_attribute_fill = Some(step_result);
+                }
+                Err(error) => push_publish_pipeline_error(
+                    &mut result,
+                    "publish.fill_required_attributes",
+                    error,
+                ),
+            },
+            Err(error) => push_publish_pipeline_error(
+                &mut result,
+                "publish.fill_required_attributes.ai",
+                error,
+            ),
+        }
+    } else {
+        result
+            .skipped_steps
+            .push("publish.fill_required_attributes".to_string());
+    }
+
+    if switches.category_precheck {
+        match run_publish_category_prechecks_once(app.clone(), Some(20)).await {
+            Ok(step_result) => {
+                result
+                    .executed_steps
+                    .push("publish.category_precheck".to_string());
+                result.publish_category_precheck = Some(step_result);
+            }
+            Err(error) => {
+                push_publish_pipeline_error(&mut result, "publish.category_precheck", error)
+            }
+        }
+    } else {
+        result
+            .skipped_steps
+            .push("publish.category_precheck".to_string());
+    }
+
+    if switches.asset_upload {
+        match run_publish_asset_uploads_once(app.clone(), Some(10)).await {
+            Ok(step_result) => {
+                result
+                    .executed_steps
+                    .push("publish.upload_assets".to_string());
+                result.publish_asset_upload = Some(step_result);
+            }
+            Err(error) => push_publish_pipeline_error(&mut result, "publish.upload_assets", error),
+        }
+    } else {
+        result
+            .skipped_steps
+            .push("publish.upload_assets".to_string());
+    }
+
+    if switches.submit {
+        match run_publish_submits_once(app.clone(), Some(10)).await {
+            Ok(step_result) => {
+                result
+                    .executed_steps
+                    .push("publish.submit_products".to_string());
+                result.publish_submit = Some(step_result);
+            }
+            Err(error) => {
+                push_publish_pipeline_error(&mut result, "publish.submit_products", error)
+            }
+        }
+    } else {
+        result
+            .skipped_steps
+            .push("publish.submit_products".to_string());
+    }
+
+    if switches.status_sync {
+        match run_publish_status_sync_once(app.clone(), Some(20)).await {
+            Ok(step_result) => {
+                result
+                    .executed_steps
+                    .push("publish.sync_status".to_string());
+                result.publish_status_sync = Some(step_result);
+            }
+            Err(error) => push_publish_pipeline_error(&mut result, "publish.sync_status", error),
+        }
+    } else {
+        result.skipped_steps.push("publish.sync_status".to_string());
+    }
+
+    if switches.listing {
+        match run_publish_listing_once(app.clone(), Some(10)).await {
+            Ok(step_result) => {
+                result
+                    .executed_steps
+                    .push("publish.listing_products".to_string());
+                result.publish_listing = Some(step_result);
+            }
+            Err(error) => {
+                push_publish_pipeline_error(&mut result, "publish.listing_products", error)
+            }
+        }
+    } else {
+        result
+            .skipped_steps
+            .push("publish.listing_products".to_string());
+    }
+
+    result
+}
+
+fn push_publish_pipeline_error(result: &mut PublishPipelineRunResult, step: &str, error: AppError) {
+    result.errors.push(AutomationStepError {
+        step: step.to_string(),
+        error: error.to_string(),
+    });
+}
+
+fn apply_publish_pipeline_result(
+    result: &mut OperationalAutomationRunResult,
+    publish: PublishPipelineRunResult,
+) {
+    result.executed_steps.extend(publish.executed_steps);
+    result.skipped_steps.extend(publish.skipped_steps);
+    result.errors.extend(publish.errors);
+    result.publish_precheck = publish.publish_precheck;
+    result.publish_attribute_fill = publish.publish_attribute_fill;
+    result.publish_category_precheck = publish.publish_category_precheck;
+    result.publish_asset_upload = publish.publish_asset_upload;
+    result.publish_submit = publish.publish_submit;
+    result.publish_status_sync = publish.publish_status_sync;
+    result.publish_listing = publish.publish_listing;
+}
+
 #[tauri::command]
 pub async fn run_operational_automation_once(
     app: AppHandle,
@@ -187,126 +402,12 @@ pub async fn run_operational_automation_once(
             .push("delivery.submit_wechat_shipment".to_string());
     }
 
-    if settings.publish_precheck_enabled {
-        match run_publish_tasks_once(app.clone(), Some(50)) {
-            Ok(step_result) => {
-                result
-                    .executed_steps
-                    .push("publish.precheck_products".to_string());
-                result.publish_precheck = Some(step_result);
-            }
-            Err(error) => push_automation_error(&mut result, "publish.precheck_products", error),
-        }
-    } else {
-        result
-            .skipped_steps
-            .push("publish.precheck_products".to_string());
-    }
-
-    if settings.publish_attribute_fill_enabled {
-        match run_publish_ai_attribute_suggestions_once(app.clone(), Some(20)).await {
-            Ok(ai_result) => match run_publish_attribute_fill_once(app.clone(), Some(50)) {
-                Ok(rule_result) => {
-                    let step_result = merge_attribute_fill_results(ai_result, rule_result);
-                    result
-                        .executed_steps
-                        .push("publish.fill_required_attributes".to_string());
-                    result.publish_attribute_fill = Some(step_result);
-                }
-                Err(error) => {
-                    push_automation_error(&mut result, "publish.fill_required_attributes", error)
-                }
-            },
-            Err(error) => {
-                result.errors.push(AutomationStepError {
-                    step: "publish.fill_required_attributes.ai".to_string(),
-                    error: error.to_string(),
-                });
-            }
-        }
-    } else {
-        result
-            .skipped_steps
-            .push("publish.fill_required_attributes".to_string());
-    }
-
-    if settings.publish_category_precheck_enabled {
-        match run_publish_category_prechecks_once(app.clone(), Some(20)).await {
-            Ok(step_result) => {
-                result
-                    .executed_steps
-                    .push("publish.category_precheck".to_string());
-                result.publish_category_precheck = Some(step_result);
-            }
-            Err(error) => push_automation_error(&mut result, "publish.category_precheck", error),
-        }
-    } else {
-        result
-            .skipped_steps
-            .push("publish.category_precheck".to_string());
-    }
-
-    if settings.publish_asset_upload_enabled {
-        match run_publish_asset_uploads_once(app.clone(), Some(10)).await {
-            Ok(step_result) => {
-                result
-                    .executed_steps
-                    .push("publish.upload_assets".to_string());
-                result.publish_asset_upload = Some(step_result);
-            }
-            Err(error) => push_automation_error(&mut result, "publish.upload_assets", error),
-        }
-    } else {
-        result
-            .skipped_steps
-            .push("publish.upload_assets".to_string());
-    }
-
-    if settings.publish_submit_enabled {
-        match run_publish_submits_once(app.clone(), Some(10)).await {
-            Ok(step_result) => {
-                result
-                    .executed_steps
-                    .push("publish.submit_products".to_string());
-                result.publish_submit = Some(step_result);
-            }
-            Err(error) => push_automation_error(&mut result, "publish.submit_products", error),
-        }
-    } else {
-        result
-            .skipped_steps
-            .push("publish.submit_products".to_string());
-    }
-
-    if settings.publish_status_sync_enabled {
-        match run_publish_status_sync_once(app.clone(), Some(20)).await {
-            Ok(step_result) => {
-                result
-                    .executed_steps
-                    .push("publish.sync_status".to_string());
-                result.publish_status_sync = Some(step_result);
-            }
-            Err(error) => push_automation_error(&mut result, "publish.sync_status", error),
-        }
-    } else {
-        result.skipped_steps.push("publish.sync_status".to_string());
-    }
-
-    if settings.publish_listing_enabled {
-        match run_publish_listing_once(app.clone(), Some(10)).await {
-            Ok(step_result) => {
-                result
-                    .executed_steps
-                    .push("publish.listing_products".to_string());
-                result.publish_listing = Some(step_result);
-            }
-            Err(error) => push_automation_error(&mut result, "publish.listing_products", error),
-        }
-    } else {
-        result
-            .skipped_steps
-            .push("publish.listing_products".to_string());
-    }
+    let publish_result = run_publish_pipeline_steps(
+        app.clone(),
+        PublishPipelineStepSwitches::from_automation_settings(&settings),
+    )
+    .await;
+    apply_publish_pipeline_result(&mut result, publish_result);
 
     if settings.price_confirm_enabled {
         match run_price_update_confirm_once(app.clone(), Some(50)).await {

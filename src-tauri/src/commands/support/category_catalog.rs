@@ -11,8 +11,11 @@ pub(in crate::commands) fn load_category_catalog_shop_summaries(
            (SELECT COUNT(*) FROM wechat_category_details d WHERE d.shop_id = s.id),
            (SELECT COUNT(*) FROM wechat_category_rules r WHERE r.shop_id = s.id AND r.rule_type = 'product'),
            (SELECT COUNT(*) FROM wechat_category_rules r WHERE r.shop_id = s.id AND r.rule_type = 'delivery'),
+           (SELECT COUNT(*) FROM wechat_category_relations rel WHERE rel.shop_id = s.id),
+           (SELECT COUNT(*) FROM wechat_category_relations rel WHERE rel.shop_id = s.id AND rel.status = 1),
            (SELECT COUNT(*) FROM wechat_freight_templates f WHERE f.shop_id = s.id),
            (SELECT MAX(synced_at) FROM wechat_categories c WHERE c.shop_id = s.id),
+           (SELECT MAX(synced_at) FROM wechat_category_relations rel WHERE rel.shop_id = s.id),
            (SELECT MAX(synced_at) FROM wechat_category_rules r WHERE r.shop_id = s.id),
            (SELECT MAX(synced_at) FROM wechat_freight_templates f WHERE f.shop_id = s.id)
          FROM shops s
@@ -27,10 +30,64 @@ pub(in crate::commands) fn load_category_catalog_shop_summaries(
                 detail_count: row.get(3)?,
                 product_rule_count: row.get(4)?,
                 delivery_rule_count: row.get(5)?,
-                freight_template_count: row.get(6)?,
-                last_category_sync_at: row.get(7)?,
-                last_rule_sync_at: row.get(8)?,
-                last_freight_sync_at: row.get(9)?,
+                category_relation_count: row.get(6)?,
+                active_category_relation_count: row.get(7)?,
+                freight_template_count: row.get(8)?,
+                last_category_sync_at: row.get(9)?,
+                last_relation_sync_at: row.get(10)?,
+                last_rule_sync_at: row.get(11)?,
+                last_freight_sync_at: row.get(12)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(items)
+}
+
+pub(in crate::commands) fn load_category_relation_views(
+    conn: &Connection,
+    shop_id: Option<&str>,
+    keyword: Option<&str>,
+    limit: i64,
+) -> AppResult<Vec<CategoryRelationView>> {
+    let mut stmt = conn.prepare(
+        "SELECT
+           rel.shop_id,
+           s.name,
+           rel.cat_id,
+           c.name,
+           rel.status,
+           rel.uneffective_reason,
+           rel.effective_time,
+           rel.uneffective_time,
+           rel.qua_id,
+           rel.synced_at
+         FROM wechat_category_relations rel
+         JOIN shops s ON s.id = rel.shop_id
+         LEFT JOIN wechat_categories c
+           ON c.shop_id = rel.shop_id AND c.cat_id = rel.cat_id
+         WHERE (?1 IS NULL OR rel.shop_id = ?1)
+           AND (
+             ?2 IS NULL
+             OR c.name LIKE ?2
+             OR CAST(rel.cat_id AS TEXT) LIKE ?2
+             OR rel.uneffective_reason LIKE ?2
+           )
+         ORDER BY rel.status ASC, COALESCE(c.name, '') ASC, rel.cat_id ASC
+         LIMIT ?3",
+    )?;
+    let items = stmt
+        .query_map(params![shop_id, keyword, limit], |row| {
+            Ok(CategoryRelationView {
+                shop_id: row.get(0)?,
+                shop_name: row.get(1)?,
+                cat_id: row.get(2)?,
+                category_name: row.get(3)?,
+                status: row.get(4)?,
+                uneffective_reason: row.get(5)?,
+                effective_time: row.get(6)?,
+                uneffective_time: row.get(7)?,
+                qua_id: row.get(8)?,
+                synced_at: row.get(9)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -43,7 +100,68 @@ pub(in crate::commands) fn load_category_cache_views(
     keyword: Option<&str>,
     limit: i64,
 ) -> AppResult<Vec<CategoryCacheView>> {
-    let mut stmt = conn.prepare(
+    let sql = if keyword.is_some() {
+        "WITH RECURSIVE
+           matched(shop_id, cat_id) AS (
+             SELECT c.shop_id, c.cat_id
+             FROM wechat_categories c
+             WHERE (?1 IS NULL OR c.shop_id = ?1)
+               AND (c.name LIKE ?2 OR CAST(c.cat_id AS TEXT) LIKE ?2)
+           ),
+           ancestor_scope(shop_id, cat_id) AS (
+             SELECT shop_id, cat_id FROM matched
+             UNION
+             SELECT parent.shop_id, parent.cat_id
+             FROM wechat_categories parent
+             JOIN wechat_categories child
+               ON child.shop_id = parent.shop_id AND child.parent_cat_id = parent.cat_id
+             JOIN ancestor_scope scope
+               ON scope.shop_id = child.shop_id AND scope.cat_id = child.cat_id
+           ),
+           descendant_scope(shop_id, cat_id) AS (
+             SELECT shop_id, cat_id FROM matched
+             UNION
+             SELECT child.shop_id, child.cat_id
+             FROM wechat_categories child
+             JOIN descendant_scope scope
+               ON child.shop_id = scope.shop_id AND child.parent_cat_id = scope.cat_id
+           ),
+           category_scope(shop_id, cat_id) AS (
+             SELECT shop_id, cat_id FROM ancestor_scope
+             UNION
+             SELECT shop_id, cat_id FROM descendant_scope
+           )
+         SELECT
+           c.shop_id,
+           s.name,
+           c.cat_id,
+           c.parent_cat_id,
+           c.level,
+           c.name,
+           COALESCE(d.product_attr_count, 0),
+           COALESCE(d.sale_attr_count, 0),
+           COALESCE(d.product_qua_count, 0),
+           d.cat_id IS NOT NULL,
+           pr.cat_id IS NOT NULL,
+           dr.cat_id IS NOT NULL,
+           COALESCE(rel.status, 0) = 1,
+           c.synced_at,
+           d.synced_at
+         FROM wechat_categories c
+         JOIN category_scope scope
+           ON scope.shop_id = c.shop_id AND scope.cat_id = c.cat_id
+         JOIN shops s ON s.id = c.shop_id
+         LEFT JOIN wechat_category_details d
+           ON d.shop_id = c.shop_id AND d.cat_id = c.cat_id
+         LEFT JOIN wechat_category_rules pr
+           ON pr.shop_id = c.shop_id AND pr.cat_id = c.cat_id AND pr.rule_type = 'product'
+         LEFT JOIN wechat_category_rules dr
+           ON dr.shop_id = c.shop_id AND dr.cat_id = c.cat_id AND dr.rule_type = 'delivery'
+         LEFT JOIN wechat_category_relations rel
+           ON rel.shop_id = c.shop_id AND rel.cat_id = c.cat_id
+         ORDER BY COALESCE(c.level, 0) ASC, COALESCE(c.parent_cat_id, 0) ASC, c.name ASC
+         LIMIT ?3"
+    } else {
         "SELECT
            c.shop_id,
            s.name,
@@ -57,6 +175,7 @@ pub(in crate::commands) fn load_category_cache_views(
            d.cat_id IS NOT NULL,
            pr.cat_id IS NOT NULL,
            dr.cat_id IS NOT NULL,
+           COALESCE(rel.status, 0) = 1,
            c.synced_at,
            d.synced_at
          FROM wechat_categories c
@@ -67,32 +186,45 @@ pub(in crate::commands) fn load_category_cache_views(
            ON pr.shop_id = c.shop_id AND pr.cat_id = c.cat_id AND pr.rule_type = 'product'
          LEFT JOIN wechat_category_rules dr
            ON dr.shop_id = c.shop_id AND dr.cat_id = c.cat_id AND dr.rule_type = 'delivery'
+         LEFT JOIN wechat_category_relations rel
+           ON rel.shop_id = c.shop_id AND rel.cat_id = c.cat_id
          WHERE (?1 IS NULL OR c.shop_id = ?1)
-           AND (?2 IS NULL OR c.name LIKE ?2 OR CAST(c.cat_id AS TEXT) LIKE ?2)
-         ORDER BY c.level DESC, c.name ASC
-         LIMIT ?3",
-    )?;
-    let items = stmt
-        .query_map(params![shop_id, keyword, limit], |row| {
-            Ok(CategoryCacheView {
-                shop_id: row.get(0)?,
-                shop_name: row.get(1)?,
-                cat_id: row.get(2)?,
-                parent_cat_id: row.get(3)?,
-                level: row.get(4)?,
-                name: row.get(5)?,
-                product_attr_count: row.get(6)?,
-                sale_attr_count: row.get(7)?,
-                product_qua_count: row.get(8)?,
-                has_detail: row.get::<_, i64>(9)? == 1,
-                has_product_rule: row.get::<_, i64>(10)? == 1,
-                has_delivery_rule: row.get::<_, i64>(11)? == 1,
-                synced_at: row.get(12)?,
-                detail_synced_at: row.get(13)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+         ORDER BY COALESCE(c.level, 0) ASC, COALESCE(c.parent_cat_id, 0) ASC, c.name ASC
+         LIMIT ?2"
+    };
+
+    let mut stmt = conn.prepare(sql)?;
+    let items = if keyword.is_some() {
+        stmt.query_map(
+            params![shop_id, keyword, limit],
+            category_cache_view_from_row,
+        )?
+        .collect::<Result<Vec<_>, _>>()?
+    } else {
+        stmt.query_map(params![shop_id, limit], category_cache_view_from_row)?
+            .collect::<Result<Vec<_>, _>>()?
+    };
     Ok(items)
+}
+
+fn category_cache_view_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CategoryCacheView> {
+    Ok(CategoryCacheView {
+        shop_id: row.get(0)?,
+        shop_name: row.get(1)?,
+        cat_id: row.get(2)?,
+        parent_cat_id: row.get(3)?,
+        level: row.get(4)?,
+        name: row.get(5)?,
+        product_attr_count: row.get(6)?,
+        sale_attr_count: row.get(7)?,
+        product_qua_count: row.get(8)?,
+        has_detail: row.get::<_, i64>(9)? == 1,
+        has_product_rule: row.get::<_, i64>(10)? == 1,
+        has_delivery_rule: row.get::<_, i64>(11)? == 1,
+        is_available_for_shop: row.get::<_, i64>(12)? == 1,
+        synced_at: row.get(13)?,
+        detail_synced_at: row.get(14)?,
+    })
 }
 
 pub(in crate::commands) fn load_freight_template_views(
@@ -223,6 +355,50 @@ pub(in crate::commands) fn upsert_wechat_categories(
                 category.level,
                 category.name,
                 category.raw_payload.to_string(),
+                synced_at
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+pub(in crate::commands) fn replace_wechat_categories_for_shop(
+    conn: &Connection,
+    shop_id: &str,
+    categories: &[CachedWechatCategory],
+    synced_at: &str,
+) -> AppResult<()> {
+    conn.execute(
+        "DELETE FROM wechat_categories WHERE shop_id = ?1",
+        params![shop_id],
+    )?;
+    upsert_wechat_categories(conn, shop_id, categories, synced_at)
+}
+
+pub(in crate::commands) fn upsert_wechat_category_relations(
+    conn: &Connection,
+    shop_id: &str,
+    relations: &[CachedWechatCategoryRelation],
+    synced_at: &str,
+) -> AppResult<()> {
+    conn.execute(
+        "DELETE FROM wechat_category_relations WHERE shop_id = ?1",
+        params![shop_id],
+    )?;
+    for relation in relations {
+        conn.execute(
+            "INSERT INTO wechat_category_relations
+             (shop_id, cat_id, status, uneffective_reason, effective_time, uneffective_time, qua_id, raw_payload, synced_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                shop_id,
+                relation.cat_id,
+                relation.status,
+                relation.uneffective_reason,
+                relation.effective_time,
+                relation.uneffective_time,
+                relation.qua_id,
+                relation.raw_payload.to_string(),
                 synced_at
             ],
         )?;

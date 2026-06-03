@@ -61,9 +61,26 @@ pub(in crate::commands) fn load_category_precheck_items(
          JOIN shops s ON s.id = i.shop_id
          LEFT JOIN shop_credentials c ON c.shop_id = s.id
          JOIN task_runs t ON t.id = i.job_id
-         WHERE i.status = 'ready_to_publish'
+         WHERE (
+             i.status = 'ready_to_publish'
+             OR (
+               i.status = 'failed'
+               AND (
+                 i.error_code IN (
+                   'MISSING_AFTER_SALE_ADDRESS',
+                   'AMBIGUOUS_AFTER_SALE_ADDRESS',
+                   'WECHAT_ADDRESS_LIST_HTTP_FAILED',
+                   'WECHAT_ADDRESS_DETAIL_HTTP_FAILED',
+                   'CATEGORY_DETAIL_SYNC_HTTP_FAILED'
+                 )
+                 OR i.error_code LIKE 'WECHAT_ADDRESS_LIST_%'
+                 OR i.error_code LIKE 'WECHAT_ADDRESS_DETAIL_%'
+                 OR i.error_code LIKE 'WECHAT_CATEGORY_DETAIL_%'
+               )
+             )
+           )
            AND t.task_type = 'publish.create_external_job'
-           AND t.status IN ('ready_to_publish', 'partial_success', 'running')
+           AND t.status IN ('failed', 'ready_to_publish', 'partial_success', 'running')
          ORDER BY i.created_at ASC
          LIMIT ?1",
     )?;
@@ -273,9 +290,29 @@ pub(in crate::commands) fn load_asset_upload_items(
          JOIN shops s ON s.id = i.shop_id
          LEFT JOIN shop_credentials c ON c.shop_id = s.id
          JOIN task_runs t ON t.id = i.job_id
-         WHERE i.status IN ('ready_to_publish', 'category_prechecked')
+         WHERE (
+             i.status IN ('ready_to_publish', 'category_prechecked')
+             OR (
+               i.status = 'failed'
+               AND (
+                 i.error_code IN (
+                   'INVALID_IMAGE_SOURCE_URL',
+                   'IMAGE_PREPROCESS_FAILED',
+                   'MISSING_WECHAT_PRODUCT_PAYLOAD',
+                   'MISSING_AFTER_SALE_ADDRESS',
+                   'AMBIGUOUS_AFTER_SALE_ADDRESS',
+                   'WECHAT_ADDRESS_LIST_HTTP_FAILED',
+                   'WECHAT_ADDRESS_DETAIL_HTTP_FAILED',
+                   'CATEGORY_DETAIL_SYNC_HTTP_FAILED'
+                 )
+                 OR i.error_code LIKE 'WECHAT_ADDRESS_LIST_%'
+                 OR i.error_code LIKE 'WECHAT_ADDRESS_DETAIL_%'
+                 OR i.error_code LIKE 'WECHAT_CATEGORY_DETAIL_%'
+               )
+             )
+           )
            AND t.task_type = 'publish.create_external_job'
-           AND t.status IN ('ready_to_publish', 'partial_success', 'running')
+           AND t.status IN ('failed', 'ready_to_publish', 'partial_success', 'running')
          ORDER BY i.created_at ASC
          LIMIT ?1",
     )?;
@@ -315,9 +352,29 @@ pub(in crate::commands) fn load_product_submit_items(
          JOIN shops s ON s.id = i.shop_id
          LEFT JOIN shop_credentials c ON c.shop_id = s.id
          JOIN task_runs t ON t.id = i.job_id
-         WHERE i.status = 'assets_ready'
+         WHERE (
+             i.status = 'assets_ready'
+             OR (
+               i.status = 'failed'
+               AND (
+                 i.error_code IN (
+                   'WECHAT_ADDPRODUCT_-999997',
+                   'WECHAT_ADDPRODUCT_10020110',
+                   'WECHAT_ADDPRODUCT_HTTP_FAILED',
+                   'MISSING_AFTER_SALE_ADDRESS',
+                   'AMBIGUOUS_AFTER_SALE_ADDRESS',
+                   'WECHAT_ADDRESS_LIST_HTTP_FAILED',
+                   'WECHAT_ADDRESS_DETAIL_HTTP_FAILED',
+                   'CATEGORY_DETAIL_SYNC_HTTP_FAILED'
+                 )
+                 OR i.error_code LIKE 'WECHAT_ADDRESS_LIST_%'
+                 OR i.error_code LIKE 'WECHAT_ADDRESS_DETAIL_%'
+                 OR i.error_code LIKE 'WECHAT_CATEGORY_DETAIL_%'
+               )
+             )
+           )
            AND t.task_type = 'publish.create_external_job'
-           AND t.status IN ('assets_ready', 'partial_success', 'running')
+           AND t.status IN ('failed', 'assets_ready', 'partial_success', 'running')
          ORDER BY i.created_at ASC
          LIMIT ?1",
     )?;

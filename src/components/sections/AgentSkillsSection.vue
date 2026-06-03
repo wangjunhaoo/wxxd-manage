@@ -55,8 +55,7 @@ function agentRunStatusLabel(status: string) {
 }
 
 function agentRunStatusType(status: string) {
-  if (status === "succeeded")
-    return "success";
+  if (status === "succeeded") return "success";
   if (status === "running" || status === "needs_review" || status === "blocked")
     return "warning";
   return "danger";
@@ -65,24 +64,27 @@ function agentRunStatusType(status: string) {
 function agentRunSceneLabel(scene: string) {
   const labels: Record<string, string> = {
     collection_review: "采集审查",
-    publish_attribute: "属性建议",
+    publish_attribute: "铺货补齐",
     supplier_bridge: "供应商桥",
   };
   return labels[scene] || scene;
 }
 
 function formatAgentRunDuration(row: AgentRunView) {
-  if (row.duration_ms === null || row.duration_ms === undefined)
-    return "-";
-  if (row.duration_ms < 1000)
-    return `${row.duration_ms}ms`;
+  if (row.duration_ms === null || row.duration_ms === undefined) return "-";
+  if (row.duration_ms < 1000) return `${row.duration_ms}ms`;
   return `${(row.duration_ms / 1000).toFixed(1)}s`;
 }
 
 function statusType(status: string) {
-  if (status === "ready" || status === "success")
-    return "success";
-  if (status === "sdk_missing" || status === "node_missing" || status === "python_missing" || status === "script_missing" || status === "cli_missing")
+  if (status === "ready" || status === "success") return "success";
+  if (
+    status === "sdk_missing" ||
+    status === "node_missing" ||
+    status === "python_missing" ||
+    status === "script_missing" ||
+    status === "cli_missing"
+  )
     return "warning";
   return "danger";
 }
@@ -100,7 +102,11 @@ function selectSkill(row: AgentSkillView) {
           <h2>Agent 技能</h2>
           <p>管理 AI Agent 可调用的业务技能；启停会影响对应自动流程。</p>
         </div>
-        <el-button :icon="Refresh" :loading="agentSkillsLoading" @click="refreshAgentSkills">
+        <el-button
+          :icon="Refresh"
+          :loading="agentSkillsLoading"
+          @click="refreshAgentSkills"
+        >
           刷新校验
         </el-button>
       </div>
@@ -120,7 +126,9 @@ function selectSkill(row: AgentSkillView) {
         </div>
         <div>
           <dt>AI Agent</dt>
-          <dd>{{ aiProviderSettings.enabled ? aiProviderRuntimeLabel : "未启用" }}</dd>
+          <dd>
+            {{ aiProviderSettings.enabled ? aiProviderRuntimeLabel : "未启用" }}
+          </dd>
         </div>
       </dl>
     </div>
@@ -164,7 +172,11 @@ function selectSkill(row: AgentSkillView) {
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="最近试跑" min-width="140" show-overflow-tooltip>
+          <el-table-column
+            label="最近试跑"
+            min-width="140"
+            show-overflow-tooltip
+          >
             <template #default="{ row }">
               {{ row.last_test_summary || "-" }}
             </template>
@@ -218,11 +230,21 @@ function selectSkill(row: AgentSkillView) {
           </div>
           <div>
             <dt>模型</dt>
-            <dd>{{ selectedAgentSkill.model || aiProviderSettings.model || "继承全局" }}</dd>
+            <dd>
+              {{
+                selectedAgentSkill.model ||
+                aiProviderSettings.model ||
+                "继承全局"
+              }}
+            </dd>
           </div>
           <div>
             <dt>Temperature</dt>
-            <dd>{{ selectedAgentSkill.temperature ?? aiProviderSettings.temperature }}</dd>
+            <dd>
+              {{
+                selectedAgentSkill.temperature ?? aiProviderSettings.temperature
+              }}
+            </dd>
           </div>
         </dl>
 
@@ -244,7 +266,11 @@ function selectSkill(row: AgentSkillView) {
         <div class="detail-lines">
           <div>
             <span>最近试跑</span>
-            <code>{{ selectedAgentSkill.last_test_at ? formatDateTime(selectedAgentSkill.last_test_at) : "未试跑" }}</code>
+            <code>{{
+              selectedAgentSkill.last_test_at
+                ? formatDateTime(selectedAgentSkill.last_test_at)
+                : "未试跑"
+            }}</code>
           </div>
           <div>
             <span>结果</span>
@@ -258,16 +284,26 @@ function selectSkill(row: AgentSkillView) {
       <div class="panel-title">
         <div>
           <h2>最近运行</h2>
-          <p>采集审查、属性建议和供应商桥的 Agent 执行记录。</p>
+          <p>采集审查、铺货自动补齐和供应商桥的 Agent 执行记录。</p>
         </div>
         <div class="toolbar compact-toolbar">
-          <el-select v-model="agentRunSceneFilter" size="small" style="width: 132px" @change="refreshAgentRuns">
+          <el-select
+            v-model="agentRunSceneFilter"
+            size="small"
+            style="width: 132px"
+            @change="refreshAgentRuns"
+          >
             <el-option label="全部场景" value="all" />
             <el-option label="采集审查" value="collection_review" />
-            <el-option label="属性建议" value="publish_attribute" />
+            <el-option label="铺货补齐" value="publish_attribute" />
             <el-option label="供应商桥" value="supplier_bridge" />
           </el-select>
-          <el-select v-model="agentRunStatusFilter" size="small" style="width: 132px" @change="refreshAgentRuns">
+          <el-select
+            v-model="agentRunStatusFilter"
+            size="small"
+            style="width: 132px"
+            @change="refreshAgentRuns"
+          >
             <el-option label="全部状态" value="all" />
             <el-option label="运行中" value="running" />
             <el-option label="成功" value="succeeded" />
@@ -275,7 +311,11 @@ function selectSkill(row: AgentSkillView) {
             <el-option label="已拦截" value="blocked" />
             <el-option label="失败" value="failed" />
           </el-select>
-          <el-button :icon="Refresh" :loading="agentRunsLoading" @click="refreshAgentRuns">
+          <el-button
+            :icon="Refresh"
+            :loading="agentRunsLoading"
+            @click="refreshAgentRuns"
+          >
             刷新
           </el-button>
         </div>

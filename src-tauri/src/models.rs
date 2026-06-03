@@ -100,6 +100,7 @@ pub struct ApiQuotaCheckResult {
 pub struct CategoryCatalogListResult {
     pub shops: Vec<CategoryCatalogShopSummary>,
     pub categories: Vec<CategoryCacheView>,
+    pub category_relations: Vec<CategoryRelationView>,
     pub freight_templates: Vec<FreightTemplateView>,
 }
 
@@ -111,8 +112,11 @@ pub struct CategoryCatalogShopSummary {
     pub detail_count: i64,
     pub product_rule_count: i64,
     pub delivery_rule_count: i64,
+    pub category_relation_count: i64,
+    pub active_category_relation_count: i64,
     pub freight_template_count: i64,
     pub last_category_sync_at: Option<String>,
+    pub last_relation_sync_at: Option<String>,
     pub last_rule_sync_at: Option<String>,
     pub last_freight_sync_at: Option<String>,
 }
@@ -131,8 +135,23 @@ pub struct CategoryCacheView {
     pub has_detail: bool,
     pub has_product_rule: bool,
     pub has_delivery_rule: bool,
+    pub is_available_for_shop: bool,
     pub synced_at: String,
     pub detail_synced_at: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CategoryRelationView {
+    pub shop_id: String,
+    pub shop_name: String,
+    pub cat_id: i64,
+    pub category_name: Option<String>,
+    pub status: i64,
+    pub uneffective_reason: Option<String>,
+    pub effective_time: Option<i64>,
+    pub uneffective_time: Option<i64>,
+    pub qua_id: Option<i64>,
+    pub synced_at: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -148,6 +167,7 @@ pub struct CategoryCatalogSyncResult {
     pub task_id: String,
     pub shop_id: String,
     pub synced_categories: i64,
+    pub synced_category_relations: i64,
     pub synced_freight_templates: i64,
     pub failed_steps: Vec<String>,
 }
@@ -236,6 +256,22 @@ pub struct CollectionReviewConfirmRequest {
     pub title: Option<String>,
     pub category_ids: Option<Vec<i64>>,
     pub category_path: Option<String>,
+    #[serde(default)]
+    pub target_shop_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CollectionImageUploadRequest {
+    pub task_id: String,
+    pub kind: String,
+    pub file_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CollectionImageRemoveRequest {
+    pub task_id: String,
+    pub kind: String,
+    pub image_url: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -441,6 +477,20 @@ pub struct OperationalAutomationRunResult {
 }
 
 #[derive(Debug, Serialize)]
+pub struct PublishPipelineRunResult {
+    pub executed_steps: Vec<String>,
+    pub skipped_steps: Vec<String>,
+    pub errors: Vec<AutomationStepError>,
+    pub publish_precheck: Option<PublishTaskBatchResult>,
+    pub publish_attribute_fill: Option<PublishAttributeFillBatchResult>,
+    pub publish_category_precheck: Option<PublishCategoryPrecheckBatchResult>,
+    pub publish_asset_upload: Option<AssetUploadBatchResult>,
+    pub publish_submit: Option<ProductSubmitBatchResult>,
+    pub publish_status_sync: Option<ProductStatusSyncBatchResult>,
+    pub publish_listing: Option<ProductListingBatchResult>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct AutomationStepError {
     pub step: String,
     pub error: String,
@@ -473,6 +523,27 @@ pub struct BackupRestoreResult {
     pub restored_from: BackupInfo,
     pub rollback_backup: BackupInfo,
     pub integrity_ok: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CollectionPublishWorkspaceResetRequest {
+    pub confirm_text: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WorkspaceResetTableCount {
+    pub name: String,
+    pub before: i64,
+    pub after: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CollectionPublishWorkspaceResetResult {
+    pub backup: BackupInfo,
+    pub integrity_ok: bool,
+    pub integrity_message: String,
+    pub counts: Vec<WorkspaceResetTableCount>,
     pub message: String,
 }
 
@@ -577,57 +648,6 @@ pub struct PublishAttributeFillBatchResult {
     pub suggestion_only_items: i64,
     pub failed_items: i64,
     pub generated_suggestions: i64,
-}
-
-#[derive(Debug, Serialize)]
-pub struct PublishAttributeSuggestionSkuValue {
-    pub sku_index: usize,
-    pub value: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct PublishAttributeSuggestionView {
-    pub id: String,
-    pub item_id: String,
-    pub job_id: String,
-    pub product_row_id: String,
-    pub shop_id: String,
-    pub shop_name: String,
-    pub external_product_id: String,
-    pub title: String,
-    pub attr_kind: String,
-    pub attr_key: String,
-    pub suggested_value: Option<String>,
-    pub sku_values: Vec<PublishAttributeSuggestionSkuValue>,
-    pub confidence: i64,
-    pub source: String,
-    pub applied: bool,
-    pub allowed_values: Vec<String>,
-    pub reason: Option<String>,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct PublishAttributeSuggestionListResult {
-    pub items: Vec<PublishAttributeSuggestionView>,
-    pub total: i64,
-    pub pending_count: i64,
-    pub applied_count: i64,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct PublishAttributeSuggestionApplyRequest {
-    pub suggestion_ids: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct PublishAttributeSuggestionApplyResult {
-    pub processed_suggestions: i64,
-    pub processed_items: i64,
-    pub applied_suggestions: i64,
-    pub updated_items: i64,
-    pub failed_suggestions: i64,
-    pub message: String,
 }
 
 #[derive(Debug, Serialize)]

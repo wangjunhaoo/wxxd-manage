@@ -539,6 +539,20 @@ fn migrate(conn: &Connection) -> AppResult<()> {
           FOREIGN KEY(shop_id) REFERENCES shops(id)
         );
 
+        CREATE TABLE IF NOT EXISTS wechat_category_relations (
+          shop_id TEXT NOT NULL,
+          cat_id INTEGER NOT NULL,
+          status INTEGER NOT NULL,
+          uneffective_reason TEXT,
+          effective_time INTEGER,
+          uneffective_time INTEGER,
+          qua_id INTEGER,
+          raw_payload TEXT NOT NULL,
+          synced_at TEXT NOT NULL,
+          PRIMARY KEY(shop_id, cat_id),
+          FOREIGN KEY(shop_id) REFERENCES shops(id)
+        );
+
         CREATE TABLE IF NOT EXISTS wechat_category_details (
           shop_id TEXT NOT NULL,
           cat_id INTEGER NOT NULL,
@@ -841,6 +855,9 @@ fn migrate(conn: &Connection) -> AppResult<()> {
         CREATE INDEX IF NOT EXISTS idx_wechat_categories_parent
           ON wechat_categories(shop_id, parent_cat_id);
 
+        CREATE INDEX IF NOT EXISTS idx_wechat_category_relations_status
+          ON wechat_category_relations(shop_id, status);
+
         CREATE INDEX IF NOT EXISTS idx_wechat_category_prechecks_shop
           ON wechat_category_prechecks(shop_id, checked_at);
 
@@ -853,6 +870,44 @@ fn migrate(conn: &Connection) -> AppResult<()> {
         CREATE INDEX IF NOT EXISTS idx_collection_tasks_status
           ON collection_tasks(status);
         "#,
+    )?;
+    cleanup_stale_wechat_category_cache(conn)?;
+    Ok(())
+}
+
+fn cleanup_stale_wechat_category_cache(conn: &Connection) -> AppResult<()> {
+    // 只清理已经同步过店铺类目权限的店铺，并保留生效类目的完整父级路径。
+    conn.execute(
+        r#"
+        WITH RECURSIVE
+          shops_with_relations(shop_id) AS (
+            SELECT DISTINCT shop_id
+            FROM wechat_category_relations
+          ),
+          keep(shop_id, cat_id, parent_cat_id) AS (
+            SELECT category.shop_id, category.cat_id, category.parent_cat_id
+            FROM wechat_categories category
+            JOIN wechat_category_relations relation
+              ON relation.shop_id = category.shop_id
+             AND relation.cat_id = category.cat_id
+             AND relation.status = 1
+            UNION
+            SELECT parent.shop_id, parent.cat_id, parent.parent_cat_id
+            FROM wechat_categories parent
+            JOIN keep child
+              ON child.shop_id = parent.shop_id
+             AND child.parent_cat_id = parent.cat_id
+          )
+        DELETE FROM wechat_categories
+        WHERE shop_id IN (SELECT shop_id FROM shops_with_relations)
+          AND NOT EXISTS (
+            SELECT 1
+            FROM keep
+            WHERE keep.shop_id = wechat_categories.shop_id
+              AND keep.cat_id = wechat_categories.cat_id
+          )
+        "#,
+        [],
     )?;
     Ok(())
 }

@@ -1,5 +1,11 @@
 use super::*;
 
+const ADD_PRODUCT_MIN_HEAD_IMAGES: usize = 3;
+const ADD_PRODUCT_MAX_HEAD_IMAGES: usize = 9;
+const ADD_PRODUCT_MIN_DETAIL_IMAGES: usize = 1;
+const ADD_PRODUCT_MAX_DETAIL_IMAGES: usize = 50;
+const ADD_PRODUCT_MAX_SKUS: usize = 500;
+
 pub(in crate::commands) fn precheck_publish_item(
     conn: &Connection,
     item: &PendingPublishItem,
@@ -30,7 +36,7 @@ pub(in crate::commands) fn precheck_publish_item(
             "同一个 external_product_id 已经铺过该店铺".to_string(),
         )));
     }
-    if product.images.len() < 3 {
+    if product.images.len() < ADD_PRODUCT_MIN_HEAD_IMAGES {
         return Ok(Some((
             "INSUFFICIENT_HEAD_IMAGES",
             "商品主图少于 3 张，无法进入微信发品".to_string(),
@@ -69,9 +75,9 @@ pub(in crate::commands) fn prepare_add_product_payload_for_publish(
     item: &PendingPublishItem,
     product: &ExternalProductInput,
 ) -> AppResult<Result<AddProductPayloadPrepare, (&'static str, String)>> {
-    let draft = match resolve_add_product_base_payload(product) {
+    let draft = match resolve_add_product_base_payload_relaxed_after_sale(product) {
         Ok(draft) => draft,
-        Err(error) => return Ok(Err(("WECHAT_PAYLOAD_NEEDS_AI_FILL", error))),
+        Err(error) => return Ok(Err((add_product_payload_error_code(&error), error))),
     };
 
     if draft.source == "local_rules_v1" {
@@ -122,6 +128,14 @@ pub(in crate::commands) fn prepare_add_product_payload_for_publish(
         source: draft.source,
         warnings: draft.warnings,
     }))
+}
+
+pub(in crate::commands) fn add_product_payload_error_code(error: &str) -> &'static str {
+    if error.contains("after_sale_info.after_sale_address_id") {
+        "MISSING_AFTER_SALE_ADDRESS"
+    } else {
+        "WECHAT_PAYLOAD_NEEDS_AI_FILL"
+    }
 }
 
 pub(in crate::commands) fn publish_payload_ready_summary(
@@ -622,7 +636,12 @@ pub(in crate::commands) fn collect_product_assets(
     product: &ExternalProductInput,
 ) -> Vec<ProductAsset> {
     let mut assets = Vec::new();
-    for (index, source_url) in product.images.iter().enumerate() {
+    for (index, source_url) in product
+        .images
+        .iter()
+        .take(ADD_PRODUCT_MAX_HEAD_IMAGES)
+        .enumerate()
+    {
         let source_url = source_url.trim();
         if !source_url.is_empty() {
             assets.push(ProductAsset {
@@ -632,7 +651,12 @@ pub(in crate::commands) fn collect_product_assets(
             });
         }
     }
-    for (index, source_url) in product.detail_images.iter().enumerate() {
+    for (index, source_url) in product
+        .detail_images
+        .iter()
+        .take(ADD_PRODUCT_MAX_DETAIL_IMAGES)
+        .enumerate()
+    {
         let source_url = source_url.trim();
         if !source_url.is_empty() {
             assets.push(ProductAsset {
@@ -670,8 +694,15 @@ pub(in crate::commands) fn load_prepared_assets(
     Ok(assets)
 }
 
-pub(in crate::commands) fn resolve_add_product_base_payload(
+pub(in crate::commands) fn resolve_add_product_base_payload_relaxed_after_sale(
     product: &ExternalProductInput,
+) -> Result<AddProductPayloadDraft, String> {
+    resolve_add_product_base_payload_with_options(product, false)
+}
+
+fn resolve_add_product_base_payload_with_options(
+    product: &ExternalProductInput,
+    require_after_sale: bool,
 ) -> Result<AddProductPayloadDraft, String> {
     let metadata = product_metadata_object(product)?;
     if let Some(metadata) = metadata {
@@ -688,7 +719,7 @@ pub(in crate::commands) fn resolve_add_product_base_payload(
                     .cloned()
                     .ok_or_else(|| format!("{source} 必须是微信 addproduct 请求对象"))?;
                 apply_add_product_defaults(&mut payload, product);
-                validate_add_product_base_payload(&payload)?;
+                validate_add_product_base_payload_with_options(&payload, require_after_sale)?;
                 return Ok(AddProductPayloadDraft {
                     payload: Value::Object(payload),
                     source,
@@ -698,12 +729,13 @@ pub(in crate::commands) fn resolve_add_product_base_payload(
         }
     }
 
-    generate_add_product_payload_draft(product, metadata)
+    generate_add_product_payload_draft(product, metadata, require_after_sale)
 }
 
 pub(in crate::commands) fn generate_add_product_payload_draft(
     product: &ExternalProductInput,
     metadata: Option<&serde_json::Map<String, Value>>,
+    require_after_sale: bool,
 ) -> Result<AddProductPayloadDraft, String> {
     let mut payload = serde_json::Map::new();
     let mut warnings = Vec::new();
@@ -799,6 +831,12 @@ pub(in crate::commands) fn generate_add_product_payload_draft(
     if let Some(express_info) = resolve_express_info(metadata, product, deliver_method) {
         payload.insert("express_info".to_string(), express_info);
     }
+    if deliver_method == 0 && !payload_has_freight_template_id(&payload) {
+        warnings.push(
+            "快递发货未提供 metadata.wechat_freight_template_id；建议按店铺配置明确运费模板，避免微信侧默认规则不可控"
+                .to_string(),
+        );
+    }
     if let Some(after_sale_address_id) = metadata_i64(
         metadata,
         &["after_sale_address_id", "wechat_after_sale_address_id"],
@@ -807,19 +845,42 @@ pub(in crate::commands) fn generate_add_product_payload_draft(
             "after_sale_info".to_string(),
             serde_json::json!({ "after_sale_address_id": after_sale_address_id }),
         );
+    } else if deliver_method == 0 {
+        warnings.push(
+            "未提供 metadata.wechat_after_sale_address_id；后续将尝试读取微信默认售后/退货地址，无法唯一确认时需人工配置"
+                .to_string(),
+        );
     }
     if let Some(supply_source) =
         metadata_object_clone(metadata, &["supply_source", "wechat_supply_source"])
     {
         payload.insert("supply_source".to_string(), Value::Object(supply_source));
     }
+    if metadata_value(metadata, &["stock_source", "inventory_source"]).is_none()
+        && product.skus.iter().any(|sku| sku.stock >= 100)
+    {
+        warnings.push(
+            "SKU 库存缺少 metadata.stock_source，且存在默认化高库存；发布前建议确认真实供应商库存"
+                .to_string(),
+        );
+    }
 
-    validate_add_product_base_payload(&payload)?;
+    validate_add_product_base_payload_with_options(&payload, require_after_sale)?;
     Ok(AddProductPayloadDraft {
         payload: Value::Object(payload),
         source: "local_rules_v1",
         warnings,
     })
+}
+
+fn payload_has_freight_template_id(payload: &serde_json::Map<String, Value>) -> bool {
+    payload
+        .get("express_info")
+        .and_then(Value::as_object)
+        .and_then(|express_info| express_info.get("template_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
 }
 
 pub(in crate::commands) fn product_metadata_object(
@@ -1185,6 +1246,19 @@ pub(in crate::commands) fn validate_sale_price_cents(
 pub(in crate::commands) fn validate_add_product_base_payload(
     payload: &serde_json::Map<String, Value>,
 ) -> Result<(), String> {
+    validate_add_product_base_payload_with_options(payload, true)
+}
+
+pub(in crate::commands) fn validate_add_product_base_payload_without_after_sale(
+    payload: &serde_json::Map<String, Value>,
+) -> Result<(), String> {
+    validate_add_product_base_payload_with_options(payload, false)
+}
+
+pub(in crate::commands) fn validate_add_product_base_payload_with_options(
+    payload: &serde_json::Map<String, Value>,
+    require_after_sale: bool,
+) -> Result<(), String> {
     require_add_product_field(payload, "deliver_method")?;
     require_add_product_field(payload, "extra_service")?;
     require_add_product_field(payload, "skus")?;
@@ -1192,8 +1266,47 @@ pub(in crate::commands) fn validate_add_product_base_payload(
         return Err("缺少 cats 或 cats_v2，需先补齐微信类目".to_string());
     }
     validate_array_field(payload, "skus", 1, "微信发品 SKU 不能为空")?;
+    validate_array_field_max(
+        payload,
+        "skus",
+        ADD_PRODUCT_MAX_SKUS,
+        "微信发品 SKU 不能超过 500 个",
+    )?;
+    validate_optional_array_field_range(
+        payload,
+        "head_imgs",
+        ADD_PRODUCT_MIN_HEAD_IMAGES,
+        ADD_PRODUCT_MAX_HEAD_IMAGES,
+        "微信发品头图需为 3 到 9 张",
+    )?;
+    validate_desc_images_range(payload)?;
     validate_extra_service(payload)?;
+    if require_after_sale {
+        validate_after_sale_info(payload)?;
+    }
     validate_add_product_skus(payload)?;
+    Ok(())
+}
+
+pub(in crate::commands) fn validate_after_sale_info(
+    payload: &serde_json::Map<String, Value>,
+) -> Result<(), String> {
+    let deliver_method = json_value_to_i64(payload.get("deliver_method")).unwrap_or(0);
+    if deliver_method != 0 {
+        return Ok(());
+    }
+
+    let address_id = payload
+        .get("after_sale_info")
+        .and_then(Value::as_object)
+        .and_then(|after_sale_info| json_value_to_i64(after_sale_info.get("after_sale_address_id")))
+        .unwrap_or(0);
+    if address_id <= 0 {
+        return Err(
+            "快递发货必须提供 after_sale_info.after_sale_address_id；请先在商品 metadata.wechat_after_sale_address_id 或 metadata.after_sale_address_id 填入微信售后/退货地址 ID"
+                .to_string(),
+        );
+    }
     Ok(())
 }
 
@@ -1270,31 +1383,33 @@ pub(in crate::commands) fn metadata_f64(
     metadata_value(metadata, keys).and_then(|value| json_value_to_f64(Some(value)))
 }
 
-pub(in crate::commands) fn build_add_product_payload(
+pub(in crate::commands) fn build_add_product_payload_relaxed_after_sale(
     product: &ExternalProductInput,
     assets: &[PreparedAsset],
 ) -> Result<Value, String> {
-    let base_payload = resolve_add_product_base_payload(product)?;
+    let base_payload = resolve_add_product_base_payload_relaxed_after_sale(product)?;
     let mut payload = match base_payload.payload {
         Value::Object(map) => map,
         _ => return Err("微信 addproduct 请求必须是对象".to_string()),
     };
 
-    let head_imgs = prepared_asset_urls(assets, "head_image");
-    let detail_imgs = prepared_asset_urls(assets, "detail_image");
-    if head_imgs.len() < 3 {
+    let mut head_imgs = prepared_asset_urls(assets, "head_image");
+    let mut detail_imgs = prepared_asset_urls(assets, "detail_image");
+    if head_imgs.len() < ADD_PRODUCT_MIN_HEAD_IMAGES {
         return Err("微信发品头图不足 3 张，请先完成素材上传".to_string());
     }
     if detail_imgs.is_empty() {
         return Err("微信发品详情图为空，请先完成素材上传".to_string());
     }
+    head_imgs.truncate(ADD_PRODUCT_MAX_HEAD_IMAGES);
+    detail_imgs.truncate(ADD_PRODUCT_MAX_DETAIL_IMAGES);
     payload.insert(
         "head_imgs".to_string(),
         Value::Array(head_imgs.into_iter().map(Value::String).collect()),
     );
     upsert_desc_images(&mut payload, detail_imgs);
 
-    validate_add_product_base_payload(&payload)?;
+    validate_add_product_base_payload_without_after_sale(&payload)?;
 
     Ok(Value::Object(payload))
 }
@@ -1349,6 +1464,55 @@ pub(in crate::commands) fn validate_array_field(
     }
 }
 
+pub(in crate::commands) fn validate_array_field_max(
+    payload: &serde_json::Map<String, Value>,
+    field: &str,
+    max_len: usize,
+    message: &str,
+) -> Result<(), String> {
+    match payload.get(field) {
+        Some(Value::Array(items)) if items.len() > max_len => Err(message.to_string()),
+        _ => Ok(()),
+    }
+}
+
+pub(in crate::commands) fn validate_optional_array_field_range(
+    payload: &serde_json::Map<String, Value>,
+    field: &str,
+    min_len: usize,
+    max_len: usize,
+    message: &str,
+) -> Result<(), String> {
+    match payload.get(field) {
+        Some(Value::Array(items)) if items.len() >= min_len && items.len() <= max_len => Ok(()),
+        Some(Value::Array(_)) => Err(message.to_string()),
+        Some(_) => Err(format!("{field} 必须是数组")),
+        None => Ok(()),
+    }
+}
+
+pub(in crate::commands) fn validate_desc_images_range(
+    payload: &serde_json::Map<String, Value>,
+) -> Result<(), String> {
+    let Some(desc_info) = payload.get("desc_info") else {
+        return Ok(());
+    };
+    let Some(desc_info) = desc_info.as_object() else {
+        return Err("desc_info 必须是对象".to_string());
+    };
+    match desc_info.get("imgs") {
+        Some(Value::Array(items))
+            if items.len() >= ADD_PRODUCT_MIN_DETAIL_IMAGES
+                && items.len() <= ADD_PRODUCT_MAX_DETAIL_IMAGES =>
+        {
+            Ok(())
+        }
+        Some(Value::Array(_)) => Err("微信发品详情图需为 1 到 50 张".to_string()),
+        Some(_) => Err("desc_info.imgs 必须是数组".to_string()),
+        None => Ok(()),
+    }
+}
+
 pub(in crate::commands) fn validate_extra_service(
     payload: &serde_json::Map<String, Value>,
 ) -> Result<(), String> {
@@ -1363,4 +1527,170 @@ pub(in crate::commands) fn validate_extra_service(
         return Err("extra_service 缺少 freight_insurance".to_string());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_payload(deliver_method: i64) -> serde_json::Map<String, Value> {
+        serde_json::json!({
+            "deliver_method": deliver_method,
+            "extra_service": {
+                "seven_day_return": 1,
+                "freight_insurance": 0
+            },
+            "cats_v2": [
+                { "cat_id": 1 },
+                { "cat_id": 2 },
+                { "cat_id": 3 }
+            ],
+            "skus": [
+                {
+                    "out_sku_id": "sku-1",
+                    "sale_price": 100,
+                    "stock_num": 1
+                }
+            ]
+        })
+        .as_object()
+        .cloned()
+        .expect("测试 payload 必须是对象")
+    }
+
+    #[test]
+    fn express_payload_requires_after_sale_address_id() {
+        let payload = base_payload(0);
+
+        let error = validate_add_product_base_payload(&payload).expect_err("应拦截缺失售后地址");
+
+        assert!(error.contains("after_sale_info.after_sale_address_id"));
+        assert_eq!(
+            add_product_payload_error_code(&error),
+            "MISSING_AFTER_SALE_ADDRESS"
+        );
+    }
+
+    #[test]
+    fn relaxed_validation_allows_missing_after_sale_address_id() {
+        let payload = base_payload(0);
+
+        validate_add_product_base_payload_without_after_sale(&payload)
+            .expect("预检阶段允许后续自动补齐售后地址");
+    }
+
+    #[test]
+    fn non_express_payload_does_not_require_after_sale_address_id() {
+        let payload = base_payload(1);
+
+        validate_add_product_base_payload(&payload).expect("无需快递发货不应要求售后地址");
+    }
+
+    #[test]
+    fn express_payload_accepts_after_sale_address_id() {
+        let mut payload = base_payload(0);
+        payload.insert(
+            "after_sale_info".to_string(),
+            serde_json::json!({ "after_sale_address_id": 123 }),
+        );
+
+        validate_add_product_base_payload(&payload).expect("有效售后地址应通过校验");
+    }
+
+    #[test]
+    fn add_product_payload_rejects_image_and_sku_over_limits() {
+        let mut payload = base_payload(0);
+        payload.insert(
+            "head_imgs".to_string(),
+            Value::Array(
+                (0..10)
+                    .map(|index| Value::String(format!("h{index}")))
+                    .collect(),
+            ),
+        );
+
+        let error = validate_add_product_base_payload_without_after_sale(&payload)
+            .expect_err("头图超过 9 张应被拦截");
+        assert!(error.contains("头图"));
+
+        let mut payload = base_payload(0);
+        payload.insert(
+            "desc_info".to_string(),
+            serde_json::json!({ "imgs": (0..51).map(|index| format!("d{index}")).collect::<Vec<_>>() }),
+        );
+        let error = validate_add_product_base_payload_without_after_sale(&payload)
+            .expect_err("详情图超过 50 张应被拦截");
+        assert!(error.contains("详情图"));
+
+        let mut payload = base_payload(0);
+        payload.insert(
+            "skus".to_string(),
+            Value::Array(
+                (0..501)
+                    .map(|_| serde_json::json!({ "stock_num": 1 }))
+                    .collect(),
+            ),
+        );
+        let error = validate_add_product_base_payload_without_after_sale(&payload)
+            .expect_err("SKU 超过 500 个应被拦截");
+        assert!(error.contains("SKU"));
+    }
+
+    #[test]
+    fn add_product_payload_truncates_prepared_images_to_wechat_limits() {
+        let product = ExternalProductInput {
+            external_product_id: "item-1".to_string(),
+            title: "测试商品标题".to_string(),
+            source_url: "https://example.com/item".to_string(),
+            images: Vec::new(),
+            detail_images: Vec::new(),
+            skus: Vec::new(),
+            supplier_name: None,
+            supplier_product_id: None,
+            category_hint: None,
+            brand_hint: None,
+            weight_gram: None,
+            metadata: serde_json::json!({
+                "wechat_add_product_payload": {
+                    "deliver_method": 0,
+                    "extra_service": {
+                        "seven_day_return": 1,
+                        "freight_insurance": 0
+                    },
+                    "cats_v2": [{ "cat_id": 1 }, { "cat_id": 2 }, { "cat_id": 3 }],
+                    "skus": [{ "out_sku_id": "sku-1", "sale_price": 100, "stock_num": 1 }]
+                }
+            }),
+        };
+        let assets = (0..12)
+            .map(|index| PreparedAsset {
+                kind: "head_image".to_string(),
+                sort_order: index,
+                wechat_url: format!("https://mmecimage.cn/p/h{index}.jpg"),
+            })
+            .chain((0..55).map(|index| PreparedAsset {
+                kind: "detail_image".to_string(),
+                sort_order: index,
+                wechat_url: format!("https://mmecimage.cn/p/d{index}.jpg"),
+            }))
+            .collect::<Vec<_>>();
+
+        let payload = build_add_product_payload_relaxed_after_sale(&product, &assets)
+            .expect("超量图片应被裁剪后通过");
+
+        assert_eq!(
+            payload
+                .get("head_imgs")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(ADD_PRODUCT_MAX_HEAD_IMAGES)
+        );
+        assert_eq!(
+            payload
+                .pointer("/desc_info/imgs")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(ADD_PRODUCT_MAX_DETAIL_IMAGES)
+        );
+    }
 }

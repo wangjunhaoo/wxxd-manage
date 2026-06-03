@@ -41,6 +41,7 @@ TAOBAO_HOME_WARMUP_URL = "https://www.taobao.com/"
 PROFILE_LOCK_FILE = "taobao_collector.lock"
 PROFILE_PROBE_COMMAND = "__probe-cloak-profile"
 PROFILE_PROBE_TIMEOUT_SEC = 45
+PROFILE_LOCK_TIMEOUT_ENV = "WX_XD_TAOBAO_PROFILE_LOCK_TIMEOUT_SECONDS"
 TAOBAO_LOGIN_COOKIE_NAMES = {"unb", "tracknick", "_l_g_", "lgc", "_nk_", "cookie17"}
 LOGIN_CONFIRM_KEYWORDS = ("快速进入", "确认登录", "安全登录", "一键登录")
 LOGIN_CONFIRM_CLICK_TEXTS = ("快速进入", "确认登录", "安全登录", "一键登录")
@@ -109,6 +110,88 @@ def interact_with_page(page):
     _hover_first_visible(page, hover_targets[2])
     if random.random() < 0.45:
         human_like_scroll(page, -random.randint(120, 260))
+
+
+def _random_browse_interaction(page, allow_reload=False):
+    """随机化商品页浏览行为，避免固定的交互模式被风控识别。
+
+    每次调用随机选择一种浏览策略，模拟不同用户的浏览习惯：
+    - quick_scan (25%): 快速扫一眼，轻滚一下就走
+    - normal_browse (45%): 正常逛逛，hover 主图 + 滚 2-3 屏
+    - deep_look (30%): 认真看，hover 主图 + hover SKU + 滚详情区
+
+    各策略内部的顺序和时机也会随机抖动。
+    """
+    roll = random.random()
+
+    if roll < 0.25:
+        # quick_scan：几乎不交互，只轻滚一下
+        try:
+            if random.random() < 0.5:
+                time.sleep(random.uniform(0.6, 1.5))
+            human_like_scroll(page, random.randint(200, 500))
+        except Exception:
+            pass
+        return True
+
+    if roll < 0.70:
+        # normal_browse：hover 主图 + 滚动浏览
+        try:
+            time.sleep(random.uniform(0.3, 0.9))
+            targets = [
+                "#J_ImgBooth, .tb-main-pic img, .gallery img, .pic img",
+                ".tb-sku, .sku-content, .J_TSaleProp, .tb-prop",
+                ".tm-price, .tb-rmb-num, .tb-price",
+            ]
+            random.shuffle(targets)
+            _hover_first_visible(page, targets[0])
+            time.sleep(random.uniform(0.3, 0.8))
+            human_like_scroll(page, random.randint(300, 700))
+            time.sleep(random.uniform(0.4, 1.0))
+            if random.random() < 0.5:
+                human_like_scroll(page, random.randint(200, 500))
+                time.sleep(random.uniform(0.3, 0.7))
+            if random.random() < 0.4:
+                _hover_first_visible(page, targets[1])
+        except Exception:
+            pass
+        return True
+
+    # deep_look：hover 主图 + hover SKU + 滚动详情区
+    try:
+        time.sleep(random.uniform(0.5, 1.2))
+        targets = [
+            "#J_ImgBooth, .tb-main-pic img, .gallery img, .pic img",
+            ".tb-sku, .sku-content, .J_TSaleProp, .tb-prop, [class*='sku']",
+            ".tm-price, .tb-rmb-num, .tb-price",
+            ".ShopHeader, .shop-header, .tb-shop, [class*='shop']",
+        ]
+        random.shuffle(targets)
+        _hover_first_visible(page, targets[0])
+        time.sleep(random.uniform(0.35, 0.8))
+        human_like_scroll(page, random.randint(400, 800))
+        time.sleep(random.uniform(0.45, 0.9))
+        _hover_first_visible(page, targets[1])
+        time.sleep(random.uniform(0.25, 0.6))
+
+        # 有时 hover 一个未选中的 SKU 项
+        if random.random() < 0.5:
+            _hover_first_visible(
+                page,
+                ".tb-sku li:not(.tb-selected), .J_TSaleProp li:not(.tb-selected),"
+                " [class*='sku'] [class*='item']:not([class*='selected'])",
+            )
+            time.sleep(random.uniform(0.2, 0.5))
+
+        human_like_scroll(page, random.randint(300, 700))
+        time.sleep(random.uniform(0.3, 0.7))
+        if random.random() < 0.35:
+            _hover_first_visible(page, targets[2])
+        if random.random() < 0.25:
+            human_like_scroll(page, -random.randint(100, 250))
+    except Exception:
+        pass
+    return True
 
 
 def warm_up_taobao_home(page, skip_by_default=False):
@@ -277,8 +360,13 @@ def _process_exists(pid):
         return True
 
 
-def _profile_lock(profile_dir, timeout_sec=120):
-    return ProfileLock(profile_dir, timeout_sec=timeout_sec)
+def _profile_lock(profile_dir, timeout_sec=None):
+    resolved_timeout = (
+        timeout_sec
+        if timeout_sec is not None
+        else _env_float_range(PROFILE_LOCK_TIMEOUT_ENV, 120.0, min_value=1.0, max_value=300.0)
+    )
+    return ProfileLock(profile_dir, timeout_sec=resolved_timeout)
 
 
 class BrowserSlotLock:
@@ -1336,31 +1424,8 @@ def _trigger_product_requests(page, source_url, allow_reload=True):
     if _is_blocked(page):
         return False
 
-    # 模拟真实用户浏览行为，触发懒加载 mtop 请求
-    try:
-        # 先 hover 主图区域（可能触发图片切换 API）
-        _hover_first_visible(page, "#J_ImgBooth, .tb-main-pic img, .gallery img, .pic img")
-        time.sleep(random.uniform(0.45, 0.9))
-
-        # 滚动触发详情描述区域的懒加载
-        human_like_scroll(page, random.randint(400, 800))
-        time.sleep(random.uniform(0.45, 0.9))
-
-        # hover SKU 选择区域，切换规格可能触发新的 mtop 请求
-        _hover_first_visible(page, ".tb-sku, .sku-content, .J_TSaleProp, .tb-prop, .tm-ind-sellBy, [class*='sku']")
-        time.sleep(random.uniform(0.3, 0.7))
-
-        # 随机选择一个 SKU 项点击（仅 hover，不真选）
-        _hover_first_visible(
-            page,
-            ".tb-sku li:not(.tb-selected), .J_TSaleProp li:not(.tb-selected), [class*='sku'] [class*='item']:not([class*='selected'])",
-        )
-        time.sleep(random.uniform(0.2, 0.5))
-
-        human_like_scroll(page, random.randint(300, 600))
-        time.sleep(random.uniform(0.3, 0.7))
-    except Exception as e:
-        print(f"页面交互触发异常（继续采集）: {e}", file=sys.stderr)
+    # 随机化浏览行为，触发懒加载 mtop 请求
+    _random_browse_interaction(page)
 
     return True
 
@@ -1473,6 +1538,63 @@ def _parse_flexible_mtop_response(captured, source_url):
     }
 
 
+def _extract_mtop_props(data):
+    """从 mtop API 响应中提取结构化商品属性。
+
+    淘宝 mtop getdetail 响应中，商品属性可能在以下位置：
+    - data.props: [{name, value}, ...]
+    - data.groupProps: [{group: ..., props: [{name, value}, ...]}, ...]
+    - item.props: [{name, value}, ...]
+    """
+    if not isinstance(data, dict):
+        return {}
+
+    props = {}
+
+    # 从 data.props 提取
+    for prop in data.get("props") or []:
+        if isinstance(prop, dict):
+            name = str(prop.get("name", "")).strip()
+            value = str(prop.get("value", "")).strip()
+            if name and value:
+                props[name] = value
+
+    # 从 data.groupProps 提取（嵌套结构）
+    for group in data.get("groupProps") or []:
+        if isinstance(group, dict):
+            for prop in group.get("props") or []:
+                if isinstance(prop, dict):
+                    name = str(prop.get("name", "")).strip()
+                    value = str(prop.get("value", "")).strip()
+                    if name and value and name not in props:
+                        props[name] = value
+
+    # 从 item.props 提取（兼容不同 API 版本）
+    item = data.get("item") if isinstance(data.get("item"), dict) else {}
+    for prop in item.get("props") or []:
+        if isinstance(prop, dict):
+            name = str(prop.get("name", "")).strip()
+            value = str(prop.get("value", "")).strip()
+            if name and value and name not in props:
+                props[name] = value
+
+    return props
+
+
+def _merge_item_params(mtop_props, dom_params):
+    """合并 mtop 结构化参数和 DOM 提取的参数。优先使用 mtop 数据。"""
+    merged = {}
+    # mtop 数据优先（结构化，更可靠）
+    for key, value in (mtop_props or {}).items():
+        if value and len(str(value)) <= 200:
+            merged[key] = str(value)
+    # DOM 数据作为补充（填补 mtop 缺失的字段）
+    for key, value in (dom_params or {}).items():
+        if key not in merged and value and len(str(value)) <= 200:
+            merged[key] = str(value)
+    return merged
+
+
 def _parse_mtop_response(captured, source_url):
     """解析 mtop API 响应，转为 ExternalProductInput 格式"""
     detail = captured.get("detail")
@@ -1578,6 +1700,12 @@ def _parse_mtop_response(captured, source_url):
             "stock": 99,
         })
 
+    # 从 mtop 响应提取结构化商品属性
+    mtop_props = _extract_mtop_props(data)
+
+    # 从 mtop 属性中推断品牌
+    brand_hint = mtop_props.get("品牌") or "无品牌"
+
     return {
         "external_product_id": source_url,
         "title": title,
@@ -1588,9 +1716,13 @@ def _parse_mtop_response(captured, source_url):
         "supplier_name": "淘宝商家",
         "supplier_product_id": source_url,
         "category_hint": None,
-        "brand_hint": "无品牌",
+        "brand_hint": brand_hint,
         "weight_gram": 500,
-        "metadata": {},
+        "metadata": {
+            "collection_source": "mtop_api",
+            "taobao_item_params": mtop_props,
+            "taobao_item_params_quality": _item_params_quality_report(mtop_props, "mtop_structured"),
+        },
     }
 
 
@@ -1625,6 +1757,8 @@ def _append_unique_image(target, seen, url, limit=12):
     normalized = _normalize_taobao_image_url(url)
     if not normalized:
         return False
+    if _is_junk_image(normalized, 0, 0, 0, 0, ""):
+        return False
     key = _taobao_image_key(normalized) or normalized
     if key in seen:
         return False
@@ -1635,6 +1769,17 @@ def _append_unique_image(target, seen, url, limit=12):
 
 def _is_taobao_image_host(url):
     return any(host in url for host in ["alicdn.com", "tbcdn.cn", "taobaocdn.com"])
+
+
+def _looks_like_platform_asset_url(url):
+    url_lower = (url or "").lower()
+    if re.search(r"-\d+-tps-\d+-\d+", url_lower):
+        return True
+    return any(marker in url_lower for marker in [
+        "-tps-",            # 淘宝/天猫平台素材，常见于 logo、贴片和活动图
+        "-0-shopmanager",   # 店铺管理后台生成的店招/品牌图
+        "shopmanager",
+    ])
 
 
 def _looks_like_review_image(url, context_text=""):
@@ -1670,6 +1815,9 @@ def _is_junk_image(url, width, height, natural_width, natural_height, context_te
     """排除非商品图：logo、头像、badge、像素点、GIF 动画、网站/店铺装饰图等。"""
     url_lower = (url or "").lower()
     text_lower = (context_text or "").lower()
+
+    if _looks_like_platform_asset_url(url_lower):
+        return True
 
     # URL 模式黑名单
     junk_url_patterns = [
@@ -1762,6 +1910,49 @@ def _is_junk_image(url, width, height, natural_width, natural_height, context_te
     return False
 
 
+def _detail_image_metrics(width, height, natural_width, natural_height, context_text):
+    return {
+        "width": width,
+        "height": height,
+        "natural_width": natural_width,
+        "natural_height": natural_height,
+        "context_text": context_text,
+    }
+
+
+def _looks_like_leading_store_logo_detail(url, metrics, main_images):
+    """识别详情区开头的独立店铺 Logo，避免把店招当成详情图。"""
+    if not metrics or url in main_images:
+        return False
+    url_lower = (url or "").lower()
+    if any(marker in url_lower for marker in ["-0-item_pic", "/bao/uploaded/"]):
+        return False
+
+    effective_width = max(
+        float(metrics.get("natural_width") or 0),
+        float(metrics.get("width") or 0),
+    )
+    effective_height = max(
+        float(metrics.get("natural_height") or 0),
+        float(metrics.get("height") or 0),
+    )
+    min_dim = min(effective_width, effective_height)
+    max_dim = max(effective_width, effective_height)
+    if min_dim <= 0:
+        return False
+    near_square = max_dim / min_dim <= 1.08
+    return near_square and min_dim >= 800
+
+
+def _prune_leading_detail_logo_images(detail_images, metrics_by_url, main_images):
+    if len(detail_images) < 2:
+        return detail_images
+    first = detail_images[0]
+    if _looks_like_leading_store_logo_detail(first, metrics_by_url.get(first), main_images):
+        return detail_images[1:]
+    return detail_images
+
+
 def _extract_shop_name(shop_text):
     """从店铺文本中提取店铺名称。"""
     if not shop_text:
@@ -1783,70 +1974,32 @@ def _extract_shop_name(shop_text):
 
 
 def _preload_dom_detail_area(page):
-    """滚动预加载详情区图片，避免新版淘宝懒加载导致详情图为空。
+    """轻量滚动触发懒加载图片，模拟真人浏览节奏。
 
-    新版淘宝使用 IntersectionObserver 做懒加载，必须让图片进入视口
-    并等待足够时间才能触发加载。滚动结束后回到顶部触发主图区加载。
+    不再暴力滚到底再弹回顶部（那种行为是典型的爬虫信号），
+    改为只滚 2-3 屏，每屏停留足够时间让 IntersectionObserver 触发加载。
     """
     try:
         page.evaluate("""
             async () => {
                 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-                const maxY = Math.max(
-                    document.body?.scrollHeight || 0,
-                    document.documentElement?.scrollHeight || 0
-                );
-                // 先滚到顶部确保主图区可见
-                window.scrollTo(0, 0);
-                await sleep(350 + Math.random() * 200);
+                const viewHeight = window.innerHeight || 900;
 
-                // 逐步滚动触发 IntersectionObserver 懒加载
-                const step = 900;
-                for (let y = 0; y < Math.min(maxY, 9000); y += step) {
-                    window.scrollTo(0, y);
-                    await sleep(180 + Math.random() * 120);
+                // 先停留在顶部，确保主图区可见并开始加载
+                window.scrollTo(0, 0);
+                await sleep(1800 + Math.random() * 1200);
+
+                // 只滚 2-3 屏，模拟真人快速浏览商品详情
+                const maxScrolls = Math.floor(2 + Math.random() * 2);
+                for (let i = 1; i <= maxScrolls; i++) {
+                    const targetY = viewHeight * i * (0.7 + Math.random() * 0.3);
+                    window.scrollTo(0, targetY);
+                    // 每屏停留 1.5-3 秒，让图片有时间加载
+                    await sleep(1500 + Math.random() * 1500);
                 }
 
-                // 回到顶部，确保主图轮播区的图片也触发加载
-                window.scrollTo(0, 0);
-                await sleep(450 + Math.random() * 250);
-
-                // 尝试触发主图轮播区的其他图片（点击缩略图）
-                const thumbs = document.querySelectorAll(
-                    '[class*="PicGallery"] img, ' +
-                    '[class*="thumbnail"] img, ' +
-                    '.tb-thumb-item img, ' +
-                    '[class*="picList"] img, ' +
-                    '[class*="pic-gallery"] img'
-                );
-                for (const thumb of Array.from(thumbs).slice(0, 10)) {
-                    try {
-                        thumb.dispatchEvent(new MouseEvent('mouseover', {bubbles: true}));
-                        thumb.dispatchEvent(new MouseEvent('mouseenter', {bubbles: true}));
-                        await sleep(90 + Math.random() * 60);
-                    } catch(e) {}
-                }
-                await sleep(250);
-
-                // 等待可见的图片完成加载
-                const visibleImages = Array.from(document.querySelectorAll('img')).filter(
-                    img => {
-                        const src = img.currentSrc || img.src || img.getAttribute('data-src') || '';
-                        return src && src.includes('alicdn.com');
-                    }
-                );
-                await Promise.race([
-                    Promise.allSettled(
-                        visibleImages
-                            .filter(img => !img.complete)
-                            .slice(0, 30)
-                            .map(img => new Promise(resolve => {
-                                img.addEventListener('load', resolve, {once: true});
-                                img.addEventListener('error', resolve, {once: true});
-                            }))
-                    ),
-                    sleep(1800)
-                ]);
+                // 不弹回顶部 — 真人看完详情图后不会瞬间跳回顶部
+                // 如果爬虫真的需要主图数据，mtop 拦截已经拿到了
             }
         """)
     except Exception:
@@ -1950,6 +2103,43 @@ def _is_useful_dom_value(value):
     return True
 
 
+def _is_plausible_param_value(label, value):
+    _ = label
+    value = _clean_dom_text_value(value)
+    return _is_useful_dom_value(value)
+
+
+def _item_params_quality_report(params, source="dom"):
+    """评估提取参数的质量，返回质量报告。"""
+    params = params or {}
+    if not params:
+        return {"parser": source, "trusted": False, "suspicious_keys": [], "reason": "no_params"}
+
+    # 检查值是否看起来合理（不是其他字段的值错位）
+    suspicious = []
+    plausible_fabric = {"棉", "纯棉", "涤纶", "聚酯纤维", "锦纶", "氨纶", "丝绸", "亚麻", "雪纺", "牛仔", "棉麻", "冰丝"}
+    plausible_age = {"通用", "3周岁以下", "3周岁以上", "6周岁以上", "8周岁以上", "14周岁以上"}
+    plausible_safety = {"A类", "B类", "C类"}
+
+    fabric = params.get("面料", "")
+    if fabric and not any(f in fabric for f in plausible_fabric) and len(fabric) > 10:
+        suspicious.append("面料")
+
+    age = params.get("适用年龄", "")
+    if age and age not in plausible_age and not any(a in age for a in ["岁", "月", "年", "通用"]):
+        suspicious.append("适用年龄")
+
+    style = params.get("风格", "")
+    if style and any(c.isdigit() for c in style):
+        suspicious.append("风格")  # 风格不应包含数字
+
+    return {
+        "parser": source,
+        "trusted": len(suspicious) == 0,
+        "suspicious_keys": suspicious,
+    }
+
+
 def _extract_sku_options_from_text_nodes(text_nodes):
     options = {}
     cleaned_nodes = [_clean_dom_text_value(item) for item in text_nodes if _clean_dom_text_value(item)]
@@ -1979,20 +2169,15 @@ def _extract_params_from_text_nodes(text_nodes):
 
         previous_value = cleaned_nodes[idx - 1] if idx > 0 else ""
         next_value = cleaned_nodes[idx + 1] if idx + 1 < len(cleaned_nodes) else ""
-        value = ""
-        if (
-            node in VALUE_BEFORE_PARAM_LABELS
-            and previous_value
-            and previous_value not in labels
-            and _is_useful_dom_value(previous_value)
-        ):
-            value = previous_value
-        elif next_value and next_value not in labels and _is_useful_dom_value(next_value):
-            value = next_value
-        elif previous_value and previous_value not in labels and _is_useful_dom_value(previous_value):
-            value = previous_value
-        if value:
-            params[node] = value
+        candidates = []
+        if node in VALUE_BEFORE_PARAM_LABELS:
+            candidates.extend([previous_value, next_value])
+        else:
+            candidates.extend([next_value, previous_value])
+        for value in candidates:
+            if value and value not in labels and _is_plausible_param_value(node, value):
+                params[node] = value
+                break
 
     joined_text = " ".join(cleaned_nodes)
     for label in TAOBAO_PARAM_LABELS:
@@ -2003,7 +2188,7 @@ def _extract_params_from_text_nodes(text_nodes):
         match = re.search(pattern, joined_text)
         if match:
             value = _clean_dom_text_value(match.group(1))
-            if value and len(value) <= 120:
+            if value and len(value) <= 120 and _is_plausible_param_value(label, value):
                 params[label] = value
     return params
 
@@ -2090,11 +2275,7 @@ def _detect_stock_from_text_nodes(text_nodes):
 
 
 def _infer_category_hint(title, params):
-    title = title or ""
-    if any(word in title for word in ["女童", "儿童", "童装"]) and any(word in title for word in ["裙", "连衣裙"]):
-        return "童装/女童连衣裙"
-    if params.get("裙型") or params.get("裙长"):
-        return "服饰/连衣裙"
+    _ = (title, params)
     return None
 
 
@@ -2269,6 +2450,7 @@ def _extract_product_from_dom(page, source_url, preload_detail=True):
     text_nodes = data.get("textNodes") or []
     sku_options = _extract_sku_options_from_text_nodes(text_nodes)
     item_params = _extract_params_from_text_nodes(text_nodes)
+    item_params_quality = _item_params_quality_report(item_params)
     brand_hint = item_params.get("品牌") or "无品牌"
     has_stock, stock_quantity = _detect_stock_from_text_nodes(text_nodes)
     skus = _build_skus_from_options(sku_options, price, has_stock=has_stock, stock_quantity=stock_quantity)
@@ -2277,6 +2459,7 @@ def _extract_product_from_dom(page, source_url, preload_detail=True):
     detail_images = []
     seen_images = set()
     seen_detail_images = set()
+    detail_image_metrics = {}
     for item in data.get("images") or []:
         raw_url = item.get("src") if isinstance(item, dict) else ""
         url = _normalize_taobao_image_url(raw_url)
@@ -2318,6 +2501,13 @@ def _extract_product_from_dom(page, source_url, preload_detail=True):
             continue
 
         if _looks_like_detail_image(context_text):
+            detail_image_metrics[url] = _detail_image_metrics(
+                width,
+                height,
+                natural_width,
+                natural_height,
+                context_text,
+            )
             if _append_unique_image(detail_images, seen_detail_images, url, limit=60):
                 continue
             continue
@@ -2328,6 +2518,13 @@ def _extract_product_from_dom(page, source_url, preload_detail=True):
                 break
         elif looks_large or dimensions_unknown:
             # 尺寸足够大或尺寸未知的 alicdn 图归入详情图
+            detail_image_metrics[url] = _detail_image_metrics(
+                width,
+                height,
+                natural_width,
+                natural_height,
+                context_text,
+            )
             if _append_unique_image(detail_images, seen_detail_images, url, limit=60):
                 continue
 
@@ -2354,6 +2551,12 @@ def _extract_product_from_dom(page, source_url, preload_detail=True):
                 if _append_unique_image(images, seen_images, url, limit=12):
                     break
 
+    detail_images = _prune_leading_detail_logo_images(
+        detail_images,
+        detail_image_metrics,
+        set(images),
+    )
+
     shop_text = data.get("shopText") or ""
     return {
         "external_product_id": source_url,
@@ -2370,6 +2573,7 @@ def _extract_product_from_dom(page, source_url, preload_detail=True):
         "metadata": {
             "collection_source": "dom_fallback",
             "taobao_item_params": item_params,
+            "taobao_item_params_quality": item_params_quality,
             "taobao_sku_options": sku_options,
             "taobao_price_text": data.get("priceText"),
             "taobao_shop_text": shop_text,
@@ -2428,7 +2632,21 @@ def _merge_product_with_dom(primary, dom_product):
     if isinstance(primary.get("metadata"), dict):
         metadata.update(primary.get("metadata") or {})
     if isinstance(dom_product.get("metadata"), dict):
-        metadata.update(dom_product.get("metadata") or {})
+        dom_meta = dom_product.get("metadata") or {}
+        # 合并商品属性：mtop 结构化数据优先，DOM 数据补充缺失字段
+        mtop_params = metadata.get("taobao_item_params") or {}
+        dom_params = dom_meta.get("taobao_item_params") or {}
+        merged_params = _merge_item_params(mtop_params, dom_params)
+        if merged_params:
+            metadata["taobao_item_params"] = merged_params
+            metadata["taobao_item_params_quality"] = _item_params_quality_report(
+                merged_params, "mtop_dom_merged"
+            )
+        # 其他 DOM 元数据补充（不覆盖已有的 mtop 数据）
+        for key, value in dom_meta.items():
+            if key not in ("taobao_item_params", "taobao_item_params_quality"):
+                if key not in metadata:
+                    metadata[key] = value
     if metadata:
         metadata.setdefault("collection_source", "mtop_dom_enriched")
         merged["metadata"] = metadata
@@ -2531,12 +2749,13 @@ def run_login(profile_dir):
 
     ctx = None
     login_detected = False
+    login_reported = False
     try:
         _check_access_limit_cooldown(profile_dir)
         _check_captcha_failure_cooldown(profile_dir)
         ctx, page = launch_browser(profile_dir, headless=False)
         page.goto("https://login.taobao.com/", timeout=60000)
-        print("请在浏览器中完成淘宝登录（扫码或密码）。出现「快速进入」时会自动点击，检测到登录态后会自动保存退出。", file=sys.stderr)
+        print("请在浏览器中完成淘宝登录（扫码或密码）。出现「快速进入」时会自动点击；检测到登录态后窗口会继续保留，请确认登录完成后手动关闭。", file=sys.stderr)
 
         while True:
             time.sleep(1)
@@ -2557,13 +2776,12 @@ def run_login(profile_dir):
                     matched = _matched_login_cookie_names_from_context(ctx)
                     if matched:
                         login_detected = True
-                        print(
-                            f"已检测到淘宝登录态（匹配 cookie: {', '.join(matched)}），正在保存会话。",
-                            file=sys.stderr,
-                        )
-                        time.sleep(2)
-                        alive = False
-                        break
+                        if not login_reported:
+                            print(
+                                f"已检测到淘宝登录态（匹配 cookie: {', '.join(matched)}）。请在浏览器中确认账号状态，完成后手动关闭窗口。",
+                                file=sys.stderr,
+                            )
+                            login_reported = True
                     break
                 except Exception:
                     continue
@@ -2574,6 +2792,8 @@ def run_login(profile_dir):
             print("淘宝登录会话已保存。", file=sys.stderr)
         else:
             print("淘宝登录窗口已关闭，未检测到有效登录态。", file=sys.stderr)
+            print(json.dumps({"error": "淘宝登录窗口已关闭，未检测到有效登录态。"}, ensure_ascii=False))
+            sys.exit(1)
     except Exception as e:
         print(json.dumps({"error": str(e)}, ensure_ascii=False))
         print(f"登录过程出错: {e}", file=sys.stderr)
@@ -2748,10 +2968,16 @@ def run_batch_collect(urls, profile_dir, headed=False):
         ctx, page = launch_browser(profile_dir, headless=not headed)
         warm_up_taobao_home(page, skip_by_default=True)
 
-        delay_min = _env_float_range(BATCH_DELAY_MIN_ENV, 1.5, min_value=0.5, max_value=30.0)
-        delay_max = _env_float_range(BATCH_DELAY_MAX_ENV, 4.0, min_value=0.5, max_value=60.0)
+        delay_min = _env_float_range(BATCH_DELAY_MIN_ENV, 8.0, min_value=3.0, max_value=30.0)
+        delay_max = _env_float_range(BATCH_DELAY_MAX_ENV, 25.0, min_value=5.0, max_value=60.0)
         if delay_max < delay_min:
             delay_max = delay_min
+
+        # 长停顿节奏：每 long_pause_every 个商品插入一次长停顿
+        long_pause_every = random.randint(8, 12)
+        long_pause_min = 120  # 最短 2 分钟
+        long_pause_max = 300  # 最长 5 分钟
+        items_since_pause = 0
 
         for i, item in enumerate(urls):
             if isinstance(item, dict):
@@ -2778,7 +3004,22 @@ def run_batch_collect(urls, profile_dir, headed=False):
             # 商品间随机间隔，模拟正常浏览节奏
             if i > 0:
                 delay = random.uniform(delay_min, delay_max)
+                # 用 Gamma 分布替代均匀分布，更接近真人节奏（大部分偏快，偶尔很慢）
+                if random.random() < 0.25:
+                    delay = random.gammavariate(2.0, delay_max / 4.0)
                 time.sleep(delay)
+
+            # 长停顿模拟：每 long_pause_every 个商品后，像真人一样放下手机歇一会
+            items_since_pause += 1
+            if items_since_pause >= long_pause_every and i < len(urls) - 1:
+                pause_secs = random.uniform(long_pause_min, long_pause_max)
+                print(
+                    f"已采集 {items_since_pause} 个商品，进入长停顿 {pause_secs:.0f} 秒……",
+                    file=sys.stderr,
+                )
+                time.sleep(pause_secs)
+                items_since_pause = 0
+                long_pause_every = random.randint(8, 12)
 
             try:
                 parsed = _collect_single_product(ctx, page, url, profile_dir)
@@ -2822,18 +3063,8 @@ def _navigate_to_product_detail(page, url):
     if _is_blocked(page):
         return False
 
-    # 模拟真实用户浏览行为，触发更多 mtop 请求
-    try:
-        time.sleep(random.uniform(0.6, 1.2))
-        _hover_first_visible(page, "#J_ImgBooth, .tb-main-pic img, .gallery img")
-        time.sleep(random.uniform(0.35, 0.8))
-        human_like_scroll(page, random.randint(400, 800))
-        time.sleep(random.uniform(0.45, 0.9))
-        _hover_first_visible(page, ".tb-sku, .sku-content, .J_TSaleProp, .tb-prop, [class*='sku']")
-        time.sleep(random.uniform(0.25, 0.6))
-        human_like_scroll(page, random.randint(200, 500))
-    except Exception as e:
-        print(f"页面交互异常（继续采集）: {e}", file=sys.stderr)
+    # 随机化浏览行为，触发更多 mtop 请求
+    _random_browse_interaction(page)
 
     return True
 

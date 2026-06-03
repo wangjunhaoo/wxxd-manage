@@ -7,26 +7,46 @@ pub(in crate::commands) async fn upload_or_reuse_asset(
     item: &PendingPublishItem,
     asset: &ProductAsset,
 ) -> AppResult<AssetUploadOutcome> {
-    if let Some(error_summary) = validate_image_source_url(&asset.source_url) {
-        record_asset_failure(app, item, asset, "INVALID_IMAGE_SOURCE_URL", &error_summary)?;
+    let asset = match normalize_product_asset(asset) {
+        Ok(asset) => asset,
+        Err(error_summary) => {
+            record_asset_failure(app, item, asset, "INVALID_IMAGE_SOURCE_URL", &error_summary)?;
+            mark_publish_item_failed_for_app(
+                app,
+                item,
+                "INVALID_IMAGE_SOURCE_URL",
+                &error_summary,
+            )?;
+            return Ok(AssetUploadOutcome::Failed);
+        }
+    };
+
+    if let Some(error_summary) = validate_image_source_url(app, &asset.source_url) {
+        record_asset_failure(
+            app,
+            item,
+            &asset,
+            "INVALID_IMAGE_SOURCE_URL",
+            &error_summary,
+        )?;
         mark_publish_item_failed_for_app(app, item, "INVALID_IMAGE_SOURCE_URL", &error_summary)?;
         return Ok(AssetUploadOutcome::Failed);
     }
 
     if is_wechat_image_url(&asset.source_url) {
-        record_asset_success(app, item, asset, &asset.source_url, "reused")?;
+        record_asset_success(app, item, &asset, &asset.source_url, "reused")?;
         return Ok(AssetUploadOutcome::Reused);
     }
 
     if let Some(wechat_url) = find_cached_asset_url(app, &item.shop_id, &asset.source_url)? {
-        record_asset_success(app, item, asset, &wechat_url, "reused")?;
+        record_asset_success(app, item, &asset, &wechat_url, "reused")?;
         return Ok(AssetUploadOutcome::Reused);
     }
 
     let prepared = match prepare_image_for_upload(app, &asset.source_url).await {
         Ok(prepared) => prepared,
         Err(error_summary) => {
-            record_asset_failure(app, item, asset, "IMAGE_PREPROCESS_FAILED", &error_summary)?;
+            record_asset_failure(app, item, &asset, "IMAGE_PREPROCESS_FAILED", &error_summary)?;
             mark_publish_item_failed_for_app(app, item, "IMAGE_PREPROCESS_FAILED", &error_summary)?;
             return Ok(AssetUploadOutcome::Failed);
         }
@@ -49,7 +69,7 @@ pub(in crate::commands) async fn upload_or_reuse_asset(
             record_asset_failure(
                 app,
                 item,
-                asset,
+                &asset,
                 "WECHAT_IMAGE_UPLOAD_HTTP_FAILED",
                 &error_summary,
             )?;
@@ -77,7 +97,7 @@ pub(in crate::commands) async fn upload_or_reuse_asset(
                 Some(&format!("image upload ok, {}", prepared.summary)),
             )?;
             drop(conn);
-            record_asset_success(app, item, asset, &result.img_url, "success")?;
+            record_asset_success(app, item, &asset, &result.img_url, "success")?;
             insert_task_log_for_app(
                 app,
                 &item.job_id,
@@ -106,15 +126,29 @@ pub(in crate::commands) async fn upload_or_reuse_asset(
             drop(conn);
             let error_code = format!("WECHAT_IMAGE_UPLOAD_{}", error.errcode);
             let error_summary = format!("微信图片上传失败：{}", error.errmsg);
-            record_asset_failure(app, item, asset, &error_code, &error_summary)?;
+            record_asset_failure(app, item, &asset, &error_code, &error_summary)?;
             mark_publish_item_failed_for_app(app, item, &error_code, &error_summary)?;
             Ok(AssetUploadOutcome::Failed)
         }
     }
 }
 
-pub(in crate::commands) fn validate_image_source_url(source_url: &str) -> Option<String> {
-    let parsed = match Url::parse(source_url) {
+pub(in crate::commands) fn validate_image_source_url(
+    app: &AppHandle,
+    source_url: &str,
+) -> Option<String> {
+    let source_url = match normalize_image_source_url(source_url) {
+        Ok(value) => value,
+        Err(error) => return Some(error),
+    };
+
+    if looks_like_local_image_source(&source_url) {
+        return resolve_collection_uploaded_image_path(app, &source_url)
+            .err()
+            .map(|error| format!("本地图片不可用：{error}"));
+    }
+
+    let parsed = match Url::parse(&source_url) {
         Ok(parsed) => parsed,
         Err(error) => return Some(format!("图片 URL 不合法：{error}")),
     };
@@ -135,72 +169,212 @@ pub(in crate::commands) fn validate_image_source_url(source_url: &str) -> Option
     None
 }
 
+pub(in crate::commands) fn normalize_product_asset(
+    asset: &ProductAsset,
+) -> Result<ProductAsset, String> {
+    Ok(ProductAsset {
+        kind: asset.kind,
+        sort_order: asset.sort_order,
+        source_url: normalize_image_source_url(&asset.source_url)?,
+    })
+}
+
+pub(in crate::commands) fn normalize_image_source_url(source_url: &str) -> Result<String, String> {
+    let trimmed = source_url.trim();
+    if trimmed.is_empty() {
+        return Err("图片 URL 不能为空".to_string());
+    }
+    if looks_like_local_image_source(trimmed) {
+        return Ok(trimmed.to_string());
+    }
+
+    let candidate = if trimmed.starts_with("//") {
+        format!("https:{trimmed}")
+    } else {
+        trimmed.to_string()
+    };
+    let mut parsed = Url::parse(&candidate).map_err(|error| format!("图片 URL 不合法：{error}"))?;
+    let normalized_path = collapse_url_path_slashes(parsed.path());
+    if normalized_path != parsed.path() {
+        parsed.set_path(&normalized_path);
+    }
+    Ok(parsed.to_string())
+}
+
+fn collapse_url_path_slashes(path: &str) -> String {
+    let mut normalized = String::with_capacity(path.len());
+    let mut previous_slash = false;
+    for ch in path.chars() {
+        if ch == '/' {
+            if !previous_slash {
+                normalized.push(ch);
+            }
+            previous_slash = true;
+        } else {
+            normalized.push(ch);
+            previous_slash = false;
+        }
+    }
+    if normalized.is_empty() {
+        "/".to_string()
+    } else {
+        normalized
+    }
+}
+
 pub(in crate::commands) async fn prepare_image_for_upload(
     app: &AppHandle,
     source_url: &str,
 ) -> Result<PreparedImageUpload, String> {
+    if looks_like_local_image_source(source_url) {
+        let local_path = resolve_collection_uploaded_image_path(app, source_url)?;
+        let bytes = fs::read(&local_path).map_err(|error| format!("读取本地图片失败：{error}"))?;
+        return prepare_image_bytes_for_upload(app, source_url, bytes);
+    }
+
     let http = reqwest::Client::builder()
         .redirect(Policy::none())
         .timeout(StdDuration::from_secs(IMAGE_DOWNLOAD_TIMEOUT_SECONDS))
         .build()
         .map_err(|error| format!("初始化图片下载客户端失败：{error}"))?;
-    let response = http
-        .get(source_url)
-        .header(USER_AGENT, IMAGE_USER_AGENT)
-        .send()
-        .await
-        .map_err(|error| format!("下载图片失败：{error}"))?;
-    let status = response.status();
-    if status.is_redirection() {
-        let location = response
-            .headers()
-            .get("location")
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or("");
-        return Err(if location.is_empty() {
-            format!("图片 URL 返回 {status} 跳转，微信 URL 上传不支持 301/302")
-        } else {
-            format!("图片 URL 返回 {status} 跳转到 {location}，微信 URL 上传不支持 301/302")
-        });
-    }
-    if !status.is_success() {
-        return Err(format!("图片 URL 打开失败：HTTP {status}"));
-    }
+    let mut last_error = None;
+    let mut downloaded_bytes = None;
+    for attempt in 1..=3 {
+        let response = match http
+            .get(source_url)
+            .header(USER_AGENT, IMAGE_USER_AGENT)
+            .header(ACCEPT, IMAGE_ACCEPT_HEADER)
+            .header(ACCEPT_ENCODING, "identity")
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                last_error = Some(format!("下载图片失败：{error}"));
+                continue;
+            }
+        };
+        let status = response.status();
+        if status.is_redirection() {
+            let location = response
+                .headers()
+                .get("location")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("");
+            return Err(if location.is_empty() {
+                format!("图片 URL 返回 {status} 跳转，微信 URL 上传不支持 301/302")
+            } else {
+                format!("图片 URL 返回 {status} 跳转到 {location}，微信 URL 上传不支持 301/302")
+            });
+        }
+        if !status.is_success() {
+            return Err(format!("图片 URL 打开失败：HTTP {status}"));
+        }
 
-    let content_type = response
-        .headers()
-        .get(CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| {
-            value
-                .split(';')
-                .next()
-                .unwrap_or(value)
-                .trim()
-                .to_ascii_lowercase()
-        });
-    if matches!(content_type.as_deref(), Some("text/xml" | "image/svg+xml")) {
-        return Err("SVG 暂不支持本地规范化，请先转为 PNG/JPEG 再铺货".to_string());
-    }
-    if let Some(content_length) = response
-        .headers()
-        .get(CONTENT_LENGTH)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
-    {
-        if content_length > IMAGE_DOWNLOAD_MAX_BYTES {
-            return Err(format!(
-                "图片过大：{}，超过本地下载上限 {}",
-                format_bytes_short(content_length as usize),
-                format_bytes_short(IMAGE_DOWNLOAD_MAX_BYTES as usize)
-            ));
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| {
+                value
+                    .split(';')
+                    .next()
+                    .unwrap_or(value)
+                    .trim()
+                    .to_ascii_lowercase()
+            });
+        if matches!(content_type.as_deref(), Some("text/xml" | "image/svg+xml")) {
+            return Err("SVG 暂不支持本地规范化，请先转为 PNG/JPEG 再铺货".to_string());
+        }
+        if let Some(content_length) = response
+            .headers()
+            .get(CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            if content_length > IMAGE_DOWNLOAD_MAX_BYTES {
+                return Err(format!(
+                    "图片过大：{}，超过本地下载上限 {}",
+                    format_bytes_short(content_length as usize),
+                    format_bytes_short(IMAGE_DOWNLOAD_MAX_BYTES as usize)
+                ));
+            }
+        }
+
+        match response.bytes().await {
+            Ok(bytes) => {
+                downloaded_bytes = Some(bytes);
+                break;
+            }
+            Err(error) => {
+                last_error = Some(format!("读取图片内容失败：{error}"));
+                if attempt == 3 {
+                    return Err(last_error.unwrap_or_else(|| "读取图片内容失败".to_string()));
+                }
+            }
         }
     }
+    let bytes = downloaded_bytes
+        .ok_or_else(|| last_error.unwrap_or_else(|| "下载图片失败：未收到图片内容".to_string()))?;
+    prepare_image_bytes_for_upload(app, source_url, bytes.to_vec())
+}
 
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|error| format!("读取图片内容失败：{error}"))?;
+pub(in crate::commands) fn collection_uploaded_image_dir(app: &AppHandle) -> AppResult<PathBuf> {
+    let dir = app.path().app_data_dir()?.join("collection-assets");
+    fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+pub(in crate::commands) fn looks_like_local_image_source(source_url: &str) -> bool {
+    let trimmed = source_url.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.starts_with("//") {
+        return false;
+    }
+    Url::parse(trimmed)
+        .map(|url| url.scheme() == "file")
+        .unwrap_or_else(|_| Path::new(trimmed).is_absolute())
+}
+
+pub(in crate::commands) fn resolve_collection_uploaded_image_path(
+    app: &AppHandle,
+    source_url: &str,
+) -> Result<PathBuf, String> {
+    let trimmed = source_url.trim();
+    let path = if let Ok(parsed) = Url::parse(trimmed) {
+        if parsed.scheme() != "file" {
+            return Err("只允许 file:// 本地图片或采集上传目录内的绝对路径".to_string());
+        }
+        parsed
+            .to_file_path()
+            .map_err(|_| "file:// 图片路径无法解析".to_string())?
+    } else {
+        PathBuf::from(trimmed)
+    };
+
+    let dir = collection_uploaded_image_dir(app)
+        .map_err(|error| format!("读取采集图片目录失败：{error}"))?
+        .canonicalize()
+        .map_err(|error| format!("采集图片目录不可用：{error}"))?;
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| format!("图片文件不存在或不可访问：{error}"))?;
+    if !canonical.starts_with(&dir) {
+        return Err("本地图片必须位于应用采集图片目录内".to_string());
+    }
+    if !canonical.is_file() {
+        return Err("本地图片不是文件".to_string());
+    }
+    Ok(canonical)
+}
+
+pub(in crate::commands) fn prepare_image_bytes_for_upload(
+    app: &AppHandle,
+    source_url: &str,
+    bytes: Vec<u8>,
+) -> Result<PreparedImageUpload, String> {
     if bytes.is_empty() {
         return Err("图片内容为空".to_string());
     }
@@ -550,4 +724,35 @@ pub(in crate::commands) fn record_asset_failure(
         })),
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_image_source_url_collapses_path_slashes_only() {
+        let normalized = normalize_image_source_url(
+            "https://img.example.com/a//b///c.jpg?next=https://cdn.example.com/x//y",
+        )
+        .expect("图片 URL 应可规范化");
+
+        assert_eq!(
+            normalized,
+            "https://img.example.com/a/b/c.jpg?next=https://cdn.example.com/x//y"
+        );
+    }
+
+    #[test]
+    fn normalize_image_source_url_supports_protocol_relative_images() {
+        let normalized = normalize_image_source_url("//img.example.com//a///b.jpg")
+            .expect("协议相对图片 URL 应可规范化");
+
+        assert_eq!(normalized, "https://img.example.com/a/b.jpg");
+    }
+
+    #[test]
+    fn protocol_relative_url_is_not_treated_as_local_file() {
+        assert!(!looks_like_local_image_source("//img.example.com/a.jpg"));
+    }
 }

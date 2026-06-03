@@ -16,6 +16,10 @@ src-tauri/target
 artifacts
 .venv/
 .venv-*/
+runtime/python-vendor/
+runtime/node/node_modules/
+runtime/bin/node
+runtime/.npm-cache/
 .serena/
 *.local
 

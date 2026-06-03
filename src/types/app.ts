@@ -71,8 +71,11 @@ export type CategoryCatalogShopSummary = {
   detail_count: number;
   product_rule_count: number;
   delivery_rule_count: number;
+  category_relation_count: number;
+  active_category_relation_count: number;
   freight_template_count: number;
   last_category_sync_at: string | null;
+  last_relation_sync_at: string | null;
   last_rule_sync_at: string | null;
   last_freight_sync_at: string | null;
 };
@@ -90,8 +93,22 @@ export type CategoryCacheView = {
   has_detail: boolean;
   has_product_rule: boolean;
   has_delivery_rule: boolean;
+  is_available_for_shop: boolean;
   synced_at: string;
   detail_synced_at: string | null;
+};
+
+export type CategoryRelationView = {
+  shop_id: string;
+  shop_name: string;
+  cat_id: number;
+  category_name: string | null;
+  status: number;
+  uneffective_reason: string | null;
+  effective_time: number | null;
+  uneffective_time: number | null;
+  qua_id: number | null;
+  synced_at: string;
 };
 
 export type FreightTemplateView = {
@@ -104,6 +121,7 @@ export type FreightTemplateView = {
 export type CategoryCatalogListResult = {
   shops: CategoryCatalogShopSummary[];
   categories: CategoryCacheView[];
+  category_relations: CategoryRelationView[];
   freight_templates: FreightTemplateView[];
 };
 
@@ -111,6 +129,7 @@ export type CategoryCatalogSyncResult = {
   task_id: string;
   shop_id: string;
   synced_categories: number;
+  synced_category_relations: number;
   synced_freight_templates: number;
   failed_steps: string[];
 };
@@ -196,48 +215,6 @@ export type PublishAttributeFillBatchResult = {
   generated_suggestions: number;
 };
 
-export type PublishAttributeSuggestionSkuValue = {
-  sku_index: number;
-  value: string;
-};
-
-export type PublishAttributeSuggestionView = {
-  id: string;
-  item_id: string;
-  job_id: string;
-  product_row_id: string;
-  shop_id: string;
-  shop_name: string;
-  external_product_id: string;
-  title: string;
-  attr_kind: string;
-  attr_key: string;
-  suggested_value: string | null;
-  sku_values: PublishAttributeSuggestionSkuValue[];
-  confidence: number;
-  source: string;
-  applied: boolean;
-  allowed_values: string[];
-  reason: string | null;
-  updated_at: string;
-};
-
-export type PublishAttributeSuggestionListResult = {
-  items: PublishAttributeSuggestionView[];
-  total: number;
-  pending_count: number;
-  applied_count: number;
-};
-
-export type PublishAttributeSuggestionApplyResult = {
-  processed_suggestions: number;
-  processed_items: number;
-  applied_suggestions: number;
-  updated_items: number;
-  failed_suggestions: number;
-  message: string;
-};
-
 export type PublishCategoryPrecheckBatchResult = {
   processed_jobs: number;
   processed_items: number;
@@ -274,6 +251,19 @@ export type ProductListingBatchResult = {
   processed_items: number;
   listing_submitted_items: number;
   failed_items: number;
+};
+
+export type PublishPipelineRunResult = {
+  executed_steps: string[];
+  skipped_steps: string[];
+  errors: AutomationStepError[];
+  publish_precheck: PublishTaskBatchResult | null;
+  publish_attribute_fill: PublishAttributeFillBatchResult | null;
+  publish_category_precheck: PublishCategoryPrecheckBatchResult | null;
+  publish_asset_upload: AssetUploadBatchResult | null;
+  publish_submit: ProductSubmitBatchResult | null;
+  publish_status_sync: ProductStatusSyncBatchResult | null;
+  publish_listing: ProductListingBatchResult | null;
 };
 
 export type PriceUpdateJobCreated = {
@@ -1002,6 +992,20 @@ export type BackupRestoreResult = {
   message: string;
 };
 
+export type WorkspaceResetTableCount = {
+  name: string;
+  before: number;
+  after: number;
+};
+
+export type CollectionPublishWorkspaceResetResult = {
+  backup: BackupInfo;
+  integrity_ok: boolean;
+  integrity_message: string;
+  counts: WorkspaceResetTableCount[];
+  message: string;
+};
+
 export type ShipmentRecordResult = {
   shipment_id: string;
   order_id: string;
@@ -1179,10 +1183,10 @@ export type CollectionTaskView = {
   source_url: string;
   category_path: string;
   target_shop_ids: string[];
-  status: 'pending' | 'running' | 'success' | 'failed';
+  status: "pending" | "running" | "success" | "failed";
   error_summary: string | null;
   collected_data: string | null;
-  review_status: 'pending' | 'passed' | 'needs_review' | 'blocked' | 'failed';
+  review_status: "pending" | "passed" | "needs_review" | "blocked" | "failed";
   review_summary: string | null;
   reviewed_data: string | null;
   review_result_json: string | null;
@@ -1225,4 +1229,17 @@ export type CollectionReviewConfirmRequest = {
   title?: string;
   category_ids?: number[];
   category_path?: string;
+  target_shop_ids?: string[];
+};
+
+export type CollectionImageUploadRequest = {
+  task_id: string;
+  kind: "main" | "detail";
+  file_path: string;
+};
+
+export type CollectionImageRemoveRequest = {
+  task_id: string;
+  kind: "main" | "detail";
+  image_url: string;
 };

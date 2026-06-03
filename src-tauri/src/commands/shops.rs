@@ -444,11 +444,17 @@ pub fn list_category_catalog(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| format!("%{value}%"));
-    let limit = limit.unwrap_or(100).clamp(1, 500);
+    let limit = limit.unwrap_or(100).clamp(1, 2_000);
 
     Ok(CategoryCatalogListResult {
         shops: load_category_catalog_shop_summaries(&conn)?,
         categories: load_category_cache_views(
+            &conn,
+            normalized_shop_id.as_deref(),
+            normalized_keyword.as_deref(),
+            limit,
+        )?,
+        category_relations: load_category_relation_views(
             &conn,
             normalized_shop_id.as_deref(),
             normalized_keyword.as_deref(),
@@ -479,63 +485,218 @@ pub async fn sync_shop_category_catalog(
             &task_id,
             None,
             "info",
-            "开始同步微信类目树和运费模板",
+            "开始同步店铺生效类目权限和运费模板",
             Some(&serde_json::json!({ "shop_id": shop_id })),
         )?;
     }
 
     let mut synced_categories = 0i64;
+    let mut synced_category_relations = 0i64;
     let mut synced_freight_templates = 0i64;
     let mut failed_steps = Vec::new();
+    let mut relation_list_synced = false;
 
-    let category_call = client.get_all_categories(&access_token).await?;
-    match &category_call.result {
+    let relation_call = client
+        .get_category_relation_list(&access_token, Some(1))
+        .await?;
+    let mut active_relations = Vec::new();
+    match &relation_call.result {
         WechatCallResult::Success(result) => {
-            let categories = extract_wechat_categories(&result.raw_payload);
-            synced_categories = categories.len() as i64;
+            let relations = extract_wechat_category_relations(&result.raw_payload);
+            synced_category_relations = relations.len() as i64;
             let conn = open_connection(&app)?;
-            upsert_wechat_categories(&conn, &shop_id, &categories, &now_shanghai())?;
+            upsert_wechat_category_relations(&conn, &shop_id, &relations, &now_shanghai())?;
+            relation_list_synced = true;
+            active_relations = relations;
             insert_api_call_log(
                 &conn,
                 Some(&shop_id),
-                category_call.meta.endpoint,
-                category_call.meta.method,
+                relation_call.meta.endpoint,
+                relation_call.meta.method,
                 "success",
                 None,
                 None,
-                Some(&format!("synced categories={synced_categories}")),
+                Some(&format!(
+                    "synced category relations={synced_category_relations}"
+                )),
             )?;
             insert_task_log(
                 &conn,
                 &task_id,
                 None,
                 "info",
-                &format!("类目树同步完成：{synced_categories} 个类目"),
+                &format!("店铺生效类目权限同步完成：{synced_category_relations} 个类目"),
                 None,
             )?;
         }
         WechatCallResult::ApiError(error) => {
-            failed_steps.push(format!("类目树同步失败：{}", error.errmsg));
+            failed_steps.push(format!("店铺类目权限同步失败：{}", error.errmsg));
             let conn = open_connection(&app)?;
             insert_api_call_log(
                 &conn,
                 Some(&shop_id),
-                category_call.meta.endpoint,
-                category_call.meta.method,
+                relation_call.meta.endpoint,
+                relation_call.meta.method,
                 "api_error",
                 Some(error.errcode),
                 Some(&error.errmsg),
-                Some("category all api error"),
+                Some("category relation list api error"),
             )?;
             insert_task_log(
                 &conn,
                 &task_id,
                 None,
                 "error",
-                &format!("类目树同步失败：{}", error.errmsg),
+                &format!("店铺类目权限同步失败：{}", error.errmsg),
                 Some(&serde_json::json!({ "errcode": error.errcode })),
             )?;
         }
+    }
+
+    if relation_list_synced {
+        let mut categories_by_id = std::collections::BTreeMap::<i64, CachedWechatCategory>::new();
+        let active_leaf_ids = active_relations
+            .iter()
+            .map(|relation| relation.cat_id)
+            .collect::<BTreeSet<_>>();
+        for relation in &active_relations {
+            let detail_call = client
+                .get_category_relation_detail(&access_token, relation.cat_id)
+                .await?;
+            match &detail_call.result {
+                WechatCallResult::Success(raw) => {
+                    for category in extract_wechat_categories(&raw.raw_payload) {
+                        categories_by_id.insert(category.cat_id, category);
+                    }
+                    let conn = open_connection(&app)?;
+                    insert_api_call_log(
+                        &conn,
+                        Some(&shop_id),
+                        detail_call.meta.endpoint,
+                        detail_call.meta.method,
+                        "success",
+                        None,
+                        None,
+                        Some(&format!(
+                            "synced category relation detail cat_id={}",
+                            relation.cat_id
+                        )),
+                    )?;
+                }
+                WechatCallResult::ApiError(error) => {
+                    failed_steps.push(format!(
+                        "类目权限详情失败 {}：{}",
+                        relation.cat_id, error.errmsg
+                    ));
+                    insert_api_error_and_task_log(
+                        &app,
+                        &task_id,
+                        &shop_id,
+                        &detail_call.meta,
+                        error,
+                    )?;
+                }
+            }
+        }
+        if active_leaf_ids
+            .iter()
+            .any(|cat_id| cached_category_path_len(&categories_by_id, *cat_id) < 3)
+        {
+            let all_category_call = client.get_all_categories(&access_token).await?;
+            match &all_category_call.result {
+                WechatCallResult::Success(raw) => {
+                    let all_categories = extract_wechat_categories(&raw.raw_payload);
+                    merge_active_category_paths(
+                        &mut categories_by_id,
+                        all_categories,
+                        &active_leaf_ids,
+                    );
+                    let conn = open_connection(&app)?;
+                    insert_api_call_log(
+                        &conn,
+                        Some(&shop_id),
+                        all_category_call.meta.endpoint,
+                        all_category_call.meta.method,
+                        "success",
+                        None,
+                        None,
+                        Some("used all category tree as path dictionary for active relations"),
+                    )?;
+                }
+                WechatCallResult::ApiError(error) => {
+                    failed_steps.push(format!("类目路径字典同步失败：{}", error.errmsg));
+                    let conn = open_connection(&app)?;
+                    insert_api_call_log(
+                        &conn,
+                        Some(&shop_id),
+                        all_category_call.meta.endpoint,
+                        all_category_call.meta.method,
+                        "api_error",
+                        Some(error.errcode),
+                        Some(&error.errmsg),
+                        Some("all category dictionary api error"),
+                    )?;
+                    insert_task_log(
+                        &conn,
+                        &task_id,
+                        None,
+                        "warn",
+                        &format!("类目路径字典同步失败：{}", error.errmsg),
+                        Some(&serde_json::json!({ "errcode": error.errcode })),
+                    )?;
+                }
+            }
+        }
+        let missing_leaf_ids = active_leaf_ids
+            .iter()
+            .filter(|cat_id| !categories_by_id.contains_key(cat_id))
+            .copied()
+            .collect::<Vec<_>>();
+        for cat_id in missing_leaf_ids {
+            let detail_call = client.get_category_detail(&access_token, cat_id).await?;
+            match &detail_call.result {
+                WechatCallResult::Success(raw) => {
+                    if let Some(category) =
+                        extract_wechat_category_detail_info(&raw.raw_payload, cat_id)
+                    {
+                        categories_by_id.insert(category.cat_id, category);
+                    }
+                    let conn = open_connection(&app)?;
+                    insert_api_call_log(
+                        &conn,
+                        Some(&shop_id),
+                        detail_call.meta.endpoint,
+                        detail_call.meta.method,
+                        "success",
+                        None,
+                        None,
+                        Some(&format!("synced category leaf name cat_id={cat_id}")),
+                    )?;
+                }
+                WechatCallResult::ApiError(error) => {
+                    failed_steps.push(format!("类目名称兜底同步失败 {cat_id}：{}", error.errmsg));
+                    insert_api_error_and_task_log(
+                        &app,
+                        &task_id,
+                        &shop_id,
+                        &detail_call.meta,
+                        error,
+                    )?;
+                }
+            }
+        }
+        let categories = categories_by_id.into_values().collect::<Vec<_>>();
+        synced_categories = categories.len() as i64;
+        let conn = open_connection(&app)?;
+        replace_wechat_categories_for_shop(&conn, &shop_id, &categories, &now_shanghai())?;
+        insert_task_log(
+            &conn,
+            &task_id,
+            None,
+            "info",
+            &format!("店铺类目路径同步完成：{synced_categories} 个类目节点"),
+            None,
+        )?;
     }
 
     match sync_freight_template_ids(&app, &client, &access_token, &shop_id, &task_id).await {
@@ -545,7 +706,10 @@ pub async fn sync_shop_category_catalog(
 
     let final_status = if failed_steps.is_empty() {
         "success"
-    } else if synced_categories == 0 && synced_freight_templates == 0 {
+    } else if synced_categories == 0
+        && synced_category_relations == 0
+        && synced_freight_templates == 0
+    {
         "failed"
     } else {
         "partial_success"
@@ -560,9 +724,64 @@ pub async fn sync_shop_category_catalog(
         task_id,
         shop_id,
         synced_categories,
+        synced_category_relations,
         synced_freight_templates,
         failed_steps,
     })
+}
+
+fn cached_category_path_len(
+    categories_by_id: &BTreeMap<i64, CachedWechatCategory>,
+    leaf_cat_id: i64,
+) -> usize {
+    let mut length = 0;
+    let mut current = Some(leaf_cat_id);
+    let mut visited = BTreeSet::new();
+    for _ in 0..8 {
+        let Some(cat_id) = current else {
+            break;
+        };
+        if !visited.insert(cat_id) {
+            break;
+        }
+        let Some(category) = categories_by_id.get(&cat_id) else {
+            break;
+        };
+        length += 1;
+        current = category.parent_cat_id.filter(|value| *value > 0);
+    }
+    length
+}
+
+fn merge_active_category_paths(
+    categories_by_id: &mut BTreeMap<i64, CachedWechatCategory>,
+    all_categories: Vec<CachedWechatCategory>,
+    active_leaf_ids: &BTreeSet<i64>,
+) {
+    let mut all_categories_by_id = all_categories
+        .into_iter()
+        .map(|category| (category.cat_id, category))
+        .collect::<BTreeMap<_, _>>();
+    for leaf_cat_id in active_leaf_ids {
+        let mut current = Some(*leaf_cat_id);
+        let mut visited = BTreeSet::new();
+        for _ in 0..8 {
+            let Some(cat_id) = current else {
+                break;
+            };
+            if !visited.insert(cat_id) {
+                break;
+            }
+            if let Some(category) = all_categories_by_id.remove(&cat_id) {
+                current = category.parent_cat_id.filter(|value| *value > 0);
+                categories_by_id.insert(cat_id, category);
+            } else if let Some(category) = categories_by_id.get(&cat_id) {
+                current = category.parent_cat_id.filter(|value| *value > 0);
+            } else {
+                break;
+            }
+        }
+    }
 }
 
 #[tauri::command]

@@ -3,6 +3,7 @@ use super::*;
 use calamine::{open_workbook, Reader, Xlsx};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
 static COLLECTOR_RUNNING: AtomicBool = AtomicBool::new(false);
@@ -120,7 +121,9 @@ pub async fn open_taobao_login(app: AppHandle) -> AppResult<()> {
     }
 
     // 异步启动登录子进程，直到用户关闭浏览器；本地冷却期会由脚本预检拦截。
-    let output = tokio::process::Command::new(resolve_python_binary())
+    let mut command = python_command(&app);
+    command.env("WX_XD_TAOBAO_IGNORE_CAPTCHA_FAILURE_COOLDOWN", "1");
+    let output = command
         .arg(&script_path)
         .arg("login")
         .arg("--profile-dir")
@@ -239,12 +242,44 @@ pub fn clear_collection_tasks(app: AppHandle) -> AppResult<()> {
 }
 
 #[tauri::command]
+pub fn delete_taobao_profile(app: AppHandle) -> AppResult<String> {
+    if COLLECTOR_RUNNING.load(Ordering::SeqCst) {
+        return Err(AppError::Validation(
+            "后台采集正在运行，请等待采集结束后再删除 profile。".to_string(),
+        ));
+    }
+    let app_data_dir = app.path().app_data_dir()?;
+    let profile_dir = app_data_dir.join("taobao_profile");
+    let profile_str = profile_dir.to_string_lossy().to_string();
+    if profile_dir.exists() {
+        std::fs::remove_dir_all(&profile_dir)
+            .map_err(|e| AppError::Validation(format!("删除 profile 失败: {}", e)))?;
+    }
+    Ok(profile_str)
+}
+
+#[tauri::command]
 pub fn resume_collection_tasks(app: AppHandle) -> AppResult<i64> {
     let active_count = get_all_pending_tasks(&app)?.len() as i64;
     if active_count > 0 {
         trigger_collection_worker(app);
     }
     Ok(active_count)
+}
+
+#[tauri::command]
+pub fn retry_all_failed_collection_tasks(app: AppHandle) -> AppResult<i64> {
+    let conn = open_connection(&app)?;
+    let now = now_shanghai();
+    let count = conn.execute(
+        "UPDATE collection_tasks SET status = 'pending', error_summary = NULL, updated_at = ?1
+         WHERE status = 'failed'",
+        params![now],
+    )?;
+    if count > 0 {
+        trigger_collection_worker(app);
+    }
+    Ok(count as i64)
 }
 
 #[tauri::command]
@@ -256,37 +291,113 @@ pub async fn run_collection_review_once(
     let target_shop_ids = unique_non_empty_strings(request.target_shop_ids);
     let limit = request.limit.unwrap_or(50).clamp(1, 200);
     let tasks = load_collection_review_tasks(&app, &task_ids, limit)?;
+    ensure_collection_review_target_shop_ready(&app, &tasks, &target_shop_ids)?;
     let ai_config = load_optional_ai_provider_config(&app)?;
 
+    // 并发审查：每个采集任务独立启动 agent session
+    // pi-coding-agent 以 session 为颗粒度，天然支持并行
+    let max_concurrency = collection_review_max_concurrency();
+    let stagger_ms = collection_review_stagger_ms(max_concurrency);
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrency));
+    let ai_rate_limited = Arc::new(AtomicBool::new(false));
+
+    let handles: Vec<_> = tasks
+        .into_iter()
+        .enumerate()
+        .map(|(index, task)| {
+            let app = app.clone();
+            let config = ai_config.clone();
+            let shop_ids = target_shop_ids.clone();
+            let sem = semaphore.clone();
+            let ai_rate_limited = ai_rate_limited.clone();
+            tokio::spawn(async move {
+                // 小错峰只发生在并发启动前，避免串行审查时每个商品额外空等。
+                let delay_ms = collection_review_start_delay_ms(index, max_concurrency, stagger_ms);
+                if delay_ms > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                }
+                let _permit = sem.acquire().await;
+                let review_result = review_collection_task(
+                    &app,
+                    &task,
+                    config.as_ref(),
+                    &shop_ids,
+                    &ai_rate_limited,
+                )
+                .await;
+                (task.id, review_result)
+            })
+        })
+        .collect();
+
     let mut result = CollectionReviewBatchResult {
-        processed_items: 0,
+        processed_items: handles.len() as i64,
         passed_items: 0,
         needs_review_items: 0,
         blocked_items: 0,
         failed_items: 0,
     };
 
-    for task in tasks {
-        result.processed_items += 1;
-        let review =
-            match review_collection_task(&app, &task, ai_config.as_ref(), &target_shop_ids).await {
-                Ok(review) => review,
-                Err(error) => {
-                    persist_collection_review_failure(&app, &task.id, &error.to_string())?;
-                    result.failed_items += 1;
-                    continue;
+    for handle in handles {
+        let (task_id, review_result) = match handle.await {
+            Ok(output) => output,
+            Err(error) => {
+                result.failed_items += 1;
+                eprintln!("审查任务 panic：{error}");
+                continue;
+            }
+        };
+        match review_result {
+            Ok(review) => {
+                match review.status.as_str() {
+                    "passed" => result.passed_items += 1,
+                    "needs_review" => result.needs_review_items += 1,
+                    "blocked" => result.blocked_items += 1,
+                    _ => result.failed_items += 1,
                 }
-            };
-        match review.status.as_str() {
-            "passed" => result.passed_items += 1,
-            "needs_review" => result.needs_review_items += 1,
-            "blocked" => result.blocked_items += 1,
-            _ => result.failed_items += 1,
+                if let Err(error) = persist_collection_review_result(&app, &task_id, &review) {
+                    eprintln!("持久化审查结果失败 task_id={task_id}：{error}");
+                }
+            }
+            Err(error) => {
+                if let Err(persist_error) =
+                    persist_collection_review_failure(&app, &task_id, &error.to_string())
+                {
+                    eprintln!("持久化审查失败 task_id={task_id}：{persist_error}");
+                }
+                result.failed_items += 1;
+            }
         }
-        persist_collection_review_result(&app, &task.id, &review)?;
     }
 
     Ok(result)
+}
+
+fn collection_review_max_concurrency() -> usize {
+    std::env::var("WX_XD_REVIEW_CONCURRENCY")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(2)
+        .clamp(1, 4)
+}
+
+fn collection_review_stagger_ms(max_concurrency: usize) -> u64 {
+    if max_concurrency <= 1 {
+        return 0;
+    }
+    std::env::var("WX_XD_REVIEW_STAGGER_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(1_200)
+        .min(30_000)
+}
+
+fn collection_review_start_delay_ms(index: usize, max_concurrency: usize, stagger_ms: u64) -> u64 {
+    if max_concurrency <= 1 || stagger_ms == 0 {
+        0
+    } else {
+        (index % max_concurrency) as u64 * stagger_ms
+    }
 }
 
 #[tauri::command]
@@ -318,6 +429,33 @@ pub fn confirm_collection_review(
         product.title = title.to_string();
     }
     if let Some(category_ids) = request.category_ids.as_ref().filter(|ids| ids.len() >= 3) {
+        let leaf_cat_id = *category_ids
+            .last()
+            .ok_or_else(|| AppError::Validation("微信类目 ID 不能为空".to_string()))?;
+        let target_shop_ids = if request.target_shop_ids.is_empty() {
+            task.target_shop_ids.clone()
+        } else {
+            request.target_shop_ids.clone()
+        };
+        let normalized_target_shop_ids = target_shop_ids
+            .iter()
+            .map(|shop_id| shop_id.trim())
+            .filter(|shop_id| !shop_id.is_empty())
+            .collect::<Vec<_>>();
+        if normalized_target_shop_ids.is_empty() {
+            let Some(category_shop_id) =
+                resolve_collection_review_category_shop(&conn, &target_shop_ids)?
+            else {
+                return Err(AppError::Validation(
+                    "未同步目标店铺的生效类目权限，不能确认通过审查".to_string(),
+                ));
+            };
+            ensure_category_available_for_shop(&conn, &category_shop_id, leaf_cat_id)?;
+        } else {
+            for shop_id in normalized_target_shop_ids {
+                ensure_category_available_for_shop(&conn, shop_id, leaf_cat_id)?;
+            }
+        }
         if !product.metadata.is_object() {
             product.metadata = Value::Object(serde_json::Map::new());
         }
@@ -396,6 +534,44 @@ pub fn reset_collection_review(app: AppHandle, task_id: String) -> AppResult<Col
         params![now, task.id],
     )?;
     load_collection_task_by_id(&conn, &task.id)
+}
+
+#[tauri::command]
+pub fn import_collection_task_image(
+    app: AppHandle,
+    request: CollectionImageUploadRequest,
+) -> AppResult<CollectionTaskView> {
+    let kind = normalize_collection_image_kind(&request.kind)?;
+    let imported_path = import_collection_image_file(&app, &request.file_path)?;
+    let mut product = load_collection_product_for_edit(&app, &request.task_id)?;
+    let target = collection_product_images_mut(&mut product, kind);
+    let imported = imported_path.to_string_lossy().to_string();
+    if !target.iter().any(|image| image == &imported) {
+        target.push(imported);
+    }
+    persist_collection_product_after_image_edit(&app, &request.task_id, product)
+}
+
+#[tauri::command]
+pub fn remove_collection_task_image(
+    app: AppHandle,
+    request: CollectionImageRemoveRequest,
+) -> AppResult<CollectionTaskView> {
+    let kind = normalize_collection_image_kind(&request.kind)?;
+    let image_url = request.image_url.trim();
+    if image_url.is_empty() {
+        return Err(AppError::Validation("图片地址不能为空".to_string()));
+    }
+    let mut product = load_collection_product_for_edit(&app, &request.task_id)?;
+    let target = collection_product_images_mut(&mut product, kind);
+    let before = target.len();
+    target.retain(|image| image.trim() != image_url);
+    if target.len() == before {
+        return Err(AppError::Validation(
+            "采集结果中没有找到这张图片".to_string(),
+        ));
+    }
+    persist_collection_product_after_image_edit(&app, &request.task_id, product)
 }
 
 #[tauri::command]
@@ -501,6 +677,118 @@ fn unique_non_empty_strings(values: Vec<String>) -> Vec<String> {
     result
 }
 
+fn normalize_collection_image_kind(kind: &str) -> AppResult<&'static str> {
+    match kind.trim() {
+        "main" | "image" | "images" => Ok("main"),
+        "detail" | "detail_image" | "detail_images" => Ok("detail"),
+        _ => Err(AppError::Validation(
+            "图片类型只能是主图或详情图".to_string(),
+        )),
+    }
+}
+
+fn collection_product_images_mut<'a>(
+    product: &'a mut ExternalProductInput,
+    kind: &str,
+) -> &'a mut Vec<String> {
+    if kind == "detail" {
+        &mut product.detail_images
+    } else {
+        &mut product.images
+    }
+}
+
+fn import_collection_image_file(app: &AppHandle, file_path: &str) -> AppResult<PathBuf> {
+    let source = PathBuf::from(file_path.trim());
+    if !source.is_file() {
+        return Err(AppError::Validation("请选择有效的本地图片文件".to_string()));
+    }
+    let bytes = fs::read(&source)?;
+    if bytes.is_empty() {
+        return Err(AppError::Validation("图片内容为空".to_string()));
+    }
+    if bytes.len() > IMAGE_DOWNLOAD_MAX_BYTES as usize {
+        return Err(AppError::Validation(format!(
+            "图片过大：{}，超过本地导入上限 {}",
+            format_bytes_short(bytes.len()),
+            format_bytes_short(IMAGE_DOWNLOAD_MAX_BYTES as usize)
+        )));
+    }
+    let format = image::guess_format(&bytes)
+        .map_err(|error| AppError::Validation(format!("图片格式无法识别：{error}")))?;
+    let image = image::load_from_memory_with_format(&bytes, format)
+        .map_err(|error| AppError::Validation(format!("图片解码失败：{error}")))?;
+    let (width, height) = image.dimensions();
+    if width == 0 || height == 0 {
+        return Err(AppError::Validation("图片宽高无效".to_string()));
+    }
+    let extension = original_upload_extension(format).unwrap_or("img");
+    let hash = hex_sha256(&bytes);
+    let dir = collection_uploaded_image_dir(app)?;
+    let target = dir.join(format!("{hash}.{extension}"));
+    if !target.exists() {
+        fs::write(&target, &bytes)?;
+    }
+    Ok(target)
+}
+
+fn load_collection_product_for_edit(
+    app: &AppHandle,
+    task_id: &str,
+) -> AppResult<ExternalProductInput> {
+    let conn = open_connection(app)?;
+    let task = load_collection_task_by_id(&conn, task_id.trim())?;
+    if task.status != "success" {
+        return Err(AppError::Validation(
+            "只能编辑采集成功的商品图片".to_string(),
+        ));
+    }
+    let raw = task.collected_data.as_deref().unwrap_or_default().trim();
+    if raw.is_empty() {
+        return Err(AppError::Validation(
+            "采集结果为空，不能编辑图片".to_string(),
+        ));
+    }
+    serde_json::from_str::<ExternalProductInput>(raw)
+        .map_err(|error| AppError::Validation(format!("采集结果无法解析：{error}")))
+}
+
+fn persist_collection_product_after_image_edit(
+    app: &AppHandle,
+    task_id: &str,
+    mut product: ExternalProductInput,
+) -> AppResult<CollectionTaskView> {
+    let now = now_shanghai();
+    if !product.metadata.is_object() {
+        product.metadata = Value::Object(serde_json::Map::new());
+    }
+    if let Some(metadata) = product.metadata.as_object_mut() {
+        metadata.insert(
+            "collection_image_edit".to_string(),
+            serde_json::json!({
+                "updated_at": now,
+                "review_reset": true
+            }),
+        );
+    }
+    let collected_data = serde_json::to_string(&product)
+        .map_err(|error| AppError::Validation(format!("采集结果无法序列化：{error}")))?;
+    let conn = open_connection(app)?;
+    conn.execute(
+        "UPDATE collection_tasks
+         SET collected_data = ?1,
+             review_status = 'pending',
+             review_summary = NULL,
+             reviewed_data = NULL,
+             review_result_json = NULL,
+             reviewed_at = NULL,
+             updated_at = ?2
+         WHERE id = ?3",
+        params![collected_data, now, task_id.trim()],
+    )?;
+    load_collection_task_by_id(&conn, task_id.trim())
+}
+
 fn load_collection_task_by_id(
     conn: &rusqlite::Connection,
     task_id: &str,
@@ -550,6 +838,7 @@ fn validate_collection_publish_duplicates(
                  FROM publish_job_items i
                  JOIN publish_products p ON p.id = i.product_row_id
                  WHERE i.shop_id = ?1 AND p.external_product_id = ?2
+                   AND i.status NOT IN ('failed', 'cancelled')
                  LIMIT 1",
                 params![shop_id, external_product_id],
                 |row| row.get::<_, String>(0),
@@ -557,7 +846,7 @@ fn validate_collection_publish_duplicates(
             .optional()?;
         if existing_publish_item.is_some() {
             return Err(AppError::Validation(format!(
-                "外部商品 {} 已经给店铺 {} 创建过铺货任务，不能重复创建",
+                "外部商品 {} 已经给店铺 {} 创建过铺货任务（非失败状态），不能重复创建",
                 external_product_id, shop_id
             )));
         }
@@ -641,11 +930,27 @@ fn load_collection_review_tasks(
     Ok(tasks)
 }
 
+fn ensure_collection_review_target_shop_ready(
+    app: &AppHandle,
+    tasks: &[CollectionTaskView],
+    target_shop_ids: &[String],
+) -> AppResult<()> {
+    if !target_shop_ids.is_empty()
+        || tasks.is_empty()
+        || tasks.iter().all(|task| !task.target_shop_ids.is_empty())
+    {
+        return Ok(());
+    }
+    let conn = open_connection(app)?;
+    resolve_collection_review_category_shop(&conn, &[]).map(|_| ())
+}
+
 async fn review_collection_task(
     app: &AppHandle,
     task: &CollectionTaskView,
     ai_config: Option<&AiProviderConfig>,
     target_shop_ids: &[String],
+    ai_rate_limited: &AtomicBool,
 ) -> AppResult<CollectionReviewOutcome> {
     if task.status != "success" {
         return Err(AppError::Validation("只允许审查采集成功的商品".to_string()));
@@ -662,6 +967,11 @@ async fn review_collection_task(
     let original_detail_images = product.detail_images.clone();
     let mut issues = Vec::<Value>::new();
     let mut removed_images = Vec::<Value>::new();
+    let effective_target_shop_ids = if target_shop_ids.is_empty() {
+        task.target_shop_ids.clone()
+    } else {
+        target_shop_ids.to_vec()
+    };
 
     let title_review = clean_collection_title(&product);
     product.title = title_review.cleaned_title.clone();
@@ -680,15 +990,21 @@ async fn review_collection_task(
 
     let category_shop_id = {
         let conn = open_connection(app)?;
-        resolve_collection_review_category_shop(&conn, target_shop_ids)?
+        resolve_collection_review_category_shop(&conn, &effective_target_shop_ids)?
     };
     let mut category_candidates = Vec::<CollectionReviewCategoryCandidate>::new();
     if let Some(shop_id) = category_shop_id.as_deref() {
         let conn = open_connection(app)?;
         category_candidates =
             suggest_wechat_category_candidates_from_cache(&conn, shop_id, &product, 5)?;
+        if category_candidates.is_empty() {
+            category_candidates =
+                suggest_wechat_category_broad_candidates_from_cache(&conn, shop_id, &product, 80)?;
+        }
     }
     let mut category_applied = false;
+    let mut attr_suggestions = serde_json::Map::new();
+    let mut attr_fill_suggestions = None::<Value>;
 
     let mut ai_used = false;
     let mut ai_warning = None::<String>;
@@ -736,36 +1052,36 @@ async fn review_collection_task(
         agent_error_summary_for_run = Some("采集审查 Agent 技能已停用，仅执行本地规则".to_string());
         issues.push(review_issue(
             "ai",
-            "confirm",
-            "采集审查 Agent 技能已停用，仅执行本地规则，需要人工确认",
+            "info",
+            "采集审查 Agent 技能已停用，已改用本地审查规则",
         ));
     } else if let Some(config) = ai_config {
-        ai_used = true;
-        let ai_images = review_ai_image_urls(&product);
-        let ai_input = serde_json::json!({
-            "product": {
-                "title": &product.title,
+        if ai_rate_limited.load(Ordering::SeqCst) {
+            agent_error_code_for_run = Some("AI_RATE_LIMIT_COOLDOWN".to_string());
+            agent_error_summary_for_run =
+                Some("本批审查已触发 AI provider 限流，图文 AI 审查已跳过".to_string());
+            ai_warning = agent_error_summary_for_run.clone();
+            issues.push(review_issue(
+                "image",
+                "info",
+                "本批审查已触发 AI 限流，后续商品改用本地图片规则过滤",
+            ));
+        } else {
+            ai_used = true;
+            let ai_images = review_ai_image_urls(&product);
+            let ai_input = serde_json::json!({
+                "task_id": &task.id,
+                "target_shop_ids": &effective_target_shop_ids,
                 "original_title": &original_title,
-                "supplier_name": &product.supplier_name,
-                "brand_hint": &product.brand_hint,
-                "category_hint": &product.category_hint,
-                "source_url": &product.source_url,
-                "main_images": product.images.iter().take(8).collect::<Vec<_>>(),
-                "detail_images": product.detail_images.iter().take(6).collect::<Vec<_>>(),
-                "sku_count": product.skus.len()
-            },
-            "category_candidates": &category_candidates,
-            "review_rules": [
-                "标题不能包含品牌名、供应商店名、淘宝/天猫等来源平台词",
-                "主图/详情图不能包含淘宝标识、店铺招牌、二维码、联系方式、明显水印或促销贴片",
-                "微信类目只能从 category_candidates 中选择，不能编造类目 ID",
-                "只在高置信时建议移除图片；不确定时返回低 confidence"
-            ]
-        });
-        match request_ai_collection_review_json(
+                "category_candidates": &category_candidates
+            });
+            match request_ai_collection_review_json(
             app,
             config,
-            "审查无货源商品采集结果，按 wx-xd-product-review 技能输出 JSON。",
+            &format!(
+                "审查采集任务 {}，使用 get_product_detail 获取商品数据，使用 search_categories/get_category_detail 匹配类目并补齐属性，使用 search_wechat_docs 查询不确定的属性定义。按 wx-xd-product-review 技能输出 JSON。",
+                &task.id
+            ),
             &ai_input,
             &ai_images,
         )
@@ -785,26 +1101,45 @@ async fn review_collection_task(
                     &category_candidates,
                     &mut issues,
                 );
+                // 提取 AI 产出的属性建议（agent 工具流产物）
+                if let Some(ai_attrs) = ai_result
+                    .get("ai_attr_suggestions")
+                    .and_then(Value::as_object)
+                {
+                    for (key, value) in ai_attrs {
+                        if let Some(v) = value.as_str() {
+                            if !v.trim().is_empty() {
+                                attr_suggestions
+                                    .entry(key.clone())
+                                    .or_insert(Value::String(v.trim().to_string()));
+                            }
+                        }
+                    }
+                }
             }
             Err(error) => {
                 let error_summary = error.to_string();
+                if is_ai_rate_limit_error(&error_summary) {
+                    ai_rate_limited.store(true, Ordering::SeqCst);
+                }
                 agent_error_code_for_run = Some(agent_error_code(&error).to_string());
                 agent_error_summary_for_run = Some(error_summary.clone());
                 ai_warning = Some(error_summary);
                 issues.push(review_issue(
                     "image",
-                    "confirm",
-                    "AI 图文审查未完成，需要人工确认图片是否可用于微信铺货",
+                    "info",
+                    "AI 图文审查未完成，已改用本地图片规则过滤",
                 ));
             }
+        }
         }
     } else {
         agent_error_code_for_run = Some("PROVIDER_NOT_CONFIGURED".to_string());
         agent_error_summary_for_run = Some("未启用 AI provider，图片内容仅做规则过滤".to_string());
         issues.push(review_issue(
             "image",
-            "confirm",
-            "未启用 AI provider，图片内容仅做规则过滤，需要人工确认",
+            "info",
+            "未启用 AI provider，图片内容仅做本地规则过滤",
         ));
     }
 
@@ -824,15 +1159,11 @@ async fn review_collection_task(
     }
 
     if !category_applied {
-        if let Some(best) = category_candidates.first() {
-            let ambiguous = category_candidates
-                .get(1)
-                .map(|second| best.score - second.score < 18 && best.score < 180)
-                .unwrap_or(false);
-            if best.score >= 90 && !ambiguous {
-                apply_review_category(&mut product, &best.category_ids, &best.category_path);
-                category_applied = true;
-            }
+        if let Some(best) =
+            select_collection_review_category_candidate(&product, &category_candidates)
+        {
+            apply_review_category(&mut product, &best.category_ids, &best.category_path);
+            category_applied = true;
         }
     }
     if !category_applied && category_candidates.is_empty() {
@@ -849,10 +1180,130 @@ async fn review_collection_task(
         ));
     }
 
+    // ---- 微信类目属性预检 & 补齐 ----
+    // 先写入 Agent 已产出的 ai_attr_suggestions，让后续本地推断能读到
+    if !attr_suggestions.is_empty() {
+        if !product.metadata.is_object() {
+            product.metadata = Value::Object(serde_json::Map::new());
+        }
+        if let Some(metadata) = product.metadata.as_object_mut() {
+            metadata.insert(
+                "ai_attr_suggestions".to_string(),
+                Value::Object(attr_suggestions.clone()),
+            );
+        }
+    }
+    // 对仍未覆盖的属性做补充补齐
+    if category_applied {
+        // 有类目：按类目要求补齐
+        let cat_id = product
+            .metadata
+            .as_object()
+            .and_then(|m| m.get("wechat_category_ids"))
+            .and_then(Value::as_array)
+            .and_then(|ids| ids.last())
+            .and_then(|id| id.as_i64());
+        if let (Some(shop_id), Some(cat_id)) = (category_shop_id.as_deref(), cat_id) {
+            let conn = open_connection(app)?;
+            if let Ok(Some(raw_detail)) =
+                load_cached_category_detail_payload(&conn, shop_id, cat_id)
+            {
+                let mut payload = collection_review_requirement_payload(&product);
+                let req_check = check_category_requirements_from_detail(&raw_detail, &payload);
+                if req_check.has_missing_attrs() {
+                    let item = collection_review_pending_publish_item(task, shop_id, &product)?;
+                    let mut plan = build_attribute_fill_plan(
+                        &item,
+                        &product,
+                        &payload,
+                        &raw_detail,
+                        &req_check,
+                    );
+                    let requires_ai = plan
+                        .suggestions
+                        .iter()
+                        .any(|suggestion| !suggestion.applied && suggestion.source == "needs_ai");
+                    if requires_ai {
+                        match ai_config {
+                            Some(config) => {
+                                run_collection_attribute_ai(
+                                    app, config, &task.id, shop_id, &mut plan,
+                                )
+                                .await?;
+                            }
+                            None => {
+                                issues.push(review_issue(
+                                    "attr",
+                                    "confirm",
+                                    "未启用 AI provider，无法自动补齐微信必填属性",
+                                ));
+                            }
+                        }
+                    }
+                    promote_collection_ai_attribute_suggestions(&mut plan);
+                    apply_collection_attribute_plan_to_product(
+                        &mut product,
+                        &mut payload,
+                        &plan,
+                        &mut attr_suggestions,
+                    )?;
+                    attr_fill_suggestions = Some(attribute_suggestions_json(&plan.suggestions));
+                    for suggestion in &plan.suggestions {
+                        if !suggestion.applied {
+                            issues.push(review_issue(
+                                "attr",
+                                "info",
+                                &collection_unresolved_attr_message(suggestion),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    } else if ai_config.is_some() {
+        // 无类目但有 AI：用 AI 推断基础属性（不依赖类目详情）
+        // 这些属性在大多数童装类目中都是必填的
+        let basic_attrs = [
+            "安全等级",
+            "适用年龄",
+            "面料材质",
+            "面料材质成分含量（%）",
+            "颜色",
+            "风格",
+        ];
+        let existing_attrs = collection_review_existing_attr_keys(&product);
+        let missing: Vec<&str> = basic_attrs
+            .iter()
+            .filter(|attr| !existing_attrs.contains(&attr.to_string()))
+            .copied()
+            .collect();
+        if !missing.is_empty() {
+            if let Some(shop_id) = category_shop_id.as_deref() {
+                let item = collection_review_pending_publish_item(task, shop_id, &product)?;
+                let mut plan = build_basic_attribute_fill_plan(&item, &product, &missing);
+                if let Some(config) = ai_config {
+                    run_collection_attribute_ai(app, config, &task.id, shop_id, &mut plan).await?;
+                }
+                promote_collection_ai_attribute_suggestions(&mut plan);
+                apply_basic_attribute_suggestions(&product, &plan, &mut attr_suggestions);
+                attr_fill_suggestions = Some(attribute_suggestions_json(&plan.suggestions));
+            }
+        }
+    }
+
     if !product.metadata.is_object() {
         product.metadata = Value::Object(serde_json::Map::new());
     }
     if let Some(metadata) = product.metadata.as_object_mut() {
+        if !attr_suggestions.is_empty() {
+            metadata.insert(
+                "ai_attr_suggestions".to_string(),
+                Value::Object(attr_suggestions),
+            );
+        }
+        if let Some(suggestions) = attr_fill_suggestions.clone() {
+            metadata.insert("wechat_attr_fill_suggestions".to_string(), suggestions);
+        }
         metadata.insert(
             "collection_review".to_string(),
             serde_json::json!({
@@ -862,6 +1313,7 @@ async fn review_collection_task(
                 "removed_images": removed_images.clone(),
                 "category_applied": category_applied,
                 "ai_used": ai_used,
+                "attribute_suggestions": attr_fill_suggestions,
                 "skill": {
                     "name": PRODUCT_REVIEW_SKILL.name,
                     "version": PRODUCT_REVIEW_SKILL.version
@@ -872,20 +1324,7 @@ async fn review_collection_task(
         );
     }
 
-    let has_block = issues
-        .iter()
-        .any(|issue| issue.get("severity").and_then(Value::as_str) == Some("block"));
-    let has_confirm = issues
-        .iter()
-        .any(|issue| issue.get("severity").and_then(Value::as_str) == Some("confirm"));
-    let status = if has_block {
-        "blocked"
-    } else if has_confirm {
-        "needs_review"
-    } else {
-        "passed"
-    }
-    .to_string();
+    let status = collection_review_status_from_issues(&issues).to_string();
     let summary = collection_review_summary(&status, &issues, &removed_images, category_applied);
     let result_json = serde_json::json!({
         "status": &status,
@@ -951,6 +1390,14 @@ async fn review_collection_task(
         reviewed_product: product,
         result_json,
     })
+}
+
+fn is_ai_rate_limit_error(summary: &str) -> bool {
+    summary.contains("429")
+        || summary.contains("Too many requests")
+        || summary.contains("too many requests")
+        || summary.contains("limitation")
+        || summary.contains("限流")
 }
 
 fn persist_collection_review_result(
@@ -1137,6 +1584,9 @@ fn rule_image_reject_reason(url: &str) -> Option<&'static str> {
     if !lower.starts_with("http://") && !lower.starts_with("https://") {
         return Some("图片链接不是 HTTP/HTTPS 地址");
     }
+    if lower.contains("-tps-") {
+        return Some("疑似平台标识、店招、头像或营销图");
+    }
     for needle in [
         "logo",
         "qrcode",
@@ -1155,6 +1605,8 @@ fn rule_image_reject_reason(url: &str) -> Option<&'static str> {
         "sellerlogo",
         "shop_logo",
         "shoplogo",
+        "shopmanager",
+        "-0-shopmanager",
         "wwc.alicdn.com",
     ] {
         if lower.contains(needle) {
@@ -1175,26 +1627,138 @@ fn review_ai_image_urls(product: &ExternalProductInput) -> Vec<String> {
         .collect()
 }
 
+fn select_collection_review_category_candidate<'a>(
+    product: &ExternalProductInput,
+    candidates: &'a [CollectionReviewCategoryCandidate],
+) -> Option<&'a CollectionReviewCategoryCandidate> {
+    let mut scored = candidates
+        .iter()
+        .map(|candidate| {
+            (
+                score_collection_review_category_candidate(product, candidate),
+                candidate,
+            )
+        })
+        .collect::<Vec<_>>();
+    scored.sort_by(|left, right| {
+        right
+            .0
+            .cmp(&left.0)
+            .then_with(|| right.1.score.cmp(&left.1.score))
+            .then_with(|| left.1.category_path.cmp(&right.1.category_path))
+    });
+    let (best_score, best) = scored.first().copied()?;
+    let second_score = scored.get(1).map(|item| item.0).unwrap_or(i64::MIN);
+    if best_score >= 130 && best_score - second_score >= 18 {
+        Some(best)
+    } else {
+        None
+    }
+}
+
+fn score_collection_review_category_candidate(
+    product: &ExternalProductInput,
+    candidate: &CollectionReviewCategoryCandidate,
+) -> i64 {
+    let mut score = candidate.score;
+    let text = collection_category_evidence_text(product);
+    let leaf = collection_category_leaf(&candidate.category_path);
+    let leaf_norm = normalize_collection_category_text(&leaf);
+    if is_generic_collection_category_leaf(&leaf_norm) && !text.contains("亲子") {
+        score -= 80;
+    }
+    if let Some(hint_leaf) = product
+        .category_hint
+        .as_deref()
+        .and_then(collection_category_hint_leaf)
+    {
+        let hint_norm = normalize_collection_category_text(&hint_leaf);
+        if !hint_norm.is_empty()
+            && (leaf_norm == hint_norm
+                || leaf_norm.contains(&hint_norm)
+                || hint_norm.contains(&leaf_norm))
+        {
+            score += 120;
+        }
+    }
+    for (keywords, leaf_keywords, weight) in collection_category_keyword_rules() {
+        if keywords.iter().any(|keyword| text.contains(keyword))
+            && leaf_keywords
+                .iter()
+                .any(|keyword| leaf_norm.contains(&normalize_collection_category_text(keyword)))
+        {
+            score += weight;
+        }
+    }
+    score
+}
+
+fn collection_category_keyword_rules(
+) -> &'static [(&'static [&'static str], &'static [&'static str], i64)] {
+    &[
+        (&["t恤", "T恤", "短袖", "半袖"], &["t恤"], 90),
+        (&["连衣裙", "公主裙"], &["连衣裙"], 100),
+        (&["裙子", "半身裙"], &["裙"], 70),
+        (&["打底裤", "防蚊裤", "长裤", "裤子", "束脚"], &["裤"], 90),
+        (
+            &["汉服", "唐装", "旗袍", "民族服", "国风", "古装"],
+            &["旗袍", "唐装", "民族"],
+            100,
+        ),
+        (&["篮球", "球衣", "队服"], &["套装", "T恤", "t恤"], 55),
+    ]
+}
+
+fn collection_category_evidence_text(product: &ExternalProductInput) -> String {
+    let mut text = product.title.clone();
+    if let Some(value) = product.category_hint.as_deref() {
+        text.push_str(value);
+    }
+    text
+}
+
+fn collection_category_leaf(category_path: &str) -> String {
+    category_path
+        .split('>')
+        .next_back()
+        .unwrap_or(category_path)
+        .trim()
+        .to_string()
+}
+
+fn collection_category_hint_leaf(category_hint: &str) -> Option<String> {
+    category_hint
+        .split(|ch| matches!(ch, '>' | '＞' | '/' | '／'))
+        .next_back()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn normalize_collection_category_text(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_alphanumeric() || *ch == '恤')
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+fn is_generic_collection_category_leaf(leaf_norm: &str) -> bool {
+    matches!(leaf_norm, "亲子装" | "其他")
+}
+
 fn apply_ai_collection_review(
     product: &mut ExternalProductInput,
     ai_result: &Value,
     removed_images: &mut Vec<Value>,
-    issues: &mut Vec<Value>,
+    _issues: &mut Vec<Value>,
 ) {
     let confidence = json_value_to_i64(ai_result.get("confidence")).unwrap_or(0);
-    if confidence >= 75 {
-        if let Some(title) = json_value_to_string(ai_result.get("title")) {
-            let title = normalize_review_title(&title);
-            if title.chars().count() >= 4 {
-                product.title = title;
-            }
+    if let Some(title) = json_value_to_string(ai_result.get("title")) {
+        let title = normalize_review_title(&title);
+        if title.chars().count() >= 4 {
+            product.title = title;
         }
-    } else {
-        issues.push(review_issue(
-            "title",
-            "confirm",
-            "AI 对标题清洗置信度不足，需要人工确认",
-        ));
     }
 
     let remove_items = ai_result
@@ -1236,17 +1800,10 @@ fn apply_ai_collection_review(
             .retain(|url| !remove_urls.contains(url));
     }
 
-    if ai_result
+    let _needs_human_review = ai_result
         .get("needs_human_review")
         .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        issues.push(review_issue(
-            "ai",
-            "confirm",
-            "AI skill 标记该采集结果需要人工复核",
-        ));
-    }
+        .unwrap_or(false);
 }
 
 fn apply_ai_review_category(
@@ -1315,32 +1872,396 @@ fn apply_review_category(
     product.category_hint = Some(category_path.to_string());
 }
 
+fn collection_review_requirement_payload(product: &ExternalProductInput) -> Value {
+    serde_json::json!({
+        "attrs": [],
+        "skus": product.skus.iter().map(|sku| {
+            serde_json::json!({
+                "sku_attrs": collection_review_sku_attrs_from_specs(&sku.specs),
+                "external_sku_id": &sku.external_sku_id,
+                "specs": &sku.specs,
+            })
+        }).collect::<Vec<_>>()
+    })
+}
+
+fn collection_review_sku_attrs_from_specs(specs: &Value) -> Vec<Value> {
+    match specs {
+        Value::Object(object) => object
+            .iter()
+            .filter_map(|(key, value)| {
+                let value = json_value_to_string(Some(value))?;
+                let key = key.trim();
+                let value = value.trim();
+                if key.is_empty() || value.is_empty() {
+                    return None;
+                }
+                Some(serde_json::json!({
+                    "attr_key": key,
+                    "attr_value": value
+                }))
+            })
+            .collect(),
+        Value::Array(items) => items
+            .iter()
+            .filter_map(|item| {
+                let object = item.as_object()?;
+                let key = ["attr_key", "name", "attr_name", "key"]
+                    .iter()
+                    .find_map(|key| json_value_to_string(object.get(*key)))?;
+                let value = ["attr_value", "value", "value_name", "name"]
+                    .iter()
+                    .find_map(|key| json_value_to_string(object.get(*key)))?;
+                let key = key.trim();
+                let value = value.trim();
+                if key.is_empty() || value.is_empty() {
+                    return None;
+                }
+                Some(serde_json::json!({
+                    "attr_key": key,
+                    "attr_value": value
+                }))
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn collection_review_pending_publish_item(
+    task: &CollectionTaskView,
+    shop_id: &str,
+    product: &ExternalProductInput,
+) -> AppResult<PendingPublishItem> {
+    let raw_payload = serde_json::to_string(product)
+        .map_err(|error| AppError::Validation(format!("采集商品数据无法序列化：{error}")))?;
+    Ok(PendingPublishItem {
+        item_id: format!("collection-review-{}", task.id),
+        job_id: "collection_review".to_string(),
+        product_row_id: task.id.clone(),
+        shop_id: shop_id.to_string(),
+        shop_status: "active".to_string(),
+        shop_has_secret: true,
+        external_product_id: product.external_product_id.clone(),
+        raw_payload,
+    })
+}
+
+/// 获取商品已有的属性键（从 metadata.ai_attr_suggestions 和 payload.attrs 中）
+fn collection_review_existing_attr_keys(
+    product: &ExternalProductInput,
+) -> std::collections::HashSet<String> {
+    let mut keys = std::collections::HashSet::new();
+    if let Some(metadata) = product.metadata.as_object() {
+        // 从 ai_attr_suggestions 中获取
+        if let Some(suggestions) = metadata
+            .get("ai_attr_suggestions")
+            .and_then(Value::as_object)
+        {
+            keys.extend(suggestions.keys().cloned());
+        }
+        // 从 wechat_add_product_payload.attrs 中获取
+        if let Some(payload) = metadata
+            .get("wechat_add_product_payload")
+            .and_then(Value::as_object)
+        {
+            if let Some(attrs) = payload.get("attrs").and_then(Value::as_array) {
+                for attr in attrs {
+                    if let Some(key) = attr.as_object().and_then(|o| {
+                        ["attr_key", "name", "attr_name", "key"]
+                            .iter()
+                            .find_map(|k| json_value_to_string(o.get(*k)))
+                    }) {
+                        keys.insert(key);
+                    }
+                }
+            }
+        }
+    }
+    keys
+}
+
+/// 无类目详情时，构建基础属性补齐计划（仅包含常见必填属性）
+fn build_basic_attribute_fill_plan(
+    item: &PendingPublishItem,
+    product: &ExternalProductInput,
+    missing_attrs: &[&str],
+) -> AttributeFillPlan {
+    let mut plan = AttributeFillPlan::default();
+    for attr_key in missing_attrs {
+        let spec = CategoryRequiredAttr {
+            key: attr_key.to_string(),
+            options: Vec::new(),
+            attr_type: Some("string".to_string()),
+            append_allowed: true,
+            related_options: Vec::new(),
+        };
+        plan.suggestions
+            .push(build_product_attr_suggestion(item, product, &spec));
+    }
+    plan
+}
+
+/// 将基础属性建议写入 attr_suggestions map
+fn apply_basic_attribute_suggestions(
+    product: &ExternalProductInput,
+    plan: &AttributeFillPlan,
+    attr_suggestions: &mut serde_json::Map<String, Value>,
+) {
+    for suggestion in &plan.suggestions {
+        if suggestion.applied {
+            if let Some(value) = &suggestion.suggested_value {
+                attr_suggestions.insert(suggestion.attr_key.clone(), Value::String(value.clone()));
+            }
+        }
+    }
+    // 保留已有的 ai_attr_suggestions
+    if let Some(metadata) = product.metadata.as_object() {
+        if let Some(existing) = metadata
+            .get("ai_attr_suggestions")
+            .and_then(Value::as_object)
+        {
+            for (key, value) in existing {
+                if !attr_suggestions.contains_key(key) {
+                    attr_suggestions.insert(key.clone(), value.clone());
+                }
+            }
+        }
+    }
+}
+
+async fn run_collection_attribute_ai(
+    app: &AppHandle,
+    config: &AiProviderConfig,
+    task_id: &str,
+    shop_id: &str,
+    plan: &mut AttributeFillPlan,
+) -> AppResult<i64> {
+    let started = std::time::Instant::now();
+    let input_snapshot = serde_json::json!({
+        "task_id": task_id,
+        "shop_id": shop_id,
+        "suggestions": attribute_suggestions_json(&plan.suggestions)
+    });
+    let input_summary = format!(
+        "采集属性补齐 task_id={} 缺失属性={}",
+        task_id,
+        plan.suggestions.len()
+    );
+    let run_id = {
+        let conn = open_connection(app)?;
+        create_agent_run_for_skill(
+            &conn,
+            &ATTRIBUTE_SUGGESTION_SKILL,
+            "collection_attribute",
+            "collection_task",
+            task_id,
+            Some(shop_id),
+            Some(config),
+            &input_summary,
+            Some(&input_snapshot),
+        )?
+    };
+    let generated = fill_attribute_plan_with_ai(app, config, plan).await?;
+    let output = attribute_suggestions_json(&plan.suggestions);
+    let conn = open_connection(app)?;
+    finish_agent_run(
+        &conn,
+        &run_id,
+        AgentRunFinish {
+            status: if plan.can_auto_apply() {
+                "succeeded"
+            } else {
+                "needs_review"
+            },
+            output: None,
+            validated_output: Some(&output),
+            tool_calls: None,
+            decision: Some(if plan.can_auto_apply() {
+                "attributes_filled"
+            } else {
+                "needs_review"
+            }),
+            error_code: None,
+            error_summary: None,
+            duration_ms: Some(started.elapsed().as_millis().min(i64::MAX as u128) as i64),
+        },
+    )?;
+    Ok(generated)
+}
+
+fn apply_collection_attribute_plan_to_product(
+    product: &mut ExternalProductInput,
+    payload: &mut Value,
+    plan: &AttributeFillPlan,
+    attr_suggestions: &mut serde_json::Map<String, Value>,
+) -> AppResult<()> {
+    apply_attribute_fill_plan_to_payload(payload, plan)?;
+    for suggestion in &plan.suggestions {
+        if !suggestion.applied {
+            continue;
+        }
+        if suggestion.attr_kind == "product" {
+            if let Some(value) = suggestion.suggested_value.as_deref() {
+                attr_suggestions.insert(
+                    suggestion.attr_key.clone(),
+                    Value::String(value.to_string()),
+                );
+            }
+        } else if !suggestion.sku_values.is_empty() {
+            for sku_value in &suggestion.sku_values {
+                if let Some(sku) = product.skus.get_mut(sku_value.sku_index) {
+                    ensure_collection_product_sku_spec(sku, &suggestion.attr_key, &sku_value.value);
+                }
+            }
+        } else if let Some(value) = suggestion.suggested_value.as_deref() {
+            for sku in &mut product.skus {
+                ensure_collection_product_sku_spec(sku, &suggestion.attr_key, value);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn promote_collection_ai_attribute_suggestions(plan: &mut AttributeFillPlan) {
+    for suggestion in &mut plan.suggestions {
+        if suggestion.applied || !suggestion.source.starts_with("ai_provider:") {
+            continue;
+        }
+        if suggestion.confidence < 75 {
+            continue;
+        }
+        if suggestion.suggested_value.is_none() && suggestion.sku_values.is_empty() {
+            continue;
+        }
+        let allowed_values = collection_ai_suggestion_allowed_values(suggestion);
+        if suggestion_values_allowed(suggestion, &allowed_values) {
+            suggestion.applied = true;
+        }
+    }
+}
+
+fn collection_ai_suggestion_allowed_values(suggestion: &AttributeFillSuggestion) -> Vec<String> {
+    let direct = response_allowed_values(&suggestion.prompt_json);
+    if !direct.is_empty() {
+        return direct;
+    }
+    suggestion
+        .prompt_json
+        .get("request")
+        .map(response_allowed_values)
+        .unwrap_or_default()
+}
+
+fn ensure_collection_product_sku_spec(
+    sku: &mut crate::models::ExternalSkuInput,
+    attr_key: &str,
+    attr_value: &str,
+) {
+    match &mut sku.specs {
+        Value::Object(object) => {
+            object
+                .entry(attr_key.to_string())
+                .or_insert_with(|| Value::String(attr_value.to_string()));
+        }
+        Value::Array(items) => {
+            let exists = items.iter().any(|item| {
+                item.as_object()
+                    .and_then(|object| {
+                        ["attr_key", "name", "attr_name", "key"]
+                            .iter()
+                            .find_map(|key| json_value_to_string(object.get(*key)))
+                    })
+                    .as_deref()
+                    == Some(attr_key)
+            });
+            if !exists {
+                items.push(serde_json::json!({
+                    "attr_key": attr_key,
+                    "attr_value": attr_value
+                }));
+            }
+        }
+        _ => {
+            sku.specs = serde_json::json!({
+                attr_key: attr_value
+            });
+        }
+    }
+}
+
+fn collection_unresolved_attr_message(suggestion: &AttributeFillSuggestion) -> String {
+    let attr_kind = if suggestion.attr_kind == "product" {
+        "商品"
+    } else {
+        "销售"
+    };
+    format!(
+        "AI 暂未高置信补齐微信类目必填{attr_kind}属性「{}」，已保留到铺货属性补齐流程",
+        suggestion.attr_key
+    )
+}
+
+fn ensure_category_available_for_shop(
+    conn: &rusqlite::Connection,
+    shop_id: &str,
+    leaf_cat_id: i64,
+) -> AppResult<()> {
+    let available_count = conn.query_row(
+        "SELECT COUNT(*)
+         FROM wechat_category_relations
+         WHERE shop_id = ?1 AND cat_id = ?2 AND status = 1",
+        params![shop_id, leaf_cat_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    if available_count == 0 {
+        return Err(AppError::Validation(format!(
+            "微信类目 {leaf_cat_id} 不在目标店铺 {shop_id} 的生效类目权限内，请先同步店铺类目权限或选择已准入类目"
+        )));
+    }
+    Ok(())
+}
+
 fn resolve_collection_review_category_shop(
     conn: &rusqlite::Connection,
     target_shop_ids: &[String],
 ) -> AppResult<Option<String>> {
-    for shop_id in target_shop_ids {
+    let normalized_target_shop_ids = target_shop_ids
+        .iter()
+        .map(|shop_id| shop_id.trim())
+        .filter(|shop_id| !shop_id.is_empty())
+        .collect::<Vec<_>>();
+    for shop_id in &normalized_target_shop_ids {
         let count = conn.query_row(
-            "SELECT COUNT(*) FROM wechat_categories WHERE shop_id = ?1",
-            [shop_id],
+            "SELECT COUNT(*) FROM wechat_category_relations WHERE shop_id = ?1 AND status = 1",
+            [*shop_id],
             |row| row.get::<_, i64>(0),
         )?;
         if count > 0 {
-            return Ok(Some(shop_id.clone()));
+            return Ok(Some((*shop_id).to_string()));
         }
     }
-    let shop_id = conn
-        .query_row(
+    if !normalized_target_shop_ids.is_empty() {
+        return Ok(None);
+    }
+    let shop_ids = {
+        let mut stmt = conn.prepare(
             "SELECT shop_id
-         FROM wechat_categories
-         GROUP BY shop_id
-         ORDER BY COUNT(*) DESC, shop_id ASC
-         LIMIT 1",
-            [],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?;
-    Ok(shop_id)
+             FROM wechat_category_relations
+             WHERE status = 1
+             GROUP BY shop_id
+             ORDER BY shop_id ASC
+             LIMIT 2",
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    match shop_ids.as_slice() {
+        [] => Ok(None),
+        [shop_id] => Ok(Some(shop_id.clone())),
+        _ => Err(AppError::Validation(
+            "存在多个已同步类目权限的店铺，请先选择目标微信小店".to_string(),
+        )),
+    }
 }
 
 fn review_issue(kind: &str, severity: &str, message: &str) -> Value {
@@ -1351,17 +2272,29 @@ fn review_issue(kind: &str, severity: &str, message: &str) -> Value {
     })
 }
 
+fn collection_review_status_from_issues(issues: &[Value]) -> &'static str {
+    if issues
+        .iter()
+        .any(|issue| issue.get("severity").and_then(Value::as_str) == Some("block"))
+    {
+        return "blocked";
+    }
+    if issues
+        .iter()
+        .any(|issue| issue.get("severity").and_then(Value::as_str) == Some("confirm"))
+    {
+        return "needs_review";
+    }
+    "passed"
+}
+
 fn collection_review_summary(
     status: &str,
     issues: &[Value],
     removed_images: &[Value],
     category_applied: bool,
 ) -> String {
-    let first_issue = issues
-        .iter()
-        .filter_map(|issue| issue.get("message").and_then(Value::as_str))
-        .next()
-        .unwrap_or_default();
+    let first_issue = first_actionable_collection_issue_message(issues);
     match status {
         "passed" => {
             let image_text = if removed_images.is_empty() {
@@ -1374,12 +2307,38 @@ fn collection_review_summary(
             } else {
                 "类目沿用原数据"
             };
-            format!("审查通过，{image_text}，{category_text}")
+            let attr_hint_count = issues
+                .iter()
+                .filter(|issue| {
+                    issue.get("kind").and_then(Value::as_str) == Some("attr")
+                        && issue.get("severity").and_then(Value::as_str) == Some("info")
+                })
+                .count();
+            if attr_hint_count > 0 {
+                format!(
+                    "审查通过，{image_text}，{category_text}，{attr_hint_count} 个属性待铺货补齐"
+                )
+            } else {
+                format!("审查通过，{image_text}，{category_text}")
+            }
         }
         "needs_review" => format!("需要人工确认：{first_issue}"),
         "blocked" => format!("已拦截：{first_issue}"),
         _ => "审查失败".to_string(),
     }
+}
+
+fn first_actionable_collection_issue_message(issues: &[Value]) -> &str {
+    for severity in ["block", "confirm", "info"] {
+        if let Some(message) = issues.iter().find_map(|issue| {
+            (issue.get("severity").and_then(Value::as_str) == Some(severity))
+                .then(|| issue.get("message").and_then(Value::as_str))
+                .flatten()
+        }) {
+            return message;
+        }
+    }
+    ""
 }
 
 fn validate_reviewed_product_for_publish(product: &ExternalProductInput) -> AppResult<()> {
@@ -1478,6 +2437,7 @@ fn resolve_python_binary() -> PathBuf {
         }
     }
     let candidates = [
+        "/usr/bin/python3",
         "/opt/homebrew/opt/python@3.12/libexec/bin/python3",
         "/opt/homebrew/bin/python3",
         "/usr/local/bin/python3",
@@ -1491,6 +2451,41 @@ fn resolve_python_binary() -> PathBuf {
     PathBuf::from("python3")
 }
 
+fn resolve_python_vendor_paths(app: &AppHandle) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let candidate = resource_dir.join("python-vendor");
+        if candidate.exists() {
+            paths.push(candidate);
+        }
+    }
+
+    let local_candidate = PathBuf::from("runtime").join("python-vendor");
+    if local_candidate.exists() {
+        paths.push(local_candidate);
+    }
+
+    paths
+}
+
+fn python_command(app: &AppHandle) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(resolve_python_binary());
+    let mut python_paths: Vec<String> = resolve_python_vendor_paths(app)
+        .into_iter()
+        .map(|path| path.to_string_lossy().to_string())
+        .collect();
+    if let Ok(existing) = std::env::var("PYTHONPATH") {
+        if !existing.trim().is_empty() {
+            python_paths.push(existing);
+        }
+    }
+    if !python_paths.is_empty() {
+        let separator = if cfg!(windows) { ";" } else { ":" };
+        command.env("PYTHONPATH", python_paths.join(separator));
+    }
+    command
+}
+
 async fn run_collector_profile_json_command(
     app: &AppHandle,
     label: &str,
@@ -1502,7 +2497,7 @@ async fn run_collector_profile_json_command(
     let profile_dir_str = profile_dir.to_string_lossy().to_string();
     let script_path = resolve_collector_script(app);
 
-    let mut cmd = tokio::process::Command::new(resolve_python_binary());
+    let mut cmd = python_command(app);
     cmd.arg(&script_path)
         .arg(subcommand)
         .arg("--profile-dir")
@@ -1609,13 +2604,25 @@ pub async fn test_taobao_collect(
     if !trimmed.contains("item.taobao.com") && !trimmed.contains("detail.tmall.com") {
         return Err(AppError::Validation("仅支持淘宝/天猫商品链接".to_string()));
     }
+    if COLLECTOR_RUNNING.load(Ordering::SeqCst) {
+        return Ok(serde_json::json!({
+            "success": false,
+            "error": "后台批量采集正在运行，淘宝采集浏览器 profile 已被占用。请等待采集结束后再测试抓取，或先停止/关闭当前采集窗口。",
+            "raw": null,
+            "stderr": ""
+        }));
+    }
 
     let app_data_dir = app.path().app_data_dir()?;
     let profile_dir = app_data_dir.join("taobao_profile");
     let profile_dir_str = profile_dir.to_string_lossy().to_string();
     let script_path = resolve_collector_script(&app);
 
-    let mut cmd = tokio::process::Command::new(resolve_python_binary());
+    let mut cmd = python_command(&app);
+    cmd.env("WX_XD_TAOBAO_PROFILE_LOCK_TIMEOUT_SECONDS", "3");
+    if headed.unwrap_or(false) {
+        cmd.env("WX_XD_TAOBAO_IGNORE_CAPTCHA_FAILURE_COOLDOWN", "1");
+    }
     cmd.arg(&script_path)
         .arg("collect")
         .arg("--url")
@@ -1756,7 +2763,8 @@ async fn run_batch_collection_tasks(
     let script_path = resolve_collector_script(app);
 
     // 4. 执行批量采集，并实时读取 NDJSON 输出，让页面能看到逐条进度。
-    let mut child = match tokio::process::Command::new(resolve_python_binary())
+    let mut command = python_command(app);
+    let mut child = match command
         .arg(&script_path)
         .arg("batch-collect")
         .arg("--urls")
@@ -2000,7 +3008,8 @@ async fn run_single_collection_task(app: &AppHandle, task: &CollectionTaskView) 
     }
 
     // 3. 执行 Python 采集子进程
-    let output = match tokio::process::Command::new(resolve_python_binary())
+    let mut command = python_command(app);
+    let output = match command
         .arg(&script_path)
         .arg("collect")
         .arg("--url")
@@ -2127,6 +3136,219 @@ mod collection_worker_tests {
     }
 
     #[test]
+    fn ai_review_low_overall_confidence_does_not_force_title_confirmation() {
+        let mut product = demo_product();
+        product.title = "2026 新款儿童短袖".to_string();
+        let mut removed_images = Vec::new();
+        let mut issues = Vec::new();
+        let ai_result = serde_json::json!({
+            "title": "2026 新款儿童短袖",
+            "remove_image_urls": [],
+            "category": null,
+            "needs_human_review": true,
+            "notes": ["类目候选为空"],
+            "confidence": 30
+        });
+
+        apply_ai_collection_review(&mut product, &ai_result, &mut removed_images, &mut issues);
+
+        assert_eq!(product.title, "2026 新款儿童短袖");
+        assert!(removed_images.is_empty());
+        assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn attr_info_does_not_force_collection_review_confirmation() {
+        let issues = vec![review_issue(
+            "attr",
+            "info",
+            "微信类目要求填写「安全等级」，可选值：A类、B类、C类、其他",
+        )];
+
+        assert_eq!(collection_review_status_from_issues(&issues), "passed");
+        assert!(
+            collection_review_summary("passed", &issues, &[], true).contains("1 个属性待铺货补齐")
+        );
+    }
+
+    #[test]
+    fn ai_image_info_does_not_force_collection_review_confirmation() {
+        let issues = vec![review_issue(
+            "image",
+            "info",
+            "AI 图文审查未完成，已改用本地图片规则过滤",
+        )];
+
+        assert_eq!(collection_review_status_from_issues(&issues), "passed");
+    }
+
+    #[test]
+    fn collection_review_summary_prefers_confirm_issue() {
+        let issues = vec![
+            review_issue("image", "info", "AI 图文审查未完成，已改用本地图片规则过滤"),
+            review_issue(
+                "category",
+                "confirm",
+                "类目匹配置信度不足，需要从候选类目中确认",
+            ),
+        ];
+
+        assert_eq!(
+            collection_review_summary("needs_review", &issues, &[], false),
+            "需要人工确认：类目匹配置信度不足，需要从候选类目中确认"
+        );
+    }
+
+    #[test]
+    fn collection_review_category_selects_exact_leaf_over_generic_tie() {
+        let mut product = demo_product();
+        product.title = "卡通印花儿童潮牌t恤短袖夏装中小童纯棉半袖".to_string();
+        product.category_hint = Some("童装/婴儿装/亲子装>T恤".to_string());
+        let candidates = vec![
+            CollectionReviewCategoryCandidate {
+                category_ids: vec![10000116, 10000123, 6216],
+                category_path: "母婴 > 童装 > 亲子装".to_string(),
+                score: 168,
+                source: "local_category_cache_match".to_string(),
+            },
+            CollectionReviewCategoryCandidate {
+                category_ids: vec![10000116, 10000123, 6215],
+                category_path: "母婴 > 童装 > T恤".to_string(),
+                score: 168,
+                source: "local_category_cache_match".to_string(),
+            },
+        ];
+
+        let selected = select_collection_review_category_candidate(&product, &candidates)
+            .expect("应选择明确叶子类目");
+
+        assert_eq!(selected.category_path, "母婴 > 童装 > T恤");
+    }
+
+    #[test]
+    fn collection_review_category_selects_pants_from_title_broad_candidates() {
+        let mut product = demo_product();
+        product.title = "女小童薄款打底裤宝宝弹力紧身小脚裤长裤百搭潮".to_string();
+        product.category_hint = Some("女装/女士精品>卫裤".to_string());
+        let candidates = vec![
+            CollectionReviewCategoryCandidate {
+                category_ids: vec![10000116, 10000123, 6216],
+                category_path: "母婴 > 童装 > 亲子装".to_string(),
+                score: 48,
+                source: "local_category_cache_broad".to_string(),
+            },
+            CollectionReviewCategoryCandidate {
+                category_ids: vec![10000116, 10000123, 494041],
+                category_path: "母婴 > 童装 > 休闲裤".to_string(),
+                score: 48,
+                source: "local_category_cache_broad".to_string(),
+            },
+        ];
+
+        let selected = select_collection_review_category_candidate(&product, &candidates)
+            .expect("应根据标题选择裤装类目");
+
+        assert_eq!(selected.category_path, "母婴 > 童装 > 休闲裤");
+    }
+
+    #[test]
+    fn real_confirm_issue_still_requires_manual_collection_review() {
+        let issues = vec![review_issue(
+            "category",
+            "confirm",
+            "类目匹配置信度不足，需要从候选类目中确认",
+        )];
+
+        assert_eq!(
+            collection_review_status_from_issues(&issues),
+            "needs_review"
+        );
+    }
+
+    #[test]
+    fn collection_review_payload_uses_existing_sku_specs() {
+        let product = demo_product();
+        let payload = collection_review_requirement_payload(&product);
+        let sku_attrs = payload
+            .get("skus")
+            .and_then(Value::as_array)
+            .and_then(|skus| skus.first())
+            .and_then(|sku| sku.get("sku_attrs"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+
+        assert!(sku_attrs.iter().any(|attr| {
+            attr.get("attr_key").and_then(Value::as_str) == Some("颜色")
+                && attr.get("attr_value").and_then(Value::as_str) == Some("白色")
+        }));
+    }
+
+    #[test]
+    fn applied_sale_attr_suggestion_updates_collection_sku_specs() {
+        let mut product = demo_product();
+        let mut payload = collection_review_requirement_payload(&product);
+        let mut attr_suggestions = serde_json::Map::new();
+        let plan = AttributeFillPlan {
+            suggestions: vec![AttributeFillSuggestion {
+                attr_kind: "sale",
+                attr_key: "尺码".to_string(),
+                suggested_value: Some("按 SKU 映射：110cm".to_string()),
+                sku_values: vec![SkuAttrFill {
+                    sku_index: 0,
+                    value: "110cm".to_string(),
+                }],
+                confidence: 90,
+                source: "ai_provider:test".to_string(),
+                applied: true,
+                prompt_json: Value::Null,
+            }],
+        };
+
+        apply_collection_attribute_plan_to_product(
+            &mut product,
+            &mut payload,
+            &plan,
+            &mut attr_suggestions,
+        )
+        .expect("应能写回 SKU 规格");
+
+        assert_eq!(
+            product.skus[0].specs.get("尺码").and_then(Value::as_str),
+            Some("110cm")
+        );
+    }
+
+    #[test]
+    fn collection_review_trusts_ai_suggestion_after_schema_check() {
+        let mut plan = AttributeFillPlan {
+            suggestions: vec![AttributeFillSuggestion {
+                attr_kind: "product",
+                attr_key: "风格".to_string(),
+                suggested_value: Some("运动风".to_string()),
+                sku_values: Vec::new(),
+                confidence: 80,
+                source: "ai_provider:test".to_string(),
+                applied: false,
+                prompt_json: serde_json::json!({
+                    "request": {
+                        "allowed_values": ["运动风", "可爱风"]
+                    },
+                    "response": {
+                        "value": "运动风",
+                        "confidence": 80,
+                        "reason": "AI 根据标题和类目判断"
+                    }
+                }),
+            }],
+        };
+
+        promote_collection_ai_attribute_suggestions(&mut plan);
+
+        assert!(plan.suggestions[0].applied);
+    }
+
+    #[test]
     fn rejects_obvious_platform_or_store_images_by_rule() {
         assert!(rule_image_reject_reason("https://example.com/taobao-logo.png").is_some());
         assert!(rule_image_reject_reason("file:///tmp/head.jpg").is_some());
@@ -2137,6 +3359,18 @@ mod collection_worker_tests {
         .is_some());
         assert!(rule_image_reject_reason("https://wwc.alicdn.com/avatar/xxx.png").is_some());
         assert!(rule_image_reject_reason("https://img.alicdn.com/bao/shophead/xxx.jpg").is_some());
+        assert!(rule_image_reject_reason(
+            "https://gw.alicdn.com/imgextra/i4/O1CN012YkS1S20pKuSLCT05_!!6000000006898-0-tps-720-280.jpg"
+        )
+        .is_some());
+        assert!(rule_image_reject_reason(
+            "https://img.alicdn.com/imgextra/i2/O1CN01a69z6z_!!6000000004257-2-tps-174-106.png"
+        )
+        .is_some());
+        assert!(rule_image_reject_reason(
+            "https://img.alicdn.com/imgextra/i1/6000000008015/O1CN01A9_!!6000000008015-0-shopmanager.jpg"
+        )
+        .is_some());
         // 正常商品图不应被误杀
         assert!(rule_image_reject_reason("https://example.com/product-head.jpg").is_none());
         assert!(rule_image_reject_reason("https://img.alicdn.com/imgextra/abc123.jpg").is_none());

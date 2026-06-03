@@ -14,20 +14,17 @@
 - 外部 HTTP API 审计：记录方法、路径、状态码、耗时和脱敏请求/响应摘要
 - 外部铺货任务创建命令：`create_external_publish_job`
 - 铺货任务查询命令：`get_publish_job`
-- 任务中心命令：`list_task_runs`、`run_publish_tasks_once`、`run_publish_category_prechecks_once`
-- 铺货任务本地 runner：先做店铺、素材数量、类目线索、库存、重复铺货和微信发品参数前置校验
+- 任务中心命令：`list_task_runs`、`run_publish_pipeline_once`
+- 铺货任务本地 runner：对外只暴露一键铺货推进，内部自动处理店铺校验、类目、属性、素材、提交、审核同步和上架确认
 - 微信发品参数草稿：外部可传 `metadata.wechat_category_ids`、`wechat_attrs`、定价策略、运费和服务配置，由系统生成 `metadata.wechat_add_product_payload`
 - 类目规则缓存：按店铺同步微信类目树、单类目详情、商品发布规则、发货方式规则和运费模板 ID
-- 微信类目预检：素材上传前调用 `categoryprecheck`，并用本地类目详情缓存检查必填商品/销售属性
-- 必填属性补齐：对 `CATEGORY_ATTRS_NEED_AI_FILL` 失败项生成 `publish_attribute_suggestions`，支持读取 `metadata.ai_attr_suggestions`，并对单选值、SKU 规格同义词和安全标题规则做高置信自动写回
-- AI Agent 设置页：默认关闭，统一使用 `pi-coding-agent` 调用 OpenAI-compatible 模型网关，API Key 加密保存且可选，采集审查和属性补齐复用同一套技能配置
-- 属性建议确认：支持查看待确认/已采纳建议，展示建议值、SKU 级映射、允许值、来源和置信度，并可单条或批量人工采纳
-- 铺货任务详情可按商品直接查看当前任务的属性建议，并支持在商品折叠项内采纳当前商品建议
-- 微信素材上传命令：`run_publish_asset_uploads_once`
+- 微信类目预检：由铺货推进内部自动调用 `categoryprecheck`，并用本地类目详情缓存检查必填商品/销售属性
+- 必填属性补齐：优先自动使用采集审查结果、AI 建议、类目默认值、SKU 规格同义词和标题规则，高置信时直接写回草稿
+- AI Agent 设置页：默认关闭，统一使用 `pi-coding-agent` 调用 OpenAI-compatible 模型网关，API Key 加密保存且可选，采集审查和铺货自动补齐复用同一套技能配置
+- 铺货结果页：只显示待铺货、铺货中、已上架和异常；异常原因按人能处理的问题展示
 - 图片素材表 `publish_assets`，按店铺缓存微信 `mmecimage.cn/p/` 图片链接并记录失败原因
 - 外部图片素材预处理：下载图片、检查 301/302、校验格式/大小/宽高，必要时压缩/转 JPEG 后走微信二进制上传
-- 微信发品提交命令：`run_publish_submits_once`
-- `assets_ready` 任务项可调用微信 `addproduct`，成功后保存微信 `product_id` 并进入 `submitted`
+- 微信发品提交：由铺货推进内部调用 `addproduct`，成功后保存微信 `product_id` 并自动同步审核/上架状态
 - 批量改价任务创建、查询、本地前置校验、微信 `updateproduct` 提交和线上价格确认
 - 售后同步和异常处理台：拉取售后列表/详情、同步官方拒绝原因、脱敏保存详情、展示处理状态/失败原因、关联订单、回写退款调整项，并支持人工责任归因、供应商赔付回款和人工触发同意/拒绝
 - 纠纷/保障单同步：调用微信 `searchguaranteeorder/getguaranteeorder`，脱敏缓存纠纷详情，在售后异常页展示举证状态、赔付金额、过期时间和关联订单，并支持记录本地跟进状态、责任方、备注和供应商赔付回款
@@ -93,10 +90,7 @@ python scripts/wx_xd_local_api.py runner order-sync
 python scripts/wx_xd_local_api.py runner order-detail-sync
 python scripts/wx_xd_local_api.py runner purchase-task-generation
 python scripts/wx_xd_local_api.py runner delivery-submit
-python scripts/wx_xd_local_api.py runner publish-precheck
-python scripts/wx_xd_local_api.py runner publish-category-precheck
-python scripts/wx_xd_local_api.py runner publish-assets
-python scripts/wx_xd_local_api.py runner publish-submit
+python scripts/wx_xd_local_api.py runner publish-pipeline
 python scripts/wx_xd_local_api.py runner price-precheck
 python scripts/wx_xd_local_api.py runner price-submit
 python scripts/wx_xd_local_api.py runner price-confirm
@@ -144,6 +138,31 @@ cargo check --manifest-path src-tauri/Cargo.toml
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
 ```
 
+## 打包安装
+
+生成 macOS 安装包：
+
+```bash
+npm run tauri build
+```
+
+打包前会自动执行：
+
+- `npm run build`：构建前端资源。
+- `npm run bundle:runtime`：把淘宝采集 Python 依赖和 AI Agent Node 依赖准备到 `runtime/`。
+- Tauri 打包：把前端、Rust 后端、Python 脚本、`python-vendor`、Node 可执行文件、`node_modules` 和 `requirements.txt` 一并写入 `.app` 资源目录。
+
+产物位置：
+
+- `.app`：`src-tauri/target/release/bundle/macos/微信小店铺货中台.app`
+- `.dmg`：`src-tauri/target/release/bundle/dmg/微信小店铺货中台_0.1.0_aarch64.dmg`
+
+安装方式：双击 `.dmg`，把 `微信小店铺货中台.app` 拖到 `Applications`。
+
+注意：当前安装包已包含 Python 业务依赖、Node 可执行文件和 Node 业务依赖；
+淘宝采集脚本仍会调用系统里的 `/usr/bin/python3`。如果要发给完全没有
+Python/Command Line Tools 的机器，后续应把 Python 也改成 Tauri sidecar 随包分发。
+
 ## 文档入口
 
 - 微信小店官方 API 缓存：[docs/wechat-shop-api/index.md](/Users/wangjunhao/Code/project/wx-xd/docs/wechat-shop-api/index.md)
@@ -162,11 +181,11 @@ cargo fmt --manifest-path src-tauri/Cargo.toml --check
 - AI Provider 默认关闭，API Key 必须加密保存，不得写入前端、日志、测试快照或文档样例。
 - 微信 API 统一走 client，集中处理 token、限流、重试、错误码和日志。
 - 长耗时任务必须进入本地任务队列，不在页面请求中阻塞。
-- 人工采纳属性建议后只能回到待类目预检状态，不能越过微信 `categoryprecheck` 或审核链路。
+- 铺货页面只暴露一键推进和异常处理，不能把微信 `categoryprecheck`、素材上传、`addproduct` 或上架确认拆成用户操作。
 - 自动推进只能串联现有 runner，单步失败要可见，并且必须尊重自动发货开关。
 - 自寄快递发货前优先同步微信快递公司列表，`delivery_id` 必须来自官方列表或明确兜底为 `OTHER`。
 - 首版采购为人工处理；供应商 agent 桥可在桌面端或脚本中导出非敏任务并写回物流、异常或映射结果，不自动调用供应商平台下单。
-- 自动推进默认覆盖铺货前置校验、必填属性补齐、类目预检、素材上传、`addproduct` 提交、状态同步和上架提交，各步骤可单独关闭。
+- 自动推进里的铺货默认作为一个整体执行；底层前置校验、必填属性补齐、类目预检、素材上传、`addproduct` 提交、状态同步和上架提交不再拆成页面开关。
 - 售后拒绝原因优先使用店铺级官方缓存；同意/拒绝只允许人工或受控本地主控 API 明确触发，必须写入最近动作、微信 API 日志和通知中心；不得进入自动推进 runner。
 - 库存风控只能基于真实外部商品库存、采购占用、供应商异常和店铺商品映射生成提醒，不得虚构库存或用库存提醒引导虚假动销。
 - 动销分析只使用真实订单、真实售后、真实库存、采购成本和店铺商品映射生成建议，不把铺货建议当成自动刷单或虚假动销动作。
@@ -178,4 +197,4 @@ cargo fmt --manifest-path src-tauri/Cargo.toml --check
 
 1. 更深的供应商协同处理、售后凭证上传和受控纠纷平台处理动作。
 2. 外部图片 AI 补齐、去重和生产化素材规则。
-3. AI 属性建议的批量编辑、原因追踪和二次确认体验。
+3. 铺货异常的自动归因、自动修复和批量重试体验。

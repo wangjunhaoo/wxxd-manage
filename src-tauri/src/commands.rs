@@ -28,6 +28,15 @@ pub use publish::*;
 pub use purchase::*;
 pub use shops::*;
 use support::*;
+pub(crate) use support::{
+    get_agent_active_categories, get_agent_after_sale_addresses, get_agent_aftersale,
+    get_agent_category_detail, get_agent_category_tree, get_agent_delivery_companies,
+    get_agent_freight_templates, get_agent_inventory_risk, get_agent_order,
+    get_agent_product_detail, get_agent_product_sales, get_agent_profit_summary,
+    get_agent_purchase_task, get_agent_reject_reasons, get_agent_shop_info, get_agent_shop_product,
+    list_agent_aftersales, list_agent_collections, list_agent_orders, search_agent_categories,
+    search_agent_docs,
+};
 pub use system::*;
 
 use crate::crypto::{
@@ -45,7 +54,9 @@ use crate::models::{
     ApiQuotaCheckResult, AssetUploadBatchResult, AutomationStepError, BackupCreateResult,
     BackupInfo, BackupRestoreRequest, BackupRestoreResult, CategoryCacheView,
     CategoryCatalogListResult, CategoryCatalogShopSummary, CategoryCatalogSyncResult,
-    CategoryRuleSyncResult, CollectionPublishRequest, CollectionReviewBatchResult,
+    CategoryRelationView, CategoryRuleSyncResult, CollectionImageRemoveRequest,
+    CollectionImageUploadRequest, CollectionPublishRequest, CollectionPublishWorkspaceResetRequest,
+    CollectionPublishWorkspaceResetResult, CollectionReviewBatchResult,
     CollectionReviewCategoryCandidate, CollectionReviewConfirmRequest, CollectionReviewRunRequest,
     CollectionTaskView, CreateShopRequest, DashboardSummary, DeliveryCompanySyncResult,
     DeliveryCompanyView, DeliverySettings, DeliverySubmitBatchResult, ExternalApiLogView,
@@ -64,33 +75,31 @@ use crate::models::{
     PriceUpdateSubmitBatchResult, ProductListingBatchResult, ProductManagementListResult,
     ProductManagementShopView, ProductManagementView, ProductSalesAnalysisListResult,
     ProductSalesAnalysisTotals, ProductSalesAnalysisView, ProductStatusSyncBatchResult,
-    ProductSubmitBatchResult, PublishAttributeFillBatchResult,
-    PublishAttributeSuggestionApplyRequest, PublishAttributeSuggestionApplyResult,
-    PublishAttributeSuggestionListResult, PublishAttributeSuggestionSkuValue,
-    PublishAttributeSuggestionView, PublishCategoryPrecheckBatchResult, PublishJobCreated,
-    PublishJobItemView, PublishJobView, PublishPricingStrategy, PublishProductView,
-    PublishTaskBatchResult, PurchaseTaskBatchResult, PurchaseTaskExportResult,
-    PurchaseTaskIssueRequest, PurchaseTaskIssueResult, PurchaseTaskListResult,
-    PurchaseTaskMappingRequest, PurchaseTaskMappingResult, PurchaseTaskShipmentRequest,
-    PurchaseTaskShipmentResult, PurchaseTaskView, ShipmentListResult, ShipmentRecordRequest,
-    ShipmentRecordResult, ShipmentRetryResult, ShipmentView, Shop, ShopBasicInfoSyncResult,
-    ShopCredentialCheck, ShopGroup, ShopListItem, SupplierAftersaleFollowupListResult,
-    SupplierAftersaleFollowupRecordRequest, SupplierAftersaleFollowupRecordResult,
-    SupplierAftersaleFollowupView, SupplierAgentApplyItemResult, SupplierAgentApplyRequest,
-    SupplierAgentApplyResult, SupplierAgentExportResult, TaskRunView,
+    ProductSubmitBatchResult, PublishAttributeFillBatchResult, PublishCategoryPrecheckBatchResult,
+    PublishJobCreated, PublishJobItemView, PublishJobView, PublishPipelineRunResult,
+    PublishPricingStrategy, PublishProductView, PublishTaskBatchResult, PurchaseTaskBatchResult,
+    PurchaseTaskExportResult, PurchaseTaskIssueRequest, PurchaseTaskIssueResult,
+    PurchaseTaskListResult, PurchaseTaskMappingRequest, PurchaseTaskMappingResult,
+    PurchaseTaskShipmentRequest, PurchaseTaskShipmentResult, PurchaseTaskView, ShipmentListResult,
+    ShipmentRecordRequest, ShipmentRecordResult, ShipmentRetryResult, ShipmentView, Shop,
+    ShopBasicInfoSyncResult, ShopCredentialCheck, ShopGroup, ShopListItem,
+    SupplierAftersaleFollowupListResult, SupplierAftersaleFollowupRecordRequest,
+    SupplierAftersaleFollowupRecordResult, SupplierAftersaleFollowupView,
+    SupplierAgentApplyItemResult, SupplierAgentApplyRequest, SupplierAgentApplyResult,
+    SupplierAgentExportResult, TaskRunView, WorkspaceResetTableCount,
 };
 use crate::storage::{
     database_path, expires_at_shanghai, format_shanghai, is_future_rfc3339, now_shanghai,
     open_connection, AppError, AppResult,
 };
 use crate::wechat::{
-    OrderPriceUpdateInfo, ProductGetInfo, WechatApiError, WechatCallMeta, WechatCallResult,
-    WechatProductSnapshot, WechatRawCall, WechatShopClient,
+    MerchantAddressDetailSummary, OrderPriceUpdateInfo, ProductGetInfo, WechatApiError,
+    WechatCallMeta, WechatCallResult, WechatProductSnapshot, WechatRawCall, WechatShopClient,
 };
 use chrono::{DateTime, Duration, Utc};
 use image::{codecs::jpeg::JpegEncoder, DynamicImage, GenericImageView, ImageFormat};
 use reqwest::{
-    header::{CONTENT_LENGTH, CONTENT_TYPE, USER_AGENT},
+    header::{ACCEPT, ACCEPT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, USER_AGENT},
     redirect::Policy,
     Url,
 };
@@ -142,6 +151,7 @@ const IMAGE_DOWNLOAD_MAX_BYTES: u64 = 20 * 1024 * 1024;
 const WECHAT_IMAGE_MAX_BYTES: usize = 10 * 1024 * 1024;
 const WECHAT_IMAGE_TARGET_BYTES: usize = 9_500_000;
 const IMAGE_USER_AGENT: &str = "wx-xd-image-preflight/0.1";
+const IMAGE_ACCEPT_HEADER: &str = "image/avif,image/webp,image/apng,image/*,*/*;q=0.8";
 
 #[derive(Debug)]
 struct TargetShop {
@@ -213,6 +223,17 @@ struct CachedWechatCategory {
     raw_payload: Value,
 }
 
+#[derive(Debug)]
+struct CachedWechatCategoryRelation {
+    cat_id: i64,
+    status: i64,
+    uneffective_reason: Option<String>,
+    effective_time: Option<i64>,
+    uneffective_time: Option<i64>,
+    qua_id: Option<i64>,
+    raw_payload: Value,
+}
+
 #[derive(Debug, Default)]
 struct CategoryDetailCounts {
     product_attr_count: i64,
@@ -222,7 +243,6 @@ struct CategoryDetailCounts {
 
 #[derive(Debug, Default)]
 struct CachedCategoryRequirementCheck {
-    detail_found: bool,
     missing_product_attrs: Vec<String>,
     missing_sale_attrs: Vec<String>,
 }
@@ -257,6 +277,9 @@ impl CachedCategoryRequirementCheck {
 struct CategoryRequiredAttr {
     key: String,
     options: Vec<String>,
+    attr_type: Option<String>,
+    append_allowed: bool,
+    related_options: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -282,70 +305,12 @@ struct AttributeFillPlan {
     suggestions: Vec<AttributeFillSuggestion>,
 }
 
-#[derive(Debug)]
-struct AttributeSuggestionApplyRow {
-    id: String,
-    item: PendingPublishItem,
-    attr_kind: String,
-    attr_key: String,
-    suggested_value: Option<String>,
-    sku_values_json: Option<String>,
-    confidence: i64,
-    source: String,
-    applied: bool,
-    prompt_json: Option<String>,
-}
-
-impl AttributeSuggestionApplyRow {
-    fn to_attribute_fill_suggestion(&self) -> AppResult<AttributeFillSuggestion> {
-        let attr_kind = match self.attr_kind.as_str() {
-            "product" => "product",
-            "sale" => "sale",
-            _ => {
-                return Err(AppError::Validation(format!(
-                    "未知属性类型：{}",
-                    self.attr_kind
-                )));
-            }
-        };
-        let sku_values = parse_sku_attr_fill_values(self.sku_values_json.as_deref())?;
-        if self
-            .suggested_value
-            .as_deref()
-            .map(str::trim)
-            .unwrap_or_default()
-            .is_empty()
-            && sku_values.is_empty()
-        {
-            return Err(AppError::Validation(format!(
-                "属性 {} 没有可采纳的建议值",
-                self.attr_key
-            )));
-        }
-        let prompt_json = self
-            .prompt_json
-            .as_deref()
-            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-            .unwrap_or(Value::Null);
-        Ok(AttributeFillSuggestion {
-            attr_kind,
-            attr_key: self.attr_key.clone(),
-            suggested_value: self.suggested_value.clone(),
-            sku_values,
-            confidence: self.confidence.max(100),
-            source: format!("manual_accept:{}", self.source),
-            applied: true,
-            prompt_json,
-        })
-    }
-}
-
 impl AttributeFillPlan {
     fn can_auto_apply(&self) -> bool {
         !self.suggestions.is_empty()
             && self.suggestions.iter().all(|suggestion| {
                 suggestion.applied
-                    && suggestion.confidence >= 85
+                    && suggestion.confidence >= 65
                     && (suggestion.suggested_value.is_some() || !suggestion.sku_values.is_empty())
             })
     }

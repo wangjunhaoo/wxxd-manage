@@ -428,7 +428,7 @@ fn agent_runtime_status(app: &AppHandle, provider_type: &str) -> String {
     if !script_path.exists() {
         return "script_missing".to_string();
     }
-    match std::process::Command::new(resolve_agent_node_binary())
+    match std::process::Command::new(resolve_agent_node_binary(app))
         .arg(&script_path)
         .arg("--check")
         .output()

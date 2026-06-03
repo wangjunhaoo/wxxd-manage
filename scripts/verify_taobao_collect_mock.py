@@ -208,6 +208,7 @@ def _new_tmall_dom_html() -> str:
   <title>女童裙子夏款2026新款洋气童装女孩夏季网纱公主裙儿童夏天连衣裙-tmall.com天猫</title>
   <style>
     img.product { width: 320px; height: 320px; display: block; }
+    img.detail-logo { width: 1000px; height: 1000px; display: block; }
   </style>
 </head>
 <body>
@@ -215,6 +216,7 @@ def _new_tmall_dom_html() -> str:
   <h1 class="ItemTitle--mainTitle">女童裙子夏款2026新款洋气童装女孩夏季网纱公主裙儿童夏天连衣裙</h1>
   <div class="Price--priceText">平台加补后 ￥ 87.71 起</div>
   <img class="product" src="//img.alicdn.com/imgextra/i3/2200571728892/O1CN01AZn06T2FYarCmauzK_!!4611686018427384828-0-item_pic.jpg_q50.jpg_.webp" />
+  <img class="product" src="//img.alicdn.com/imgextra/i2/O1CN01a69z6z1hJklCkBqOU_!!6000000004257-2-tps-174-106.png" />
   <img class="product" src="//img.alicdn.com/imgextra/i3/2200571728892/O1CN01AZn06T2FYarCmauzK_!!4611686018427384828-0-item_pic.jpg_.webp" />
   <img class="product" src="//img.alicdn.com/imgextra/i4/2200571728892/O1CN012LjZAT2FYarDaO2IG_!!2200571728892.jpg_q50.jpg_.webp" />
   <section class="sku-panel">
@@ -240,6 +242,8 @@ def _new_tmall_dom_html() -> str:
   </section>
   <section class="detail-content">
     <h2>图文详情</h2>
+    <img class="detail detail-logo" src="//img.alicdn.com/imgextra/i3/2200571728892/O1CN01STORELOGO2FYarCmauzK_!!2200571728892.jpg" />
+    <img class="detail" src="//img.alicdn.com/imgextra/i1/6000000008015/O1CN01A9D1kI294vE5ALHMJ_!!6000000008015-0-shopmanager.jpg" />
     <img class="detail" src="//img.alicdn.com/imgextra/i1/2200571728892/O1CN01DETAIL2FYarCmauzK_!!2200571728892.jpg_790x10000q75.jpg_.webp" />
   </section>
   <section class="rate-list">
@@ -258,6 +262,7 @@ def _detail_jsonp() -> str:
                 "images": [
                     "//img.alicdn.com/mock-main-1.jpg",
                     "https://img.alicdn.com/mock-main-2.jpg",
+                    "https://gw.alicdn.com/imgextra/i4/O1CN012YkS1S20pKuSLCT05_!!6000000006898-0-tps-720-280.jpg",
                 ],
             },
             "sku": {
@@ -442,6 +447,10 @@ def _run_collect_flow(headed: bool) -> Dict[str, object]:
         "no_false_positive": not captcha_false_positive,
         "parsed_title": parsed.get("title") == "Mock 淘宝商品",
         "parsed_skus": len(parsed.get("skus") or []) == 2,
+        "parsed_images_no_tps_asset": parsed.get("images") == [
+            "https://img.alicdn.com/mock-main-1.jpg",
+            "https://img.alicdn.com/mock-main-2.jpg",
+        ],
         "parsed_detail_image": parsed.get("detail_images") == [
             "https://img.alicdn.com/mock-detail-1.jpg"
         ],
@@ -489,6 +498,14 @@ def _run_dom_fallback_flow(headed: bool) -> Dict[str, object]:
         "dom_title": parsed.get("title") == "女童裙子夏款2026新款洋气童装女孩夏季网纱公主裙儿童夏天连衣裙",
         "dom_images": len(parsed.get("images") or []) >= 2,
         "dom_images_no_review": not any("rate" in image for image in parsed.get("images") or []),
+        "dom_images_no_platform_asset": not any(
+            "-tps-" in image or "shopmanager" in image
+            for image in (parsed.get("images") or []) + (parsed.get("detail_images") or [])
+        ),
+        "dom_detail_no_leading_store_logo": not any(
+            "STORELOGO" in image
+            for image in parsed.get("detail_images") or []
+        ),
         "dom_images_deduped": len(parsed.get("images") or []) == len(set(parsed.get("images") or [])),
         "dom_images_normalized": not any("_q50" in image or "_.webp" in image for image in parsed.get("images") or []),
         "dom_detail_images": parsed.get("detail_images") == [
@@ -499,7 +516,8 @@ def _run_dom_fallback_flow(headed: bool) -> Dict[str, object]:
         "dom_param_brand": parsed.get("brand_hint") == "神奇童年",
         "dom_param_item_no": parsed.get("metadata", {}).get("taobao_item_params", {}).get("货号") == "Q13209",
         "dom_param_material": parsed.get("metadata", {}).get("taobao_item_params", {}).get("材质成分") == "其他材质100%",
-        "dom_category_hint": parsed.get("category_hint") == "童装/女童连衣裙",
+        "dom_param_quality_trusted": parsed.get("metadata", {}).get("taobao_item_params_quality", {}).get("trusted") is True,
+        "dom_category_hint_not_hardcoded": parsed.get("category_hint") is None,
         "dom_price": (parsed.get("skus") or [{}])[0].get("cost_price") == 87.71,
         "container_needs_dom_enrichment": _needs_dom_enrichment(container_product),
         "container_merged_skus": len(merged.get("skus") or []) == 4,

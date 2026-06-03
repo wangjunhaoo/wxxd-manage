@@ -135,6 +135,173 @@ pub fn restore_database_backup(
     })
 }
 
+const COLLECTION_PUBLISH_RESET_CONFIRM_TEXT: &str = "确认清理采集和铺货数据";
+
+#[tauri::command]
+pub fn reset_collection_publish_workspace(
+    app: AppHandle,
+    request: CollectionPublishWorkspaceResetRequest,
+) -> AppResult<CollectionPublishWorkspaceResetResult> {
+    if request.confirm_text.trim() != COLLECTION_PUBLISH_RESET_CONFIRM_TEXT {
+        return Err(AppError::Validation(format!(
+            "确认文本不匹配，请输入：{COLLECTION_PUBLISH_RESET_CONFIRM_TEXT}"
+        )));
+    }
+
+    let conn = open_connection(&app)?;
+    let before_integrity = sqlite_integrity_message(&conn)?;
+    if !before_integrity.eq_ignore_ascii_case("ok") {
+        return Err(AppError::Validation(format!(
+            "清理前数据库完整性校验失败：{before_integrity}"
+        )));
+    }
+    let before_counts = collection_publish_workspace_counts(&conn)?;
+    drop(conn);
+
+    let backup = create_database_backup_file(&app, "manual-before-reset-collection-publish")?;
+
+    let mut conn = open_connection(&app)?;
+    {
+        let tx = conn.transaction()?;
+        tx.execute_batch(
+            r#"
+            DELETE FROM task_logs
+             WHERE task_id IN (SELECT id FROM publish_jobs)
+                OR item_id IN (SELECT id FROM publish_job_items)
+                OR task_id IN (SELECT id FROM collection_tasks)
+                OR item_id IN (SELECT id FROM collection_tasks)
+                OR task_id IN (
+                     SELECT id FROM task_runs
+                      WHERE task_type LIKE 'publish.%'
+                         OR task_type LIKE 'collection.%'
+                   );
+
+            DELETE FROM task_runs
+             WHERE task_type LIKE 'publish.%'
+                OR task_type LIKE 'collection.%';
+
+            DELETE FROM notifications
+             WHERE source_type IN ('publish_item', 'publish_job', 'collection_task');
+
+            DELETE FROM agent_run_events
+             WHERE run_id IN (
+               SELECT id FROM agent_runs
+                WHERE scene IN ('collection_review', 'publish_attribute')
+                   OR source_type IN ('collection_task', 'publish_item')
+             );
+
+            DELETE FROM agent_runs
+             WHERE scene IN ('collection_review', 'publish_attribute')
+                OR source_type IN ('collection_task', 'publish_item');
+
+            DELETE FROM publish_attribute_suggestions;
+            DELETE FROM publish_assets;
+            DELETE FROM publish_job_items;
+            DELETE FROM publish_products;
+            DELETE FROM publish_jobs;
+            DELETE FROM collection_tasks;
+            "#,
+        )?;
+        tx.commit()?;
+    }
+
+    let after_counts = collection_publish_workspace_counts(&conn)?;
+    let integrity_message = sqlite_integrity_message(&conn)?;
+    let integrity_ok = integrity_message.eq_ignore_ascii_case("ok");
+    if !integrity_ok {
+        return Err(AppError::Validation(format!(
+            "清理后数据库完整性校验失败：{integrity_message}；清理前备份为 {}",
+            backup.file_path
+        )));
+    }
+
+    let counts = before_counts
+        .into_iter()
+        .zip(after_counts)
+        .map(|(before, after)| WorkspaceResetTableCount {
+            name: before.name,
+            before: before.count,
+            after: after.count,
+        })
+        .collect::<Vec<_>>();
+
+    Ok(CollectionPublishWorkspaceResetResult {
+        backup,
+        integrity_ok,
+        integrity_message,
+        counts,
+        message: "采集/铺货工作区已清理；店铺、密钥、微信类目缓存、运费模板、订单、售后、采购和发货数据已保留。".to_string(),
+    })
+}
+
+struct WorkspaceResetCountSnapshot {
+    name: String,
+    count: i64,
+}
+
+fn collection_publish_workspace_counts(
+    conn: &Connection,
+) -> AppResult<Vec<WorkspaceResetCountSnapshot>> {
+    let queries = [
+        ("collection_tasks", "SELECT COUNT(*) FROM collection_tasks"),
+        ("publish_jobs", "SELECT COUNT(*) FROM publish_jobs"),
+        ("publish_products", "SELECT COUNT(*) FROM publish_products"),
+        ("publish_job_items", "SELECT COUNT(*) FROM publish_job_items"),
+        ("publish_assets", "SELECT COUNT(*) FROM publish_assets"),
+        (
+            "publish_attribute_suggestions",
+            "SELECT COUNT(*) FROM publish_attribute_suggestions",
+        ),
+        (
+            "publish_collection_notifications",
+            "SELECT COUNT(*) FROM notifications WHERE source_type IN ('publish_item', 'publish_job', 'collection_task')",
+        ),
+        (
+            "publish_collection_task_logs",
+            "SELECT COUNT(*) FROM task_logs
+              WHERE task_id IN (SELECT id FROM publish_jobs)
+                 OR item_id IN (SELECT id FROM publish_job_items)
+                 OR task_id IN (SELECT id FROM collection_tasks)
+                 OR item_id IN (SELECT id FROM collection_tasks)
+                 OR task_id IN (
+                      SELECT id FROM task_runs
+                       WHERE task_type LIKE 'publish.%'
+                          OR task_type LIKE 'collection.%'
+                    )",
+        ),
+        (
+            "publish_collection_task_runs",
+            "SELECT COUNT(*) FROM task_runs WHERE task_type LIKE 'publish.%' OR task_type LIKE 'collection.%'",
+        ),
+        (
+            "publish_collection_agent_runs",
+            "SELECT COUNT(*) FROM agent_runs
+              WHERE scene IN ('collection_review', 'publish_attribute')
+                 OR source_type IN ('collection_task', 'publish_item')",
+        ),
+        (
+            "publish_collection_agent_run_events",
+            "SELECT COUNT(*) FROM agent_run_events
+              WHERE run_id IN (
+                SELECT id FROM agent_runs
+                 WHERE scene IN ('collection_review', 'publish_attribute')
+                    OR source_type IN ('collection_task', 'publish_item')
+              )",
+        ),
+    ];
+
+    queries
+        .iter()
+        .map(|(name, sql)| {
+            let count = count_by_sql(conn, sql)?;
+            Ok(WorkspaceResetCountSnapshot {
+                name: (*name).to_string(),
+                count,
+            })
+        })
+        .collect()
+}
+
 #[tauri::command]
 pub fn list_external_api_logs(
     app: AppHandle,

@@ -8,6 +8,7 @@ import {
   SessionManager,
   SettingsManager,
 } from "@mariozechner/pi-coding-agent";
+import { createAgentTools } from "./agent_tools.mjs";
 
 const CUSTOM_PROVIDER_TYPE = "custom";
 const DEFAULT_CUSTOM_PROVIDER_ID = "wx-xd-custom";
@@ -201,9 +202,52 @@ function buildPrompt(request) {
     "# 任务",
     `技能：${request.skill_name || "wx-xd-skill"}@${request.skill_version || "1.0.0"}`,
     "",
+    "# 可用工具",
+    "你有以下查询工具可用，主动使用它们获取所需数据：",
+    "",
+    "【商品】",
+    "- get_product_detail(task_id)：查询采集商品完整数据（标题、图片、SKU、元数据、已有属性建议）",
+    "",
+    "【类目】",
+    "- search_categories(shop_id, query)：搜索微信类目，返回候选类目路径和 cat_id",
+    "- get_category_detail(shop_id, cat_id)：查询类目必填属性和 allowed_values",
+    "- get_active_categories(shop_id)：查询店铺已开通的叶子类目列表",
+    "- get_category_tree(shop_id, parent_cat_id?)：查询类目树结构",
+    "",
+    "【店铺】",
+    "- get_shop_info(shop_id)：查询店铺状态和权限",
+    "- get_freight_templates(shop_id)：查询运费模板列表",
+    "- get_after_sale_addresses(shop_id)：查询售后/退货地址",
+    "- get_delivery_companies(shop_id)：查询可用快递公司",
+    "",
+    "【文档】",
+    "- search_wechat_docs(query)：查询微信小店文档（属性定义、枚举说明）",
+    "",
+    "【订单】",
+    "- get_order(order_id)：查询订单完整详情（商品行、采购任务、发货记录）",
+    "- list_orders(shop_id?, status?, limit?)：查询订单列表",
+    "",
+    "【售后】",
+    "- get_aftersale(aftersale_id)：查询售后单详情",
+    "- list_aftersales(shop_id?, status?, limit?)：查询售后列表",
+    "- get_reject_reasons(shop_id)：查询拒绝原因枚举",
+    "",
+    "【采购】",
+    "- get_purchase_task(task_id)：查询采购任务详情（供应商、物流、成本）",
+    "",
+    "【商品跟踪】",
+    "- get_shop_product(shop_id, external_product_id)：查询商品在店铺的铺货状态",
+    "- list_collection_tasks(status?, limit?)：查询采集任务列表",
+    "",
+    "【分析】",
+    "- get_product_sales(external_product_id)：查询商品销售统计",
+    "- get_inventory_risk(external_product_id?)：查询库存风险",
+    "- get_profit_summary(order_id?, limit?)：查询利润汇总",
+    "",
     "# 输出约束",
     "只返回一个合法 JSON 对象，不要 Markdown，不要代码块，不要解释文字。",
     "如果无法高置信判断，也必须按 schema 返回空值、低 confidence 和原因。",
+    "在输出前，自检所有属性值是否在 allowed_values 中；不在的必须修正。",
     "",
     "# 技能说明",
     String(request.instructions || "").trim(),
@@ -219,7 +263,13 @@ function buildPrompt(request) {
   ].join("\n");
 }
 
-function createResourceLoader() {
+function createResourceLoader(request) {
+  const agentState = {
+    apiBaseUrl: request.agent_api_base_url || "http://127.0.0.1:17890",
+    apiKey: request.agent_api_key || "",
+  };
+  const customTools = createAgentTools(agentState);
+
   return {
     getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
     getSkills: () => ({ skills: [], diagnostics: [] }),
@@ -228,15 +278,17 @@ function createResourceLoader() {
     getAgentsFiles: () => ({ agentsFiles: [] }),
     getSystemPrompt: () =>
       [
-        "你是 wx-xd 桌面端的结构化业务 Agent。",
-        "你只能根据当前请求输入进行判断，不能臆造微信类目、资质、库存、订单、供应商凭证或平台处理结果。",
-        "你没有文件、命令、网络浏览和数据库工具；不要声称已经执行外部动作。",
+        "你是 wx-xd 桌面端的结构化业务 Agent，负责审查采集商品并补齐微信小店发品属性。",
+        "你可以使用查询工具获取所需数据：商品(get_product_detail)、类目(search_categories/get_category_detail/get_active_categories/get_category_tree)、店铺(get_shop_info/get_freight_templates/get_after_sale_addresses/get_delivery_companies)、文档(search_wechat_docs)。",
+        "主动使用工具获取信息，不要猜测。不确定时查文档、查类目详情、查已有数据。",
         "所有业务时间按 Asia/Shanghai / UTC+08:00 理解。",
-        "最终输出必须是机器可解析 JSON。",
+        "最终输出必须是机器可解析 JSON，严格遵循 output_schema。",
       ].join("\n"),
     getAppendSystemPrompt: () => [],
     extendResources: () => {},
     reload: async () => {},
+    // 暴露自定义工具
+    getCustomTools: () => customTools,
   };
 }
 
@@ -246,6 +298,9 @@ async function run(request) {
   const model = configureModelRegistry(authStorage, modelRegistry, request);
 
   const cwd = process.cwd();
+  const resourceLoader = createResourceLoader(request);
+  const customTools = resourceLoader.getCustomTools();
+
   const { session } = await createAgentSession({
     cwd,
     agentDir: cwd,
@@ -253,12 +308,13 @@ async function run(request) {
     thinkingLevel: "off",
     authStorage,
     modelRegistry,
-    resourceLoader: createResourceLoader(),
-    noTools: "all",
+    resourceLoader,
+    noTools: "builtin",
+    customTools,
     sessionManager: SessionManager.inMemory(cwd),
     settingsManager: SettingsManager.inMemory({
       compaction: { enabled: false },
-      retry: { enabled: true, maxRetries: 1 },
+      retry: { enabled: false },
     }),
   });
 

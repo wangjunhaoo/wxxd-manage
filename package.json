@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
+    "build:tauri": "npm run build && npm run bundle:runtime",
+    "bundle:runtime": "bash scripts/prepare_bundle_runtime.sh",
     "preview": "vite preview",
     "tauri": "tauri"
   },
