@@ -2059,6 +2059,17 @@ def _parse_first_price(text):
 TAOBAO_PARAM_LABELS = [
     "品牌",
     "货号",
+    "功能",
+    "领型设计",
+    "衣长类型",
+    "版型分类",
+    "适用人群",
+    "款式细节",
+    "衣门襟",
+    "系列",
+    "吊牌价",
+    "是否商场同款",
+    "是否带帽子",
     "图案",
     "厚薄",
     "裙型",
@@ -2185,20 +2196,23 @@ def _extract_params_from_text_nodes(text_nodes):
     params = {}
     labels = set(TAOBAO_PARAM_LABELS)
     cleaned_nodes = [_clean_dom_text_value(item) for item in text_nodes if _clean_dom_text_value(item)]
+    # 淘宝参数区文本节点方向不固定：顶部卡片区是 value→label(值在标签前)，下方列表区是
+    # label→value(标签在值前)，同一商品两种混排。固定优先取后一个节点会在卡片区串位
+    # (面料取到下一项"圆领"、风格取到适用年龄值)。改用「相邻值去重分配」自适应两种方向：
+    # 优先取前一个未占用的相邻值，否则取后一个——每个值节点只分配给一个标签，天然不串位。
+    used_value_indices = set()
     for idx, node in enumerate(cleaned_nodes):
         if node not in labels:
             continue
-
-        previous_value = cleaned_nodes[idx - 1] if idx > 0 else ""
-        next_value = cleaned_nodes[idx + 1] if idx + 1 < len(cleaned_nodes) else ""
-        candidates = []
-        if node in VALUE_BEFORE_PARAM_LABELS:
-            candidates.extend([previous_value, next_value])
-        else:
-            candidates.extend([next_value, previous_value])
-        for value in candidates:
+        for cand_idx in (idx - 1, idx + 1):
+            if not (0 <= cand_idx < len(cleaned_nodes)):
+                continue
+            if cand_idx in used_value_indices:
+                continue
+            value = cleaned_nodes[cand_idx]
             if value and value not in labels and _is_plausible_param_value(node, value):
                 params[node] = value
+                used_value_indices.add(cand_idx)
                 break
 
     joined_text = " ".join(cleaned_nodes)
@@ -2212,6 +2226,52 @@ def _extract_params_from_text_nodes(text_nodes):
             value = _clean_dom_text_value(match.group(1))
             if value and len(value) <= 120 and _is_plausible_param_value(label, value):
                 params[label] = value
+    return params
+
+
+def _extract_params_from_leaves(leaves):
+    """基于元素屏幕坐标做视觉配对。淘宝新版 PC 详情页参数纯前端渲染、不在任何 mtop API，
+    且渲染后文本平铺顺序不稳——按坐标配对才稳定。参数区两种布局：卡片区 value 在 label
+    正上方(value 行在上、label 行在下)，列表区 value 在 label 右侧同行。对每个参数 label，
+    优先取右侧同行最近的值，否则取正上方最近的值；排除标题/导航等非值文本。
+    leaves: [[text, x, y], ...]
+    """
+    labels = set(TAOBAO_PARAM_LABELS)
+    non_value = {
+        "参数信息", "参数", "图集", "用户评价", "图文详情", "本店推荐",
+        "看了又看", "宝贝", "搜索", "搜本店", "进店", "客服",
+    }
+    cleaned = []
+    for item in leaves:
+        if not isinstance(item, (list, tuple)) or len(item) < 3:
+            continue
+        text = _clean_dom_text_value(item[0])
+        if text:
+            cleaned.append((text, item[1], item[2]))
+
+    params = {}
+    for lt, lx, ly in cleaned:
+        if lt not in labels:
+            continue
+        best = None
+        best_score = float("inf")
+        for vt, vx, vy in cleaned:
+            if not vt or vt in labels or vt in non_value:
+                continue
+            dx, dy = vx - lx, vy - ly
+            if abs(dy) < 15 and 0 < dx < 320:
+                # 右侧同行（列表区）
+                if dx < best_score:
+                    best_score = dx
+                    best = vt
+            elif abs(dx) < 45 and 15 < abs(dy) < 40:
+                # 正上方或正下方（卡片区，渲染方向不固定）；右侧布局优先于卡片布局
+                score = abs(dy) + 200
+                if score < best_score:
+                    best_score = score
+                    best = vt
+        if best and _is_plausible_param_value(lt, best):
+            params[lt] = best
     return params
 
 
@@ -2455,7 +2515,22 @@ def _extract_product_from_dom(page, source_url, preload_detail=True):
                         'a[href*="shop"]'
                     ]),
                     textNodes,
-                    images: imgs
+                    images: imgs,
+                    paramLeaves: (() => {
+                        const leaves = [];
+                        document.querySelectorAll('*').forEach((el) => {
+                            if (el.children.length === 0) {
+                                const t = (el.innerText || el.textContent || '').trim();
+                                if (t && t.length < 50) {
+                                    const r = el.getBoundingClientRect();
+                                    if (r.width > 0 && r.height > 0) {
+                                        leaves.push([t, Math.round(r.left), Math.round(r.top)]);
+                                    }
+                                }
+                            }
+                        });
+                        return leaves;
+                    })()
                 };
             }
         """)
@@ -2470,8 +2545,12 @@ def _extract_product_from_dom(page, source_url, preload_detail=True):
     )
     price = _parse_first_price(data.get("priceText"))
     text_nodes = data.get("textNodes") or []
+    leaves = data.get("paramLeaves") or []
     sku_options = _extract_sku_options_from_text_nodes(text_nodes)
-    item_params = _extract_params_from_text_nodes(text_nodes)
+    # 优先按屏幕坐标视觉配对(稳定、不受平铺顺序影响)；文本平铺仅补漏视觉未覆盖的参数
+    item_params = _extract_params_from_leaves(leaves) if leaves else {}
+    for _pk, _pv in _extract_params_from_text_nodes(text_nodes).items():
+        item_params.setdefault(_pk, _pv)
     item_params_quality = _item_params_quality_report(item_params)
     brand_hint = item_params.get("品牌") or "无品牌"
     has_stock, stock_quantity = _detect_stock_from_text_nodes(text_nodes)
