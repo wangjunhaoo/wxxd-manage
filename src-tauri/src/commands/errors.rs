@@ -34,8 +34,14 @@ pub enum ErrorCategory {
 }
 
 /// 一条错误码的归一化判定结果。全部字段均为 `'static`，可 `Copy`。
+///
+/// `category`（三类法）由一致性单测校验、保持归一表自洽；`suggested_action`
+/// 是 41 条精心编写的中文「一键动作提示」，设计用于前端异常处理展示（待接线）。
+/// 二者目前仅被单测读取，故在 lib 构建标注 `allow(dead_code)`——它们是新模型
+/// 错误归一的单一事实来源，非废弃代码。
 #[derive(Debug, Clone, Copy)]
 pub struct ErrorClassification {
+    #[allow(dead_code)]
     pub category: ErrorCategory,
     /// 最终失败时展示给用户的关注级别（Transient 在重试耗尽后按此展示）。
     pub attention: Attention,
@@ -44,6 +50,7 @@ pub struct ErrorClassification {
     /// 给“能处理问题的人”看的中文原因。
     pub human_reason: &'static str,
     /// 推荐的一键动作提示。
+    #[allow(dead_code)]
     pub suggested_action: &'static str,
 }
 

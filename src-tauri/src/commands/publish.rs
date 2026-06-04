@@ -91,6 +91,13 @@ fn run_precheck_one_item(conn: &mut Connection, item: &mut PendingPublishItem) -
         insert_task_log(&tx, &item.job_id, Some(&item.item_id), "info", &summary, None)?;
     }
 
+    // 注入全局价格策略：把 markup/fixed/floor 写进 product.metadata，使随后由
+    // prepare_add_product_payload_for_publish 生成的微信发品草稿按用户配置定价。
+    // 新流水线此前从不注入，发品一律走 resolve_sku_sale_price_cents 写死的 1.6 倍兜底；
+    // 在发品链路首站补齐后，草稿固化进 raw_payload，贯穿 attr_fill 与最终 addproduct 提交。
+    let pricing_strategy = load_publish_pricing_strategy(&tx)?;
+    apply_publish_pricing_strategy(&mut product, &pricing_strategy);
+
     if let Some((code, summary)) = precheck_publish_item(&tx, item, &product)? {
         mark_publish_item_failed(&tx, item, code, &summary)?;
         tx.commit()?;

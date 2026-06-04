@@ -12,6 +12,7 @@ mod pipeline;
 mod price_update;
 mod publish;
 mod purchase;
+mod shop_products;
 mod shops;
 mod support;
 mod system;
@@ -30,6 +31,7 @@ pub use pipeline::*;
 pub use price_update::*;
 pub use publish::*;
 pub use purchase::*;
+pub use shop_products::*;
 pub use shops::*;
 use support::*;
 pub(crate) use support::{
@@ -88,6 +90,8 @@ use crate::models::{
     PurchaseTaskShipmentRequest, PurchaseTaskShipmentResult, PurchaseTaskView, ShipmentListResult,
     ShipmentRecordRequest, ShipmentRecordResult, ShipmentRetryResult, ShipmentView, Shop,
     ShopBasicInfoSyncResult, ShopCredentialCheck, ShopGroup, ShopListItem,
+    ShopProductListResult, SyncShopProductsResult, WechatShopProductDetailView,
+    WechatShopProductSkuView, WechatShopProductView,
     SupplierAftersaleFollowupListResult, SupplierAftersaleFollowupRecordRequest,
     SupplierAftersaleFollowupRecordResult, SupplierAftersaleFollowupView,
     SupplierAgentApplyItemResult, SupplierAgentApplyRequest, SupplierAgentApplyResult,

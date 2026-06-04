@@ -42,6 +42,12 @@ const FREIGHT_TEMPLATE_LIST_URL: &str =
 const MERCHANT_ADDRESS_LIST_URL: &str =
     "https://api.weixin.qq.com/channels/ec/merchant/address/list";
 const MERCHANT_ADDRESS_GET_URL: &str = "https://api.weixin.qq.com/channels/ec/merchant/address/get";
+const PRODUCT_LIST_URL: &str = "https://api.weixin.qq.com/channels/ec/product/list/get";
+const PRODUCT_DELISTING_URL: &str = "https://api.weixin.qq.com/channels/ec/product/delisting";
+const PRODUCT_DELETE_URL: &str = "https://api.weixin.qq.com/channels/ec/product/delete";
+const STOCK_GET_URL: &str = "https://api.weixin.qq.com/channels/ec/product/stock/get";
+const STOCK_BATCHGET_URL: &str = "https://api.weixin.qq.com/channels/ec/product/stock/batchget";
+const STOCK_UPDATE_URL: &str = "https://api.weixin.qq.com/channels/ec/product/stock/update";
 
 #[derive(Clone)]
 pub struct WechatShopClient {
@@ -648,6 +654,147 @@ struct MerchantAddressGetResponse {
     errcode: i64,
     errmsg: String,
     address_detail: Option<serde_json::Value>,
+}
+
+// ===== 商品管理（列表 / 下架 / 删除）与库存（查询 / 批量 / 更新）相关结构 =====
+
+#[derive(Debug, Serialize)]
+pub struct ProductListCall {
+    pub meta: WechatCallMeta,
+    pub result: WechatCallResult<ProductListResult>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProductDelistingCall {
+    pub meta: WechatCallMeta,
+    pub result: WechatCallResult<ProductMutationResult>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProductDeleteCall {
+    pub meta: WechatCallMeta,
+    pub result: WechatCallResult<ProductMutationResult>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StockGetCall {
+    pub meta: WechatCallMeta,
+    pub result: WechatCallResult<StockInfo>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StockBatchGetCall {
+    pub meta: WechatCallMeta,
+    pub result: WechatCallResult<StockBatchInfo>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StockUpdateCall {
+    pub meta: WechatCallMeta,
+    pub result: WechatCallResult<ProductMutationResult>,
+}
+
+/// 获取商品列表：游标分页，仅返回商品 id 列表（详情需再调 get_product）。
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ProductListResult {
+    pub product_ids: Vec<String>,
+    pub next_key: Option<String>,
+    pub total_num: i64,
+}
+
+/// 下架 / 删除 / 改库存这类只回 errcode/errmsg 的写操作统一结果。
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ProductMutationResult {
+    pub raw_payload: serde_json::Value,
+}
+
+/// 单 SKU 库存查询结果（normal=通用库存，total=通用+区域总量）。
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct StockInfo {
+    pub normal_stock_num: i64,
+    pub total_stock_num: i64,
+    pub raw_payload: serde_json::Value,
+}
+
+/// 批量库存查询结果（spu→sku→warehouse 三层，原样透传给上层解析）。
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct StockBatchInfo {
+    pub spu_stock_list: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProductListRequest<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<i64>,
+    page_size: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_key: Option<&'a str>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProductIdRequest<'a> {
+    product_id: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct StockGetRequest<'a> {
+    product_id: &'a str,
+    sku_id: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct StockBatchGetRequest<'a> {
+    product_id: &'a [String],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stock_type: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+struct StockUpdateRequest<'a> {
+    product_id: &'a str,
+    sku_id: &'a str,
+    diff_type: i64,
+    num: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProductListResponse {
+    errcode: i64,
+    errmsg: String,
+    #[serde(default)]
+    product_ids: Vec<serde_json::Value>,
+    #[serde(default)]
+    next_key: Option<String>,
+    #[serde(default)]
+    total_num: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProductMutationResponse {
+    errcode: i64,
+    errmsg: String,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StockGetResponse {
+    errcode: i64,
+    errmsg: String,
+    data: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StockBatchGetResponse {
+    errcode: i64,
+    errmsg: String,
+    data: Option<StockBatchData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StockBatchData {
+    #[serde(default)]
+    spu_stock_list: Vec<serde_json::Value>,
 }
 
 impl Default for WechatShopClient {
@@ -1962,6 +2109,274 @@ impl WechatShopClient {
                 method: "POST",
             },
             result,
+        })
+    }
+
+    /// 获取商品列表（游标分页）。仅返回商品 id 列表，详情需逐个再调 get_product。
+    pub async fn get_product_list(
+        &self,
+        access_token: &str,
+        status: Option<i64>,
+        page_size: i64,
+        next_key: Option<&str>,
+    ) -> AppResult<ProductListCall> {
+        let mut url = Url::parse(PRODUCT_LIST_URL)
+            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
+        url.query_pairs_mut()
+            .append_pair("access_token", access_token);
+
+        let response = self
+            .http
+            .post(url)
+            .json(&ProductListRequest {
+                status,
+                page_size,
+                next_key,
+            })
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ProductListResponse>()
+            .await?;
+
+        let result = if response.errcode == 0 {
+            let product_ids = response
+                .product_ids
+                .iter()
+                .filter_map(json_value_to_string)
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .collect();
+            WechatCallResult::Success(ProductListResult {
+                product_ids,
+                next_key: response.next_key.filter(|value| !value.is_empty()),
+                total_num: response.total_num.unwrap_or_default(),
+            })
+        } else {
+            WechatCallResult::ApiError(WechatApiError {
+                errcode: response.errcode,
+                errmsg: response.errmsg,
+            })
+        };
+
+        Ok(ProductListCall {
+            meta: WechatCallMeta {
+                endpoint: PRODUCT_LIST_URL,
+                method: "POST",
+            },
+            result,
+        })
+    }
+
+    /// 商品下架。只对非卖赠品生效；审核中的商品需先撤回审核。
+    pub async fn delisting_product(
+        &self,
+        access_token: &str,
+        product_id: &str,
+    ) -> AppResult<ProductDelistingCall> {
+        let mut url = Url::parse(PRODUCT_DELISTING_URL)
+            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
+        url.query_pairs_mut()
+            .append_pair("access_token", access_token);
+
+        let response = self
+            .http
+            .post(url)
+            .json(&ProductIdRequest { product_id })
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ProductMutationResponse>()
+            .await?;
+
+        Ok(ProductDelistingCall {
+            meta: WechatCallMeta {
+                endpoint: PRODUCT_DELISTING_URL,
+                method: "POST",
+            },
+            result: mutation_result(response),
+        })
+    }
+
+    /// 删除商品。审核中的商品无法删除。
+    pub async fn delete_product(
+        &self,
+        access_token: &str,
+        product_id: &str,
+    ) -> AppResult<ProductDeleteCall> {
+        let mut url = Url::parse(PRODUCT_DELETE_URL)
+            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
+        url.query_pairs_mut()
+            .append_pair("access_token", access_token);
+
+        let response = self
+            .http
+            .post(url)
+            .json(&ProductIdRequest { product_id })
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ProductMutationResponse>()
+            .await?;
+
+        Ok(ProductDeleteCall {
+            meta: WechatCallMeta {
+                endpoint: PRODUCT_DELETE_URL,
+                method: "POST",
+            },
+            result: mutation_result(response),
+        })
+    }
+
+    /// 获取单 SKU 库存（normal=通用库存，total=通用+区域总量）。
+    pub async fn get_stock(
+        &self,
+        access_token: &str,
+        product_id: &str,
+        sku_id: &str,
+    ) -> AppResult<StockGetCall> {
+        let mut url = Url::parse(STOCK_GET_URL)
+            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
+        url.query_pairs_mut()
+            .append_pair("access_token", access_token);
+
+        let response = self
+            .http
+            .post(url)
+            .json(&StockGetRequest { product_id, sku_id })
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<StockGetResponse>()
+            .await?;
+
+        let result = if response.errcode == 0 {
+            let data = response.data.unwrap_or(serde_json::Value::Null);
+            let normal =
+                wechat_json_value_to_i64(data.get("normal_stock_num")).unwrap_or_default();
+            let total = wechat_json_value_to_i64(data.get("total_stock_num")).unwrap_or(normal);
+            WechatCallResult::Success(StockInfo {
+                normal_stock_num: normal,
+                total_stock_num: total,
+                raw_payload: data,
+            })
+        } else {
+            WechatCallResult::ApiError(WechatApiError {
+                errcode: response.errcode,
+                errmsg: response.errmsg,
+            })
+        };
+
+        Ok(StockGetCall {
+            meta: WechatCallMeta {
+                endpoint: STOCK_GET_URL,
+                method: "POST",
+            },
+            result,
+        })
+    }
+
+    /// 批量获取库存（单次 product_id 上限 50）。spu→sku→warehouse 三层原样透传。
+    pub async fn batch_get_stock(
+        &self,
+        access_token: &str,
+        product_ids: &[String],
+        stock_type: Option<i64>,
+    ) -> AppResult<StockBatchGetCall> {
+        let mut url = Url::parse(STOCK_BATCHGET_URL)
+            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
+        url.query_pairs_mut()
+            .append_pair("access_token", access_token);
+
+        let response = self
+            .http
+            .post(url)
+            .json(&StockBatchGetRequest {
+                product_id: product_ids,
+                stock_type,
+            })
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<StockBatchGetResponse>()
+            .await?;
+
+        let result = if response.errcode == 0 {
+            WechatCallResult::Success(StockBatchInfo {
+                spu_stock_list: response
+                    .data
+                    .map(|data| data.spu_stock_list)
+                    .unwrap_or_default(),
+            })
+        } else {
+            WechatCallResult::ApiError(WechatApiError {
+                errcode: response.errcode,
+                errmsg: response.errmsg,
+            })
+        };
+
+        Ok(StockBatchGetCall {
+            meta: WechatCallMeta {
+                endpoint: STOCK_BATCHGET_URL,
+                method: "POST",
+            },
+            result,
+        })
+    }
+
+    /// 快速更新库存。diff_type：1 增 / 2 减 / 3 设置（3 在高并发下有覆盖风险，优先 1/2）。
+    pub async fn update_stock(
+        &self,
+        access_token: &str,
+        product_id: &str,
+        sku_id: &str,
+        diff_type: i64,
+        num: i64,
+    ) -> AppResult<StockUpdateCall> {
+        let mut url = Url::parse(STOCK_UPDATE_URL)
+            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
+        url.query_pairs_mut()
+            .append_pair("access_token", access_token);
+
+        let response = self
+            .http
+            .post(url)
+            .json(&StockUpdateRequest {
+                product_id,
+                sku_id,
+                diff_type,
+                num,
+            })
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<ProductMutationResponse>()
+            .await?;
+
+        Ok(StockUpdateCall {
+            meta: WechatCallMeta {
+                endpoint: STOCK_UPDATE_URL,
+                method: "POST",
+            },
+            result: mutation_result(response),
+        })
+    }
+}
+
+/// 下架 / 删除 / 改库存等只回 errcode/errmsg 的写操作统一构造结果。
+fn mutation_result(mut response: ProductMutationResponse) -> WechatCallResult<ProductMutationResult> {
+    if response.errcode == 0 {
+        let mut raw_payload = serde_json::Map::new();
+        raw_payload.insert("errcode".to_string(), serde_json::json!(response.errcode));
+        raw_payload.insert("errmsg".to_string(), serde_json::json!(response.errmsg));
+        raw_payload.extend(std::mem::take(&mut response.extra));
+        WechatCallResult::Success(ProductMutationResult {
+            raw_payload: serde_json::Value::Object(raw_payload),
+        })
+    } else {
+        WechatCallResult::ApiError(WechatApiError {
+            errcode: response.errcode,
+            errmsg: response.errmsg,
         })
     }
 }

@@ -1241,6 +1241,51 @@ export type PipelineProductView = {
   shops: PipelineShopTargetView[];
 };
 
+// 微信小店真实商品（后端 list_cached_shop_products / get_cached_shop_product_detail / sync_shop_products，字段 snake_case）
+export type WechatShopProductSkuView = {
+  sku_id: string;
+  out_sku_id: string | null;
+  sku_code: string | null;
+  sale_price_cents: number | null;
+  stock_num: number | null;
+  sku_attrs: string | null;
+  thumb_img: string | null;
+};
+
+export type WechatShopProductView = {
+  id: string;
+  shop_id: string;
+  shop_name: string;
+  wechat_product_id: string;
+  out_product_id: string | null;
+  title: string;
+  head_img: string | null;
+  status: number;
+  edit_status: number | null;
+  min_price_cents: number | null;
+  cat_id: number | null;
+  total_stock: number;
+  sku_count: number;
+  audit_summary: string | null;
+  synced_at: string;
+  updated_at: string;
+};
+
+export type WechatShopProductDetailView = WechatShopProductView & {
+  skus: WechatShopProductSkuView[];
+};
+
+export type ShopProductListResult = {
+  items: WechatShopProductView[];
+  total: number;
+};
+
+export type SyncShopProductsResult = {
+  synced_count: number;
+  total_num: number;
+  failed_count: number;
+};
+
 export type PublishPricingStrategy = {
   sale_price_markup_rate: number;
   sale_price_fixed_cents: number;

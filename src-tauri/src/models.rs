@@ -987,6 +987,61 @@ pub struct ProductManagementShopView {
 }
 
 #[derive(Debug, Serialize)]
+pub struct ShopProductListResult {
+    pub items: Vec<WechatShopProductView>,
+    pub total: i64,
+}
+
+/// 缓存的微信小店真实商品（列表项），数据来自 sync_shop_products。
+#[derive(Debug, Serialize, Clone)]
+pub struct WechatShopProductView {
+    pub id: String,
+    pub shop_id: String,
+    pub shop_name: String,
+    pub wechat_product_id: String,
+    pub out_product_id: Option<String>,
+    pub title: String,
+    pub head_img: Option<String>,
+    pub status: i64,
+    pub edit_status: Option<i64>,
+    pub min_price_cents: Option<i64>,
+    pub cat_id: Option<i64>,
+    pub total_stock: i64,
+    pub sku_count: i64,
+    pub audit_summary: Option<String>,
+    pub synced_at: String,
+    pub updated_at: String,
+}
+
+/// 缓存的商品 SKU。
+#[derive(Debug, Serialize, Clone)]
+pub struct WechatShopProductSkuView {
+    pub sku_id: String,
+    pub out_sku_id: Option<String>,
+    pub sku_code: Option<String>,
+    pub sale_price_cents: Option<i64>,
+    pub stock_num: Option<i64>,
+    pub sku_attrs: Option<String>,
+    pub thumb_img: Option<String>,
+}
+
+/// 商品详情（缓存的商品列表项 + SKU 列表）。
+#[derive(Debug, Serialize)]
+pub struct WechatShopProductDetailView {
+    #[serde(flatten)]
+    pub product: WechatShopProductView,
+    pub skus: Vec<WechatShopProductSkuView>,
+}
+
+/// 同步微信商品的结果统计。
+#[derive(Debug, Serialize)]
+pub struct SyncShopProductsResult {
+    pub synced_count: i64,
+    pub total_num: i64,
+    pub failed_count: i64,
+}
+
+#[derive(Debug, Serialize)]
 pub struct ProductSalesAnalysisTotals {
     pub product_count: i64,
     pub sold_product_count: i64,

@@ -1,6 +1,6 @@
 # 微信小店 API 文档索引
 
-- 生成时间：2026-05-22T15:31:36+08:00
+- 生成时间：2026-06-04T14:51:31+08:00
 - 官方源：https://developers.weixin.qq.com/doc/store/shop/API/
 - 原始 HTML 目录：`docs/wechat-shop-api/raw/`
 - 接口数量：80
@@ -13,12 +13,12 @@
 | 优先级 | 接口 | 本系统用途 | 权限确认 | 本地文档 | 官方链接 | 下载状态 |
 | --- | --- | --- | --- | --- | --- | --- |
 | 核心必用 | 获取接口调用凭据 | 逐店直连获取 access_token | 是 | `docs/wechat-shop-api/raw/apimgnt/common/api_getaccesstoken.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/apimgnt/common/api_getaccesstoken.html) | unchanged |
-| 核心候选 | 获取稳定版接口调用凭据 | token 刷新和稳定调用备选方案 | 是 | `docs/wechat-shop-api/raw/apimgnt/common/api_getstableaccesstoken.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/apimgnt/common/api_getstableaccesstoken.html) | unchanged |
-| 核心候选 | 查询接口调用额度 | 监控接口额度和限流策略 | 是 | `docs/wechat-shop-api/raw/apimgnt/common/api_getapiquota.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/apimgnt/common/api_getapiquota.html) | unchanged |
-| 核心候选 | 查询 rid 信息 | 按微信返回 rid 排查失败请求 | 是 | `docs/wechat-shop-api/raw/apimgnt/common/api_getridinfo.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/apimgnt/common/api_getridinfo.html) | unchanged |
-| 核心必用 | 图片上传 | 商品主图、详情图、售后凭证上传 | 是 | `docs/wechat-shop-api/raw/apimgnt/resource/api_img_upload.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/apimgnt/resource/api_img_upload.html) | unchanged |
-| 核心候选 | 资质图片上传 | 品牌、类目、特殊资质上传 | 是 | `docs/wechat-shop-api/raw/apimgnt/resource/api_qualificationupload.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/apimgnt/resource/api_qualificationupload.html) | unchanged |
-| 可选增强 | 视频初始化上传 | 商品视频素材上传 | 是 | `docs/wechat-shop-api/raw/apimgnt/resource/api_video_initupload.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/apimgnt/resource/api_video_initupload.html) | unchanged |
+| 核心候选 | 获取稳定版接口调用凭据 | token 刷新和稳定调用备选方案 | 是 | `docs/wechat-shop-api/raw/apimgnt/common/api_getstableaccesstoken.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/apimgnt/common/api_getstableaccesstoken.html) | downloaded |
+| 核心候选 | 查询接口调用额度 | 监控接口额度和限流策略 | 是 | `docs/wechat-shop-api/raw/apimgnt/common/api_getapiquota.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/apimgnt/common/api_getapiquota.html) | failed |
+| 核心候选 | 查询 rid 信息 | 按微信返回 rid 排查失败请求 | 是 | `docs/wechat-shop-api/raw/apimgnt/common/api_getridinfo.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/apimgnt/common/api_getridinfo.html) | downloaded |
+| 核心必用 | 图片上传 | 商品主图、详情图、售后凭证上传 | 是 | `docs/wechat-shop-api/raw/apimgnt/resource/api_img_upload.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/apimgnt/resource/api_img_upload.html) | downloaded |
+| 核心候选 | 资质图片上传 | 品牌、类目、特殊资质上传 | 是 | `docs/wechat-shop-api/raw/apimgnt/resource/api_qualificationupload.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/apimgnt/resource/api_qualificationupload.html) | downloaded |
+| 可选增强 | 视频初始化上传 | 商品视频素材上传 | 是 | `docs/wechat-shop-api/raw/apimgnt/resource/api_video_initupload.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/apimgnt/resource/api_video_initupload.html) | downloaded |
 | 可选增强 | 视频分片上传 | 商品视频素材上传 | 是 | `docs/wechat-shop-api/raw/apimgnt/resource/api_video_uploadpart.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/apimgnt/resource/api_video_uploadpart.html) | unchanged |
 | 可选增强 | 视频完成上传 | 商品视频素材上传 | 是 | `docs/wechat-shop-api/raw/apimgnt/resource/api_video_finishupload.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/apimgnt/resource/api_video_finishupload.html) | unchanged |
 | 可选增强 | 获取视频播放信息 | 校验商品视频素材 | 是 | `docs/wechat-shop-api/raw/apimgnt/resource/api_video_getplayinfo.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/apimgnt/resource/api_video_getplayinfo.html) | unchanged |
@@ -27,7 +27,7 @@
 
 | 优先级 | 接口 | 本系统用途 | 权限确认 | 本地文档 | 官方链接 | 下载状态 |
 | --- | --- | --- | --- | --- | --- | --- |
-| 核心必用 | 获取店铺基本信息 | 店铺接入校验、店铺资料同步 | 是 | `docs/wechat-shop-api/raw/storemanage/api_mmecapi_basicinfo.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/storemanage/api_mmecapi_basicinfo.html) | unchanged |
+| 核心必用 | 获取店铺基本信息 | 店铺接入校验、店铺资料同步 | 是 | `docs/wechat-shop-api/raw/storemanage/api_mmecapi_basicinfo.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/storemanage/api_mmecapi_basicinfo.html) | failed |
 | 可选增强 | 获取店铺二维码 | 店铺推广物料 | 是 | `docs/wechat-shop-api/raw/storemanage/api_getshopqrcode.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/storemanage/api_getshopqrcode.html) | unchanged |
 | 可选增强 | 获取店铺 H5 URL | 店铺外链和运营入口 | 是 | `docs/wechat-shop-api/raw/storemanage/api_getshoph5url.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/storemanage/api_getshoph5url.html) | unchanged |
 | 可选增强 | 获取店铺推广链接 | 渠道推广和投放链接 | 是 | `docs/wechat-shop-api/raw/storemanage/api_getshoptaglink.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/storemanage/api_getshoptaglink.html) | unchanged |
@@ -41,7 +41,7 @@
 | 核心必用 | 获取类目发品规则 | 铺货前规则校验 | 是 | `docs/wechat-shop-api/raw/category-rule/api_getcategoryproductrule.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/category-rule/api_getcategoryproductrule.html) | unchanged |
 | 核心候选 | 获取类目配送方式规则 | 运费模板和发货方式校验 | 是 | `docs/wechat-shop-api/raw/category-rule/api_get_delivery_method_category_rule.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/category-rule/api_get_delivery_method_category_rule.html) | unchanged |
 | 核心候选 | 获取有效品牌列表 | 品牌匹配和资质校验 | 是 | `docs/wechat-shop-api/raw/brand/api_getvalidbrandlistlogic.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/brand/api_getvalidbrandlistlogic.html) | unchanged |
-| 核心候选 | 获取品牌详情 | 品牌资质和发品限制确认 | 是 | `docs/wechat-shop-api/raw/brand/api_getbrandlogic.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/brand/api_getbrandlogic.html) | unchanged |
+| 核心候选 | 获取品牌详情 | 品牌资质和发品限制确认 | 是 | `docs/wechat-shop-api/raw/brand/api_getbrandlogic.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/brand/api_getbrandlogic.html) | failed |
 
 ### 商品与铺货
 
@@ -49,7 +49,7 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | 核心必用 | 新增商品 | 批量铺货创建店铺商品 | 是 | `docs/wechat-shop-api/raw/channels-shop-product/shop/api_addproduct.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_addproduct.html) | unchanged |
 | 核心必用 | 更新商品 | 同步标题、图片、价格、SKU 和属性 | 是 | `docs/wechat-shop-api/raw/channels-shop-product/shop/api_updateproduct.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_updateproduct.html) | unchanged |
-| 核心必用 | 获取商品 | 同步店铺商品详情和审核结果 | 是 | `docs/wechat-shop-api/raw/channels-shop-product/shop/api_getproduct.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_getproduct.html) | unchanged |
+| 核心必用 | 获取商品 | 同步店铺商品详情和审核结果 | 是 | `docs/wechat-shop-api/raw/channels-shop-product/shop/api_getproduct.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_getproduct.html) | downloaded |
 | 核心必用 | 获取商品列表 | 店铺商品盘点和增量同步 | 是 | `docs/wechat-shop-api/raw/channels-shop-product/shop/api_getproductlist.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_getproductlist.html) | unchanged |
 | 核心必用 | 商品上架 | 铺货后上架 | 是 | `docs/wechat-shop-api/raw/channels-shop-product/shop/api_listingproduct.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_listingproduct.html) | unchanged |
 | 核心必用 | 商品下架 | 断货、违规、滞销下架 | 是 | `docs/wechat-shop-api/raw/channels-shop-product/shop/api_delistingproduct.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_delistingproduct.html) | unchanged |
@@ -60,8 +60,8 @@
 | 可选增强 | 获取免审策略 | 识别免审或审核策略 | 是 | `docs/wechat-shop-api/raw/channels-shop-product/shop/api_getproductauditstrategy.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_getproductauditstrategy.html) | unchanged |
 | 可选增强 | 设置免审策略 | 策略配置参考 | 是 | `docs/wechat-shop-api/raw/channels-shop-product/shop/api_setproductauditstrategy.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_setproductauditstrategy.html) | unchanged |
 | 可选增强 | 获取商品二维码 | 商品推广物料 | 是 | `docs/wechat-shop-api/raw/channels-shop-product/shop/api_getproductqrcode.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_getproductqrcode.html) | unchanged |
-| 可选增强 | 获取商品 H5 URL | 商品链接和运营验证 | 是 | `docs/wechat-shop-api/raw/channels-shop-product/shop/api_getproducth5url.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_getproducth5url.html) | unchanged |
-| 可选增强 | 获取商品 scheme | 跳转链路和私域投放 | 是 | `docs/wechat-shop-api/raw/channels-shop-product/shop/api_getproductscheme.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_getproductscheme.html) | unchanged |
+| 可选增强 | 获取商品 H5 URL | 商品链接和运营验证 | 是 | `docs/wechat-shop-api/raw/channels-shop-product/shop/api_getproducth5url.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_getproducth5url.html) | downloaded |
+| 可选增强 | 获取商品 scheme | 跳转链路和私域投放 | 是 | `docs/wechat-shop-api/raw/channels-shop-product/shop/api_getproductscheme.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_getproductscheme.html) | downloaded |
 | 核心候选 | 外部商品映射 | 供应商商品和微信商品映射参考 | 是 | `docs/wechat-shop-api/raw/channels-shop-product/shop/api_externalproductmapping.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_externalproductmapping.html) | unchanged |
 | 核心候选 | 新版外部商品映射 | 供应商商品和微信商品映射参考 | 是 | `docs/wechat-shop-api/raw/channels-shop-product/shop/api_externalproductmappingnew.html` | [官方文档](https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_externalproductmappingnew.html) | unchanged |
 

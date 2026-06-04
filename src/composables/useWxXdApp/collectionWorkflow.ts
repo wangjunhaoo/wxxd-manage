@@ -194,39 +194,6 @@ export function useCollectionWorkflow({
     const strategy = publishPricingStrategy.value;
     return `成本×${formatRate(strategy.sale_price_markup_rate)} + ${centsToYuan(strategy.sale_price_fixed_cents)}元，最低${centsToYuan(strategy.sale_price_floor_cents)}元`;
   });
-  const publishPricingPreviewRows = computed(() => {
-    const rows: Array<{
-      task_id: string;
-      title: string;
-      sku_label: string;
-      cost_price_yuan: number;
-      sale_price_cents: number;
-    }> = [];
-    for (const task of selectedCollectionTasks.value) {
-      const product = parseCollectionProduct(task);
-      const skus = Array.isArray(product?.skus) ? product.skus : [];
-      for (const sku of skus) {
-        const costPrice = Number(sku?.cost_price);
-        if (!Number.isFinite(costPrice) || costPrice <= 0) {
-          continue;
-        }
-        rows.push({
-          task_id: task.id,
-          title: product?.title || task.title,
-          sku_label: formatSkuSpecs(sku),
-          cost_price_yuan: costPrice,
-          sale_price_cents: computeSalePriceCents(
-            costPrice,
-            publishPricingForm.value,
-          ),
-        });
-        if (rows.length >= 20) {
-          return rows;
-        }
-      }
-    }
-    return rows;
-  });
   async function refreshCollectionTasks() {
     try {
       collectionTasks.value = await command<CollectionTaskView[]>(
@@ -560,25 +527,6 @@ export function useCollectionWorkflow({
     return Number.isInteger(rate)
       ? String(rate)
       : rate.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
-  }
-  function formatSkuSpecs(sku: any) {
-    const specs = sku?.specs;
-    if (!specs) {
-      return sku?.external_sku_id || "默认规格";
-    }
-    if (typeof specs === "string") {
-      return specs;
-    }
-    if (Array.isArray(specs)) {
-      return specs.join(" / ");
-    }
-    return (
-      Object.entries(specs)
-        .map(([key, value]) => `${key}：${value}`)
-        .join(" / ") ||
-      sku?.external_sku_id ||
-      "默认规格"
-    );
   }
   function computeSalePriceCents(
     costPriceYuan: number,
@@ -1217,8 +1165,8 @@ export function useCollectionWorkflow({
     collectionTargetShopSelectionRequired,
     publishPricingDialogVisible,
     publishPricingForm,
-    publishPricingPreviewRows,
     publishPricingSummary,
+    computeSalePriceCents,
     selectedCollectionDetailImages,
     selectedCollectionMainImages,
     selectedCollectionSkuPreview,

@@ -130,7 +130,15 @@ pub fn run() {
             commands::test_taobao_collect,
             commands::list_pipeline_products,
             commands::retry_pipeline_product,
-            commands::add_publish_targets
+            commands::add_publish_targets,
+            commands::sync_shop_products,
+            commands::list_cached_shop_products,
+            commands::get_cached_shop_product_detail,
+            commands::listing_shop_product,
+            commands::delisting_shop_product,
+            commands::delete_shop_product,
+            commands::update_shop_product_stock,
+            commands::refresh_shop_stock
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -15,6 +15,14 @@ const {
   clearCollectionExcelFile,
   triggerTaobaoLogin,
   checkTaobaoLoginState,
+  formatCents,
+  publishPricingDialogVisible,
+  publishPricingForm,
+  publishPricingSummary,
+  publishPricingSaving,
+  openPublishPricingDialog,
+  savePublishPricingStrategyFromForm,
+  computeSalePriceCents,
   UploadFilled,
   Refresh,
 } = props.ctx;
@@ -226,6 +234,31 @@ async function onConfirm() {
   if (ok) confirmDrawerVisible.value = false;
 }
 
+// ===== 价格策略：全局加价规则（加价倍率 / 固定加价 / 最低售价）=====
+// 固定加价、最低售价以「元」交互、底层以「分」存储；加价倍率为直接倍率。
+const fixedMarkupYuan = computed({
+  get: () => publishPricingForm.value.sale_price_fixed_cents / 100,
+  set: (value: number) => {
+    publishPricingForm.value.sale_price_fixed_cents = Math.round(
+      Number(value || 0) * 100,
+    );
+  },
+});
+const floorPriceYuan = computed({
+  get: () => publishPricingForm.value.sale_price_floor_cents / 100,
+  set: (value: number) => {
+    publishPricingForm.value.sale_price_floor_cents = Math.round(
+      Number(value || 0) * 100,
+    );
+  },
+});
+
+// 流水线视图不含 SKU 成本，故以可调的「示例成本价」实时预演策略定价效果
+const previewCostYuan = ref(10);
+const previewSaleCents = computed(() =>
+  computeSalePriceCents(previewCostYuan.value || 0, publishPricingForm.value),
+);
+
 onMounted(() => startPipelinePolling());
 </script>
 
@@ -263,6 +296,9 @@ onMounted(() => startPipelinePolling());
               </el-dropdown-menu>
             </template>
           </el-dropdown>
+          <el-tooltip :content="publishPricingSummary" placement="bottom">
+            <el-button @click="openPublishPricingDialog">价格策略</el-button>
+          </el-tooltip>
           <el-button :icon="Refresh" :loading="pipelineLoading" @click="refreshPipeline">
             刷新
           </el-button>
@@ -391,6 +427,81 @@ onMounted(() => startPipelinePolling());
         </template>
       </el-table>
     </div>
+
+    <el-dialog
+      v-model="publishPricingDialogVisible"
+      title="铺货价格策略"
+      width="560px"
+      append-to-body
+    >
+      <p class="muted small pricing-intro">
+        全局生效：所有商品铺货时由采集成本价按此策略计算上架售价；已显式指定售价的 SKU 不受影响。
+      </p>
+      <el-form label-width="96px" class="pricing-form">
+        <el-form-item label="加价倍率">
+          <el-input-number
+            v-model="publishPricingForm.sale_price_markup_rate"
+            :min="0.1"
+            :max="100"
+            :precision="2"
+            :step="0.1"
+          />
+          <span class="form-suffix">× 成本价</span>
+        </el-form-item>
+        <el-form-item label="固定加价">
+          <el-input-number
+            v-model="fixedMarkupYuan"
+            :min="0"
+            :max="100000"
+            :precision="2"
+            :step="1"
+          />
+          <span class="form-suffix">元</span>
+        </el-form-item>
+        <el-form-item label="最低售价">
+          <el-input-number
+            v-model="floorPriceYuan"
+            :min="0.01"
+            :max="100000"
+            :precision="2"
+            :step="1"
+          />
+          <span class="form-suffix">元</span>
+        </el-form-item>
+      </el-form>
+
+      <div class="pricing-preview">
+        <div class="pricing-preview-head">
+          <strong>定价试算</strong>
+          <span class="muted small">{{ publishPricingSummary }}</span>
+        </div>
+        <div class="pricing-preview-body">
+          <span class="muted">示例成本价</span>
+          <el-input-number
+            v-model="previewCostYuan"
+            :min="0"
+            :max="100000"
+            :precision="2"
+            :step="1"
+            size="small"
+          />
+          <span class="muted">元</span>
+          <span class="pricing-arrow">→ 上架售价</span>
+          <strong class="pricing-result">¥{{ formatCents(previewSaleCents) }}</strong>
+        </div>
+      </div>
+
+      <template #footer>
+        <el-button @click="publishPricingDialogVisible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="publishPricingSaving"
+          @click="savePublishPricingStrategyFromForm"
+        >
+          保存策略
+        </el-button>
+      </template>
+    </el-dialog>
 
     <el-dialog
       v-model="importDialogVisible"
@@ -646,5 +757,43 @@ onMounted(() => startPipelinePolling());
 .category-search {
   display: flex;
   gap: 8px;
+}
+.pricing-intro {
+  margin: 0 0 16px;
+  line-height: 1.6;
+}
+.pricing-form {
+  margin-bottom: 4px;
+}
+.form-suffix {
+  margin-left: 8px;
+  color: #8c887e;
+}
+.pricing-preview {
+  margin-top: 12px;
+  padding: 14px 16px;
+  background: rgba(195, 138, 33, 0.06);
+  border: 1px solid rgba(195, 138, 33, 0.18);
+  border-radius: 10px;
+}
+.pricing-preview-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 12px;
+}
+.pricing-preview-body {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.pricing-arrow {
+  margin-left: 6px;
+  color: #6c685e;
+}
+.pricing-result {
+  color: var(--el-color-primary, #c38a21);
+  font-size: 17px;
 }
 </style>

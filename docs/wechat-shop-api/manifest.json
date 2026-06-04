@@ -1,11 +1,11 @@
 {
-  "generated_at": "2026-05-22T15:31:36+08:00",
+  "generated_at": "2026-06-04T14:51:31+08:00",
   "timezone": "Asia/Shanghai",
   "source_base_url": "https://developers.weixin.qq.com/doc/store/shop/API/",
   "total": 80,
-  "downloaded": 0,
-  "unchanged": 80,
-  "failed": 0,
+  "downloaded": 8,
+  "unchanged": 69,
+  "failed": 3,
   "items": [
     {
       "module": "基础调用与素材",
@@ -16,11 +16,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/apimgnt/common/api_getaccesstoken.html",
       "local_path": "docs/wechat-shop-api/raw/apimgnt/common/api_getaccesstoken.html",
       "status": "unchanged",
-      "bytes": 191193,
-      "sha256": "08a66ca033dd13404fd2f43216126230ec3636f178e91bb23ac71d8f0b26c065",
+      "bytes": 192822,
+      "sha256": "78d18d4a4b061c81e5e0ba7a6579d4da3e27d7c2906bd214055ea47b789831d4",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 248,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "duration_ms": 348,
+      "fetched_at": "2026-06-04T14:51:01+08:00"
     },
     {
       "module": "基础调用与素材",
@@ -30,12 +30,12 @@
       "purpose": "token 刷新和稳定调用备选方案",
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/apimgnt/common/api_getstableaccesstoken.html",
       "local_path": "docs/wechat-shop-api/raw/apimgnt/common/api_getstableaccesstoken.html",
-      "status": "unchanged",
-      "bytes": 197258,
-      "sha256": "0e61c1305a225ea10ff658655a4c4394d23621241a41488cd614463c468f1f8a",
+      "status": "downloaded",
+      "bytes": 198887,
+      "sha256": "5c0c6d17b7077fe25780e68f8e52c22d397ef40bd1590c02c7399aaaf8dbeb94",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 268,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "duration_ms": 380,
+      "fetched_at": "2026-06-04T14:51:01+08:00"
     },
     {
       "module": "基础调用与素材",
@@ -45,12 +45,10 @@
       "purpose": "监控接口额度和限流策略",
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/apimgnt/common/api_getapiquota.html",
       "local_path": "docs/wechat-shop-api/raw/apimgnt/common/api_getapiquota.html",
-      "status": "unchanged",
-      "bytes": 194595,
-      "sha256": "a9d64391bb9a3ada1eec0f36ad2e49f90b362b092f1372ef4ff5c100374c547b",
-      "content_type": "text/html; charset=utf-8",
-      "duration_ms": 360,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "status": "failed",
+      "error": "TimeoutError('The read operation timed out')",
+      "duration_ms": 30121,
+      "fetched_at": "2026-06-04T14:51:30+08:00"
     },
     {
       "module": "基础调用与素材",
@@ -60,12 +58,12 @@
       "purpose": "按微信返回 rid 排查失败请求",
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/apimgnt/common/api_getridinfo.html",
       "local_path": "docs/wechat-shop-api/raw/apimgnt/common/api_getridinfo.html",
-      "status": "unchanged",
-      "bytes": 193606,
-      "sha256": "506927a0ddfea4fdb18f0b625ad554ccc2abe4b35c76a548719e697e110823ce",
+      "status": "downloaded",
+      "bytes": 195235,
+      "sha256": "4dce1447741f6b9f44896e5ebd3a255ffc02fa58236b34ceecda31b000e4379f",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 252,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "duration_ms": 344,
+      "fetched_at": "2026-06-04T14:51:01+08:00"
     },
     {
       "module": "基础调用与素材",
@@ -75,12 +73,12 @@
       "purpose": "商品主图、详情图、售后凭证上传",
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/apimgnt/resource/api_img_upload.html",
       "local_path": "docs/wechat-shop-api/raw/apimgnt/resource/api_img_upload.html",
-      "status": "unchanged",
-      "bytes": 197969,
-      "sha256": "eede971aef3067d230bead9684d0c49094ab6b0fc5cf71cfbbafaea663d2a8a0",
+      "status": "downloaded",
+      "bytes": 199598,
+      "sha256": "ab9b56e1bb0cd25a001a1c9f8e60aaf061054afc79cfc7a00a8c9f20a9272b88",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 234,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "duration_ms": 351,
+      "fetched_at": "2026-06-04T14:51:01+08:00"
     },
     {
       "module": "基础调用与素材",
@@ -90,12 +88,12 @@
       "purpose": "品牌、类目、特殊资质上传",
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/apimgnt/resource/api_qualificationupload.html",
       "local_path": "docs/wechat-shop-api/raw/apimgnt/resource/api_qualificationupload.html",
-      "status": "unchanged",
-      "bytes": 188297,
-      "sha256": "9abab4e1aef38969bb698af0fbccda56da80c0d373d4e195a2a7784fe9517ff6",
+      "status": "downloaded",
+      "bytes": 189926,
+      "sha256": "592f1c34800d20b3607f8963b79bdbce5f3b324b4c111c5db5fe7256910757b0",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 265,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "duration_ms": 335,
+      "fetched_at": "2026-06-04T14:51:01+08:00"
     },
     {
       "module": "基础调用与素材",
@@ -105,12 +103,12 @@
       "purpose": "商品视频素材上传",
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/apimgnt/resource/api_video_initupload.html",
       "local_path": "docs/wechat-shop-api/raw/apimgnt/resource/api_video_initupload.html",
-      "status": "unchanged",
-      "bytes": 190995,
-      "sha256": "76c65f738038ea9c644e119f440a8889cf01dd528c232b24d4742d87fdff9796",
+      "status": "downloaded",
+      "bytes": 192624,
+      "sha256": "d1e9d9939d5f50112e193f2206bd93d741fc68c8126920569724e6fd63fc1790",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 218,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "duration_ms": 384,
+      "fetched_at": "2026-06-04T14:51:01+08:00"
     },
     {
       "module": "基础调用与素材",
@@ -121,11 +119,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/apimgnt/resource/api_video_uploadpart.html",
       "local_path": "docs/wechat-shop-api/raw/apimgnt/resource/api_video_uploadpart.html",
       "status": "unchanged",
-      "bytes": 189608,
-      "sha256": "8425830455e0f6b331c7288e6767dda3611ab6aedaf17ae8e620aa27950508c8",
+      "bytes": 191237,
+      "sha256": "80f788258a8cd1834e607f618f160eb86b0bd5b090e9392b9107047e0ed7b272",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 260,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "duration_ms": 375,
+      "fetched_at": "2026-06-04T14:51:01+08:00"
     },
     {
       "module": "基础调用与素材",
@@ -136,11 +134,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/apimgnt/resource/api_video_finishupload.html",
       "local_path": "docs/wechat-shop-api/raw/apimgnt/resource/api_video_finishupload.html",
       "status": "unchanged",
-      "bytes": 188927,
-      "sha256": "c4fe73564c6b5eb45b80c83215fc9411b2399f187223f917df3ebe1e4ee43e20",
+      "bytes": 190556,
+      "sha256": "8a990df98848705e0e8da511be4ee748b71cfe71672ab486cedcb623b82a9c38",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 251,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "duration_ms": 213,
+      "fetched_at": "2026-06-04T14:51:01+08:00"
     },
     {
       "module": "基础调用与素材",
@@ -151,11 +149,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/apimgnt/resource/api_video_getplayinfo.html",
       "local_path": "docs/wechat-shop-api/raw/apimgnt/resource/api_video_getplayinfo.html",
       "status": "unchanged",
-      "bytes": 189086,
-      "sha256": "74900b0f876fdcf9272fdafffeb539daf9439e2bef09300d44d83214cdf4b61a",
+      "bytes": 190715,
+      "sha256": "2eb3154cd98f04bc1972dfc28d417f1950ec1340fb50d2c03536d71bddd9546e",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 254,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "duration_ms": 232,
+      "fetched_at": "2026-06-04T14:51:01+08:00"
     },
     {
       "module": "店铺管理",
@@ -165,12 +163,10 @@
       "purpose": "店铺接入校验、店铺资料同步",
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/storemanage/api_mmecapi_basicinfo.html",
       "local_path": "docs/wechat-shop-api/raw/storemanage/api_mmecapi_basicinfo.html",
-      "status": "unchanged",
-      "bytes": 189600,
-      "sha256": "3757652947fe06a4807b9f47382c476f4765cf28b1e796f43d72ce94a8ac3a0e",
-      "content_type": "text/html; charset=utf-8",
-      "duration_ms": 232,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "status": "failed",
+      "error": "TimeoutError('The read operation timed out')",
+      "duration_ms": 30076,
+      "fetched_at": "2026-06-04T14:51:31+08:00"
     },
     {
       "module": "店铺管理",
@@ -181,11 +177,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/storemanage/api_getshopqrcode.html",
       "local_path": "docs/wechat-shop-api/raw/storemanage/api_getshopqrcode.html",
       "status": "unchanged",
-      "bytes": 189751,
-      "sha256": "bf222647af52326c636fe579ae35c132debb20f12835ba8cd7a20cc691162d37",
+      "bytes": 191380,
+      "sha256": "b533e88fcfbc2c686d58506d555443c9df4a8118ef9e2d81dce06e370f6ea294",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 247,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "duration_ms": 209,
+      "fetched_at": "2026-06-04T14:51:01+08:00"
     },
     {
       "module": "店铺管理",
@@ -196,11 +192,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/storemanage/api_getshoph5url.html",
       "local_path": "docs/wechat-shop-api/raw/storemanage/api_getshoph5url.html",
       "status": "unchanged",
-      "bytes": 188166,
-      "sha256": "61b4a9263a8c9309ab35e932a7009f4f35ce65f9da8295b2773e38853138efbb",
+      "bytes": 189795,
+      "sha256": "6c9f7dc3d99de60399fac78146992d02191dd86855a9d1e52f2b578eaf5ffd70",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 275,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "duration_ms": 198,
+      "fetched_at": "2026-06-04T14:51:01+08:00"
     },
     {
       "module": "店铺管理",
@@ -211,11 +207,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/storemanage/api_getshoptaglink.html",
       "local_path": "docs/wechat-shop-api/raw/storemanage/api_getshoptaglink.html",
       "status": "unchanged",
-      "bytes": 188154,
-      "sha256": "79ef433c29b590efc0e538ab0699f12e406d3eb6648a61d3a29456dda93950d2",
+      "bytes": 189783,
+      "sha256": "a561ba963d578966f9c88136147a710db41927e4b3014e46c1b06613b5f57afe",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 272,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "duration_ms": 192,
+      "fetched_at": "2026-06-04T14:51:01+08:00"
     },
     {
       "module": "类目、品牌、发品规则",
@@ -226,11 +222,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-category/api_getallcategory.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-category/api_getallcategory.html",
       "status": "unchanged",
-      "bytes": 236062,
-      "sha256": "130387c668bdc0c6d7165bd7efacfc2fc325f0b4e9b750713cd76bc85e41e39d",
+      "bytes": 237691,
+      "sha256": "1251b8522f7434cea8847a5dd88f2a16d416dea34d64e47425567960435332f1",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 270,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "duration_ms": 225,
+      "fetched_at": "2026-06-04T14:51:01+08:00"
     },
     {
       "module": "类目、品牌、发品规则",
@@ -241,11 +237,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-category/api_getcategorydetail.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-category/api_getcategorydetail.html",
       "status": "unchanged",
-      "bytes": 229100,
-      "sha256": "ba517a37146c08fbefc9c5affe30ddf27d3f3e76d15f5ce9c4f86259910a44d1",
+      "bytes": 232132,
+      "sha256": "0c0124f939b2bea87cf8b228e20cfffc977ef37c91d720f63487554bc7cdedd0",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 251,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "duration_ms": 322,
+      "fetched_at": "2026-06-04T14:51:01+08:00"
     },
     {
       "module": "类目、品牌、发品规则",
@@ -256,11 +252,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/category-rule/api_getcategoryproductrule.html",
       "local_path": "docs/wechat-shop-api/raw/category-rule/api_getcategoryproductrule.html",
       "status": "unchanged",
-      "bytes": 230995,
-      "sha256": "426c99f17a877e05fc18e69c240a4ac8568f7d0635f5907195b325937b38859e",
+      "bytes": 234669,
+      "sha256": "f5d955654bb4c29268096e11b99945a7d67c99d761ae0e026768fb2140ad758a",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 255,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "duration_ms": 311,
+      "fetched_at": "2026-06-04T14:51:01+08:00"
     },
     {
       "module": "类目、品牌、发品规则",
@@ -271,11 +267,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/category-rule/api_get_delivery_method_category_rule.html",
       "local_path": "docs/wechat-shop-api/raw/category-rule/api_get_delivery_method_category_rule.html",
       "status": "unchanged",
-      "bytes": 191009,
-      "sha256": "09823693e99076b55e5b7b2fcae8345d5f30dec210525ecf8a4aa1c13b5d5014",
+      "bytes": 192638,
+      "sha256": "9cc9d5a30300f5e4d5f2b44053f8f5ff75d6922b400e54af3b2b722a288e8489",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 263,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "duration_ms": 301,
+      "fetched_at": "2026-06-04T14:51:01+08:00"
     },
     {
       "module": "类目、品牌、发品规则",
@@ -286,11 +282,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/brand/api_getvalidbrandlistlogic.html",
       "local_path": "docs/wechat-shop-api/raw/brand/api_getvalidbrandlistlogic.html",
       "status": "unchanged",
-      "bytes": 225866,
-      "sha256": "df50d4d560dca22bc21014a4311253b0e6a64b8828acd01e1ff138ab0401abd5",
+      "bytes": 227495,
+      "sha256": "5502abcc64417df0f4d186f7957ab829cdbf8ee77ab466336cc73b4c591ce906",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 269,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "duration_ms": 323,
+      "fetched_at": "2026-06-04T14:51:01+08:00"
     },
     {
       "module": "类目、品牌、发品规则",
@@ -300,12 +296,10 @@
       "purpose": "品牌资质和发品限制确认",
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/brand/api_getbrandlogic.html",
       "local_path": "docs/wechat-shop-api/raw/brand/api_getbrandlogic.html",
-      "status": "unchanged",
-      "bytes": 212137,
-      "sha256": "5dc67b00abc2d4b2c23c6bc51c2fe5d365c7a0a45dbfeb92ca6e407c0d2f4dd0",
-      "content_type": "text/html; charset=utf-8",
-      "duration_ms": 288,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "status": "failed",
+      "error": "TimeoutError('The read operation timed out')",
+      "duration_ms": 30079,
+      "fetched_at": "2026-06-04T14:51:31+08:00"
     },
     {
       "module": "商品与铺货",
@@ -316,11 +310,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_addproduct.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-product/shop/api_addproduct.html",
       "status": "unchanged",
-      "bytes": 264406,
-      "sha256": "65997055529026107d7e1d9656b074c3f9430dff4fb4675c4395ae63086dc07a",
+      "bytes": 266035,
+      "sha256": "a830ab0f91113d51093ebbdd00d55ccd8a5fe7ad3fadc59e6f743fb803c36b06",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 264,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "duration_ms": 322,
+      "fetched_at": "2026-06-04T14:51:01+08:00"
     },
     {
       "module": "商品与铺货",
@@ -331,11 +325,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_updateproduct.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-product/shop/api_updateproduct.html",
       "status": "unchanged",
-      "bytes": 277430,
-      "sha256": "f4bbbfe6846bfc7cc4166c0d81ca052e0cc3cf80978e276653622f1c8cd19116",
+      "bytes": 279059,
+      "sha256": "5c2d17510e0366876930513d1889492a63197348216ac163079c0e83f19f0374",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 281,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "duration_ms": 268,
+      "fetched_at": "2026-06-04T14:51:01+08:00"
     },
     {
       "module": "商品与铺货",
@@ -345,12 +339,12 @@
       "purpose": "同步店铺商品详情和审核结果",
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_getproduct.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-product/shop/api_getproduct.html",
-      "status": "unchanged",
-      "bytes": 265927,
-      "sha256": "d2d728d4791f893a7850aae1110cd23e86d31803aaa99566d25fde13fecdcb2d",
+      "status": "downloaded",
+      "bytes": 267500,
+      "sha256": "c2c9186a76387920410eebfe7e605e1c6d943f76a087ccc5043a33ad234a9abe",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 544,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "duration_ms": 264,
+      "fetched_at": "2026-06-04T14:51:01+08:00"
     },
     {
       "module": "商品与铺货",
@@ -361,11 +355,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_getproductlist.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-product/shop/api_getproductlist.html",
       "status": "unchanged",
-      "bytes": 192066,
-      "sha256": "c0e130b36bdda99fafd8f89ae0d0dfc773d569bd2e4d85ad8c84fca7e4ddca04",
+      "bytes": 193695,
+      "sha256": "62a1cb1a7dc173610d52d9c0b8b14b29fffc5f2734e709bc1c97ba74429f7193",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 243,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "duration_ms": 220,
+      "fetched_at": "2026-06-04T14:51:01+08:00"
     },
     {
       "module": "商品与铺货",
@@ -376,11 +370,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_listingproduct.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-product/shop/api_listingproduct.html",
       "status": "unchanged",
-      "bytes": 202056,
-      "sha256": "9eb31bcaf85bb6c61b934bed47da81cb3e1c740754e4c6d64e19f82ee95fad99",
+      "bytes": 203685,
+      "sha256": "b4c6359a6a2ea5b5cb3f6f8ab279c2634f83d8e7fb16f3d776aa141637c51851",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 222,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "duration_ms": 221,
+      "fetched_at": "2026-06-04T14:51:01+08:00"
     },
     {
       "module": "商品与铺货",
@@ -391,11 +385,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_delistingproduct.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-product/shop/api_delistingproduct.html",
       "status": "unchanged",
-      "bytes": 187857,
-      "sha256": "2b84be3c64c9a4a5bc8f814949bc4bfee42c80fc1fe26ac0709ddd2787edca3f",
+      "bytes": 189486,
+      "sha256": "4e3d8ca78ec3881ddc05437719f56df5dd3d8c80f9f3b6f89a75dedea35df645",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 232,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "duration_ms": 222,
+      "fetched_at": "2026-06-04T14:51:02+08:00"
     },
     {
       "module": "商品与铺货",
@@ -406,11 +400,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_deleteproduct.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-product/shop/api_deleteproduct.html",
       "status": "unchanged",
-      "bytes": 186733,
-      "sha256": "7575a91c4d11a4c7a6df0247f7ab99db41174058e4640e53b6f9fb6f476a7ccb",
+      "bytes": 188362,
+      "sha256": "a6accebf053ede89db70c78b5424a742578d36b4365913ddba88812f4b96370d",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 239,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "duration_ms": 300,
+      "fetched_at": "2026-06-04T14:51:02+08:00"
     },
     {
       "module": "商品与铺货",
@@ -421,11 +415,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_categoryprecheck.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-product/shop/api_categoryprecheck.html",
       "status": "unchanged",
-      "bytes": 188853,
-      "sha256": "27cb2a2c22e2b2f13c45006e65fe39c8218de548e27ff4dfb7dc2ffce217cf30",
+      "bytes": 190482,
+      "sha256": "dbf72068781d45613b16c672c79d9f704ed3b8d71fa51a701819176c5eeadfb3",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 587,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 337,
+      "fetched_at": "2026-06-04T14:51:02+08:00"
     },
     {
       "module": "商品与铺货",
@@ -436,11 +430,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_product_classify.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-product/shop/api_product_classify.html",
       "status": "unchanged",
-      "bytes": 203528,
-      "sha256": "a9def785fe92cc2b3bf3de13e39a78dac4151c3754f48534ec65d81c0108564a",
+      "bytes": 205157,
+      "sha256": "79ea6ce211c7a3fa563d5f0e215b6c5ea00165f9d0c4d3ecfcceca8c1bd960fc",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 248,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "duration_ms": 320,
+      "fetched_at": "2026-06-04T14:51:02+08:00"
     },
     {
       "module": "商品与铺货",
@@ -451,11 +445,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_getproductauditquota.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-product/shop/api_getproductauditquota.html",
       "status": "unchanged",
-      "bytes": 192326,
-      "sha256": "02487de00b9fca5943a0d1d155f3644c05b5f14af86e87d989b98ac2fe111dff",
+      "bytes": 195130,
+      "sha256": "3578213a1d39d28581af563cb1f5be589924db936324ad51c4a0afd2fdc5b764",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 242,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "duration_ms": 492,
+      "fetched_at": "2026-06-04T14:51:02+08:00"
     },
     {
       "module": "商品与铺货",
@@ -466,11 +460,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_getproductauditstrategy.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-product/shop/api_getproductauditstrategy.html",
       "status": "unchanged",
-      "bytes": 188050,
-      "sha256": "5771d28686ecb077c673072a78c96aca0bb4465097c29e16191974caba4490a7",
+      "bytes": 189679,
+      "sha256": "43c0af3a14a1da95983ccc9a0209650f6a980701215eb21fe555f4ca02752cdb",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 278,
-      "fetched_at": "2026-05-22T15:31:34+08:00"
+      "duration_ms": 271,
+      "fetched_at": "2026-06-04T14:51:02+08:00"
     },
     {
       "module": "商品与铺货",
@@ -481,11 +475,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_setproductauditstrategy.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-product/shop/api_setproductauditstrategy.html",
       "status": "unchanged",
-      "bytes": 188659,
-      "sha256": "3f5d5d861b5385c92e6794c0b74b7bcdbe586786c80e755ef6eb444261f46519",
+      "bytes": 190288,
+      "sha256": "c442841ee9ddf5ec60569715b28426481a89b9be9e20cb2cd1eb14905a6660fc",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 227,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 237,
+      "fetched_at": "2026-06-04T14:51:02+08:00"
     },
     {
       "module": "商品与铺货",
@@ -496,11 +490,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_getproductqrcode.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-product/shop/api_getproductqrcode.html",
       "status": "unchanged",
-      "bytes": 189166,
-      "sha256": "c9de7a0217330904ab84297dcb69cfff23306fee2c188026f000115b5a09cf67",
+      "bytes": 190795,
+      "sha256": "4abef2c877c42d2691ee543ea98c90928be5a268e522a65d80363b85602f6027",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 243,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 249,
+      "fetched_at": "2026-06-04T14:51:02+08:00"
     },
     {
       "module": "商品与铺货",
@@ -510,12 +504,12 @@
       "purpose": "商品链接和运营验证",
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_getproducth5url.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-product/shop/api_getproducth5url.html",
-      "status": "unchanged",
-      "bytes": 188071,
-      "sha256": "aec8a2747eb4320f2a5a881d2b22f8c13437f0b51cb4adf37ccfc21602f5eb85",
+      "status": "downloaded",
+      "bytes": 189700,
+      "sha256": "acac6513cdf952e9028b33fb359ec91739bba469b604973032fe46fda382d758",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 291,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 226,
+      "fetched_at": "2026-06-04T14:51:02+08:00"
     },
     {
       "module": "商品与铺货",
@@ -525,12 +519,12 @@
       "purpose": "跳转链路和私域投放",
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_getproductscheme.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-product/shop/api_getproductscheme.html",
-      "status": "unchanged",
-      "bytes": 187838,
-      "sha256": "7cab63119313da0c66e5ca7396089c4feee458484f8e089e9639517bd1014124",
+      "status": "downloaded",
+      "bytes": 189467,
+      "sha256": "f04387b35fcf7eae63657cdb88a60f056258eba732b056bd0dc1d78cca4fc984",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 279,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 232,
+      "fetched_at": "2026-06-04T14:51:02+08:00"
     },
     {
       "module": "商品与铺货",
@@ -541,11 +535,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_externalproductmapping.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-product/shop/api_externalproductmapping.html",
       "status": "unchanged",
-      "bytes": 190898,
-      "sha256": "785dfed461b6ec71776a3652d7ac0a38648f51bf494fd7ab7df3a6e5ff016333",
+      "bytes": 192527,
+      "sha256": "bc3d793772f39b445c8d375c4b5de2644cb0582bdbdf72a9cab4a74df8a21eb1",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 455,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 320,
+      "fetched_at": "2026-06-04T14:51:02+08:00"
     },
     {
       "module": "商品与铺货",
@@ -556,11 +550,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/shop/api_externalproductmappingnew.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-product/shop/api_externalproductmappingnew.html",
       "status": "unchanged",
-      "bytes": 195718,
-      "sha256": "b2d09f4ab2e8bf6c05b571d88d564ef1759c7512a356983373b9a379d72f408f",
+      "bytes": 197347,
+      "sha256": "b3d3ea7cc6bfb21da8c5f70d9c6fe3d58dfcfd2a54ee3825d85c3bf6d031bb5a",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 213,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 312,
+      "fetched_at": "2026-06-04T14:51:02+08:00"
     },
     {
       "module": "库存与促销",
@@ -571,11 +565,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/stock/api_getstock.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-product/stock/api_getstock.html",
       "status": "unchanged",
-      "bytes": 193382,
-      "sha256": "df8fb6ec55204e50247e63629cc466f70bc74be3e05887e0ebf3cfc53c303488",
+      "bytes": 195011,
+      "sha256": "88b7e462c94a0699a0580c661bbb9d69e36f1cea15e8ab14a6e3aeb6358b6a53",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 276,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 275,
+      "fetched_at": "2026-06-04T14:51:02+08:00"
     },
     {
       "module": "库存与促销",
@@ -586,11 +580,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/stock/api_batchgetstock.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-product/stock/api_batchgetstock.html",
       "status": "unchanged",
-      "bytes": 200912,
-      "sha256": "f94a98211f033ca3cdc76e01599329bb4e7bc779f9aa7e7e496045b247480feb",
+      "bytes": 203177,
+      "sha256": "4ee4083bcb6e6dd7ac2144d59b9cc450e91077fccf53bb210aded0cabb07d9f3",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 289,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 309,
+      "fetched_at": "2026-06-04T14:51:02+08:00"
     },
     {
       "module": "库存与促销",
@@ -601,11 +595,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/stock/api_updatestock.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-product/stock/api_updatestock.html",
       "status": "unchanged",
-      "bytes": 189744,
-      "sha256": "dc73e0c0a132ffc32caa113bf8e960c52b7e7b1ef8ed01f61205a12db3aa1dc2",
+      "bytes": 191721,
+      "sha256": "15f8e8dd2d47bdf8c6688d4348f10f0139e9a650d962d92c9ec1c17de678dd12",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 277,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 238,
+      "fetched_at": "2026-06-04T14:51:02+08:00"
     },
     {
       "module": "库存与促销",
@@ -616,11 +610,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/stock/api_getstockflow.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-product/stock/api_getstockflow.html",
       "status": "unchanged",
-      "bytes": 209161,
-      "sha256": "1ac62a935268281627495a7b71d8338621b9fa5c401faa3c6798f60ba480907f",
+      "bytes": 211426,
+      "sha256": "b4bc115fb90031908eb4ce5851559cb01cb6d9039774ac2068c56263ab196474",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 299,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 232,
+      "fetched_at": "2026-06-04T14:51:03+08:00"
     },
     {
       "module": "库存与促销",
@@ -631,11 +625,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/limiteddiscounttask/api_addlimiteddiscounttask.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-product/limiteddiscounttask/api_addlimiteddiscounttask.html",
       "status": "unchanged",
-      "bytes": 194971,
-      "sha256": "1f2bb0d4957576b0a9261b9781e59f5ff57ec6a100dee3e96290c2afc1a2fbd5",
+      "bytes": 196600,
+      "sha256": "b6fb3031010c174da2655bcfa143a9fb8ab2366467be3a8f27fb7dad1aa08807",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 243,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 233,
+      "fetched_at": "2026-06-04T14:51:03+08:00"
     },
     {
       "module": "库存与促销",
@@ -646,11 +640,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/limiteddiscounttask/api_getlimiteddiscounttasklist.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-product/limiteddiscounttask/api_getlimiteddiscounttasklist.html",
       "status": "unchanged",
-      "bytes": 201374,
-      "sha256": "4e101cef7d6d5d462d27632e544b548e8386dfb6751e7f7a7cf41c80ca9898d1",
+      "bytes": 203003,
+      "sha256": "2359a27b148aa447e36434f5ac2afb58da910a0a0acb2bd7b0dde4645963afc8",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 317,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 220,
+      "fetched_at": "2026-06-04T14:51:03+08:00"
     },
     {
       "module": "库存与促销",
@@ -661,11 +655,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/limiteddiscounttask/api_updatelimiteddiscounttask.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-product/limiteddiscounttask/api_updatelimiteddiscounttask.html",
       "status": "unchanged",
-      "bytes": 193068,
-      "sha256": "58d89285cb79ab93062a052aa6a98d448491e80ba478c3e4615c21b64a525b96",
+      "bytes": 194697,
+      "sha256": "ae3f7a0eb0c87f5b31897928f207ae32aea6f3785e6655c07a86e813941ca73f",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 270,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 208,
+      "fetched_at": "2026-06-04T14:51:03+08:00"
     },
     {
       "module": "库存与促销",
@@ -676,11 +670,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-product/limiteddiscounttask/api_stoplimiteddiscounttask.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-product/limiteddiscounttask/api_stoplimiteddiscounttask.html",
       "status": "unchanged",
-      "bytes": 186925,
-      "sha256": "885d6b7317480898039997b8789d3d4a4ed30d078e3774d7f20a169e6d9f0740",
+      "bytes": 188554,
+      "sha256": "5b7fa550199881964467a52af040eda8999273af9a3fe7a78583c5094e74bf5f",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 356,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 235,
+      "fetched_at": "2026-06-04T14:51:03+08:00"
     },
     {
       "module": "订单、发货、物流",
@@ -691,11 +685,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-order/api_getorder.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-order/api_getorder.html",
       "status": "unchanged",
-      "bytes": 307569,
-      "sha256": "e0de45577ae3902da5770ddc19dcffa017e11628dca09319941032bd10e593d3",
+      "bytes": 309375,
+      "sha256": "7cfd393275f418a9c771358f654ccdb0b642b835cbc6f58eab66b09bb5617022",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 300,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 339,
+      "fetched_at": "2026-06-04T14:51:03+08:00"
     },
     {
       "module": "订单、发货、物流",
@@ -706,11 +700,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-order/api_getorderlist.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-order/api_getorderlist.html",
       "status": "unchanged",
-      "bytes": 196096,
-      "sha256": "b5531639f7e55d16b48b175008b532af7659fd0d2bcabcde62214288ac20c255",
+      "bytes": 197725,
+      "sha256": "6b90f4b63b3f52af28958733bcd7d2e2e4512957d84ea8dcf873fafe426b325d",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 261,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 313,
+      "fetched_at": "2026-06-04T14:51:03+08:00"
     },
     {
       "module": "订单、发货、物流",
@@ -721,11 +715,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-order/api_searchorder.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-order/api_searchorder.html",
       "status": "unchanged",
-      "bytes": 196178,
-      "sha256": "08c634668db81a78dc9078aead2b4f75608edb0ec08369a3a54a0b4914c3e4cc",
+      "bytes": 197807,
+      "sha256": "265dae8190b6e08d23a25b1244a5c976d245e15046040c0bbd0428564acfd26f",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 247,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 329,
+      "fetched_at": "2026-06-04T14:51:03+08:00"
     },
     {
       "module": "订单、发货、物流",
@@ -736,11 +730,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-order/api_decodesensitiveinfo.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-order/api_decodesensitiveinfo.html",
       "status": "unchanged",
-      "bytes": 193906,
-      "sha256": "e22c74980fc1bc9b633f957cce22c20edebbe96095128f44d2ed95640c9c053f",
+      "bytes": 195535,
+      "sha256": "cf5f2dc1d276e7f748c5b24f37cc01b65d7f15f295dc89c62dc71f6c6a1aa8cd",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 262,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 295,
+      "fetched_at": "2026-06-04T14:51:03+08:00"
     },
     {
       "module": "订单、发货、物流",
@@ -751,11 +745,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-order/api_changemerchantnotes.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-order/api_changemerchantnotes.html",
       "status": "unchanged",
-      "bytes": 187424,
-      "sha256": "e72c12100420165eae951c27cfcdc6d3729a23c368339bf071642ae8a3a12794",
+      "bytes": 189053,
+      "sha256": "e9a163b583fb00ac4bda261ed627d59994b084d7dd62067e1e2577a70ccc814e",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 242,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 308,
+      "fetched_at": "2026-06-04T14:51:03+08:00"
     },
     {
       "module": "订单、发货、物流",
@@ -766,11 +760,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-order/api_changeorderaddress.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-order/api_changeorderaddress.html",
       "status": "unchanged",
-      "bytes": 193936,
-      "sha256": "e5e1b56c5209a5aba352c207a498badce1182f1884c79f70c3bb97dc6821c6d4",
+      "bytes": 195565,
+      "sha256": "27fb267e158e8b513ec7aac36173b66212d5ff89b134031a97721dce720c5deb",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 226,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 236,
+      "fetched_at": "2026-06-04T14:51:03+08:00"
     },
     {
       "module": "订单、发货、物流",
@@ -781,11 +775,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-delivery/delivery/api_senddelivery.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-delivery/delivery/api_senddelivery.html",
       "status": "unchanged",
-      "bytes": 207326,
-      "sha256": "b9d01d4b31abe29aab8aa37295ab9348ba3ed5bbd9c8849cdcef83ff51ef53ee",
+      "bytes": 209376,
+      "sha256": "c5880b6764649fd5d988ce4dee6a58ddf5bbfb167a1714d980b6f5c2509af1f1",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 238,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 561,
+      "fetched_at": "2026-06-04T14:51:03+08:00"
     },
     {
       "module": "订单、发货、物流",
@@ -796,11 +790,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-delivery/delivery/api_getdeliverycompanylistnew.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-delivery/delivery/api_getdeliverycompanylistnew.html",
       "status": "unchanged",
-      "bytes": 194094,
-      "sha256": "c1f1070f8424b0235ec0c376a91a6cfccd26c267989e948b78dda662dbed89a6",
+      "bytes": 195723,
+      "sha256": "c43601d31277a16bd126e61742987bcac37a3ce0de7586dbcd761693cc2c662e",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 201,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 240,
+      "fetched_at": "2026-06-04T14:51:03+08:00"
     },
     {
       "module": "订单、发货、物流",
@@ -811,11 +805,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-delivery/merchant/api_addfreighttemplate.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-delivery/merchant/api_addfreighttemplate.html",
       "status": "unchanged",
-      "bytes": 217277,
-      "sha256": "7ace21d9514b40e90d858814174123d3fc9b5fb4ef7b1b9b2f46bbe8ab2747b5",
+      "bytes": 218906,
+      "sha256": "85a48731a635d841ca21245dbbb46c1e9acdb833f7d42423a27a52a68e5820c2",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 233,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 253,
+      "fetched_at": "2026-06-04T14:51:03+08:00"
     },
     {
       "module": "订单、发货、物流",
@@ -826,11 +820,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-delivery/merchant/api_getfreighttemplatelist.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-delivery/merchant/api_getfreighttemplatelist.html",
       "status": "unchanged",
-      "bytes": 188708,
-      "sha256": "ee072f777b227e471a80cc79363e1c122423f44b3d067f56e548e12630281cca",
+      "bytes": 190337,
+      "sha256": "59f452e4a4129a78f9ac442126455a604d6760382d7964eb7cd7548ee91667ff",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 193,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 235,
+      "fetched_at": "2026-06-04T14:51:03+08:00"
     },
     {
       "module": "订单、发货、物流",
@@ -841,11 +835,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-delivery/merchant/api_getfreighttemplatedetail.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-delivery/merchant/api_getfreighttemplatedetail.html",
       "status": "unchanged",
-      "bytes": 215939,
-      "sha256": "586587188f6198d1c2638f670c204ae878310d82383e24c7eee416cd3d508408",
+      "bytes": 217568,
+      "sha256": "6205db3fad22406924f8b26d3cb15f8549e92449159c273c5724150842333e73",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 258,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 308,
+      "fetched_at": "2026-06-04T14:51:03+08:00"
     },
     {
       "module": "售后与纠纷",
@@ -856,11 +850,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-aftersale/aftersale/api_getaftersalelist.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-aftersale/aftersale/api_getaftersalelist.html",
       "status": "unchanged",
-      "bytes": 190476,
-      "sha256": "830ddb49d750ffb45f69cd5b4eb9b71fd93bab6b20668ceb9c4db7a5c60d7e4b",
+      "bytes": 192105,
+      "sha256": "e605c4d38afb0a1075f8da3b4321cc606241b2eaac7c37d73538702f8eaa8c53",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 228,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 466,
+      "fetched_at": "2026-06-04T14:51:04+08:00"
     },
     {
       "module": "售后与纠纷",
@@ -871,11 +865,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-aftersale/aftersale/api_getaftersaleorder.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-aftersale/aftersale/api_getaftersaleorder.html",
       "status": "unchanged",
-      "bytes": 245697,
-      "sha256": "6a88d3ec49e7144ad9f1dd02c1b006a86faf741fff826450f20fcbb416d87e7b",
+      "bytes": 246766,
+      "sha256": "19567efbe46a7e50ebefd41efc61b64af1c096249424adb0ebe77a5267e188fd",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 254,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 330,
+      "fetched_at": "2026-06-04T14:51:03+08:00"
     },
     {
       "module": "售后与纠纷",
@@ -886,11 +880,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-aftersale/aftersale/api_acceptapply.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-aftersale/aftersale/api_acceptapply.html",
       "status": "unchanged",
-      "bytes": 190178,
-      "sha256": "32d45750482d95b0a18fe81099103b0f82319a3bea31ab27df0571cdd0ae7de2",
+      "bytes": 191807,
+      "sha256": "63cecc854d18ff3facf7bda3b1a51e730ed9e77a52c50698e262f012756f7a83",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 240,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 376,
+      "fetched_at": "2026-06-04T14:51:03+08:00"
     },
     {
       "module": "售后与纠纷",
@@ -901,11 +895,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-aftersale/aftersale/api_rejectapply.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-aftersale/aftersale/api_rejectapply.html",
       "status": "unchanged",
-      "bytes": 189099,
-      "sha256": "afd9467032a53d7b34e73d1b33cdf5f7d208dd2b7f2c75c0cfabd0b37c1a8544",
+      "bytes": 190728,
+      "sha256": "b8cd6522c786e3996a8aef0ec78bff1b793e8de49205c47d3f885834b5804e9c",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 229,
-      "fetched_at": "2026-05-22T15:31:35+08:00"
+      "duration_ms": 238,
+      "fetched_at": "2026-06-04T14:51:04+08:00"
     },
     {
       "module": "售后与纠纷",
@@ -916,11 +910,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-aftersale/aftersale/api_getaftersalereason.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-aftersale/aftersale/api_getaftersalereason.html",
       "status": "unchanged",
-      "bytes": 188105,
-      "sha256": "640dd4626516809ced3a34d37357d373424b03a19e91c2e51622cf5e44092c57",
+      "bytes": 189734,
+      "sha256": "231d3e0a1243f76a27bb90dc14b5347ec62e6dc44c173f67ed939c1af08ae453",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 219,
-      "fetched_at": "2026-05-22T15:31:36+08:00"
+      "duration_ms": 238,
+      "fetched_at": "2026-06-04T14:51:04+08:00"
     },
     {
       "module": "售后与纠纷",
@@ -931,11 +925,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-aftersale/aftersale/api_getaftersalerejectreason.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-aftersale/aftersale/api_getaftersalerejectreason.html",
       "status": "unchanged",
-      "bytes": 193895,
-      "sha256": "2e3d4892baa2740e593209b8b37c38a3547eb9a035fdc9a26846cc747f9e1a0a",
+      "bytes": 195524,
+      "sha256": "3a987088c002bc3ec8f1ecf8534ce13b6e7cfd6529e4e3e3aaee11ceddc377ba",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 210,
-      "fetched_at": "2026-05-22T15:31:36+08:00"
+      "duration_ms": 213,
+      "fetched_at": "2026-06-04T14:51:04+08:00"
     },
     {
       "module": "售后与纠纷",
@@ -946,11 +940,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-aftersale/guarantee/api_searchguaranteeorder.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-aftersale/guarantee/api_searchguaranteeorder.html",
       "status": "unchanged",
-      "bytes": 208662,
-      "sha256": "465798a9428e2b18fafcc7f288a5b7bd156240a47b52e702a5cec1a38595216a",
+      "bytes": 210291,
+      "sha256": "dc67d03cce77b8f4e4c42514106d851dc38548ffb75c07df2dfae0f5ab61ba5b",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 287,
-      "fetched_at": "2026-05-22T15:31:36+08:00"
+      "duration_ms": 376,
+      "fetched_at": "2026-06-04T14:51:04+08:00"
     },
     {
       "module": "售后与纠纷",
@@ -961,11 +955,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/channels-shop-aftersale/guarantee/api_getguaranteeorder.html",
       "local_path": "docs/wechat-shop-api/raw/channels-shop-aftersale/guarantee/api_getguaranteeorder.html",
       "status": "unchanged",
-      "bytes": 215289,
-      "sha256": "2959ee046525cb494cf041c6548a515c8a4ed83de4611d77204e863c1b926059",
+      "bytes": 216918,
+      "sha256": "5608980f8ec2206c82e397f5ec240c58f4270e681129e19f2e5035de5967dc12",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 257,
-      "fetched_at": "2026-05-22T15:31:36+08:00"
+      "duration_ms": 322,
+      "fetched_at": "2026-06-04T14:51:04+08:00"
     },
     {
       "module": "供应商与代发参考",
@@ -976,11 +970,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/supplier/relation/api_get_supplier_list.html",
       "local_path": "docs/wechat-shop-api/raw/supplier/relation/api_get_supplier_list.html",
       "status": "unchanged",
-      "bytes": 191327,
-      "sha256": "cb203e51eec20b0bfe3cd96e56cad75dbe3dda0ea1120d282388bbd5573f05ee",
+      "bytes": 192956,
+      "sha256": "eee5503d0d3be0300918594d2dc724124d9ee32e99e774a978b3bf03646c053c",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 531,
-      "fetched_at": "2026-05-22T15:31:36+08:00"
+      "duration_ms": 321,
+      "fetched_at": "2026-06-04T14:51:04+08:00"
     },
     {
       "module": "供应商与代发参考",
@@ -991,11 +985,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/supplier/relation/api_invite_supplier.html",
       "local_path": "docs/wechat-shop-api/raw/supplier/relation/api_invite_supplier.html",
       "status": "unchanged",
-      "bytes": 191036,
-      "sha256": "ddfdddf31ab12e2167b644cee8cb13362bf7964a8d3c50f5d6a56b5b8c2c6126",
+      "bytes": 192665,
+      "sha256": "d4c00229b3ddc7b21dfeca36e8b640867b86a0193515840932f352da7735c590",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 244,
-      "fetched_at": "2026-05-22T15:31:36+08:00"
+      "duration_ms": 297,
+      "fetched_at": "2026-06-04T14:51:04+08:00"
     },
     {
       "module": "供应商与代发参考",
@@ -1006,11 +1000,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/supplier/order/api_dropship_list.html",
       "local_path": "docs/wechat-shop-api/raw/supplier/order/api_dropship_list.html",
       "status": "unchanged",
-      "bytes": 196405,
-      "sha256": "31dc057a899753fe19995fbbfaf4b378ec0df655b0d7f3ad3a39aeefe4dfb494",
+      "bytes": 198034,
+      "sha256": "0fd7fc2f2f9f072cf739f93f3f7f0d8f532ce4c4cdf3a3ea3e3076cd3006d666",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 254,
-      "fetched_at": "2026-05-22T15:31:36+08:00"
+      "duration_ms": 284,
+      "fetched_at": "2026-06-04T14:51:04+08:00"
     },
     {
       "module": "供应商与代发参考",
@@ -1021,11 +1015,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/supplier/order/api_dropship_get.html",
       "local_path": "docs/wechat-shop-api/raw/supplier/order/api_dropship_get.html",
       "status": "unchanged",
-      "bytes": 269300,
-      "sha256": "3337b45ec84ed31e8dedc1f306dcca792be44a9aab31164e5926c55e527327b4",
+      "bytes": 270929,
+      "sha256": "f5fcb4b43cca1976eaf21aa6ec0b1b8f313c7d8a4079ae8cfbc9f0d209da1a99",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 252,
-      "fetched_at": "2026-05-22T15:31:36+08:00"
+      "duration_ms": 285,
+      "fetched_at": "2026-06-04T14:51:04+08:00"
     },
     {
       "module": "供应商与代发参考",
@@ -1036,11 +1030,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/supplier/order/api_dropship_search.html",
       "local_path": "docs/wechat-shop-api/raw/supplier/order/api_dropship_search.html",
       "status": "unchanged",
-      "bytes": 200404,
-      "sha256": "f68c0c664afafe475b27304778092e1e4f9862a6946b46bbcc3836b35f90dc19",
+      "bytes": 202033,
+      "sha256": "71a054ea6321846f2023310c1c3a46c63740a829dde4bae81fd7e76fb05dc377",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 225,
-      "fetched_at": "2026-05-22T15:31:36+08:00"
+      "duration_ms": 258,
+      "fetched_at": "2026-06-04T14:51:04+08:00"
     },
     {
       "module": "供应商与代发参考",
@@ -1051,11 +1045,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/supplier/order/api_dropship_assign.html",
       "local_path": "docs/wechat-shop-api/raw/supplier/order/api_dropship_assign.html",
       "status": "unchanged",
-      "bytes": 190327,
-      "sha256": "55b79ee65e78ab34bf01f37ccb22692cca6b8573ab19b97062a57e19f5074bf4",
+      "bytes": 191956,
+      "sha256": "f1c09f4576b1dacdd98fa25f94aab8c96bae8cc3ba3e4e8e682483ba41b71075",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 263,
-      "fetched_at": "2026-05-22T15:31:36+08:00"
+      "duration_ms": 237,
+      "fetched_at": "2026-06-04T14:51:04+08:00"
     },
     {
       "module": "供应商与代发参考",
@@ -1066,11 +1060,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/supplier/order/api_dropship_cancel.html",
       "local_path": "docs/wechat-shop-api/raw/supplier/order/api_dropship_cancel.html",
       "status": "unchanged",
-      "bytes": 188718,
-      "sha256": "925be28b3a20689ea01f207a0366740e88626aa56453f90a6f8c480fa0c2b8f0",
+      "bytes": 190347,
+      "sha256": "d9b2afdba956bffcc8867f33695e433c49cb3ac3ba0d6455f3abaa748d2a6fee",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 236,
-      "fetched_at": "2026-05-22T15:31:36+08:00"
+      "duration_ms": 222,
+      "fetched_at": "2026-06-04T14:51:04+08:00"
     },
     {
       "module": "供应商与代发参考",
@@ -1081,11 +1075,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/supplier/auto/api_get_product_list.html",
       "local_path": "docs/wechat-shop-api/raw/supplier/auto/api_get_product_list.html",
       "status": "unchanged",
-      "bytes": 192907,
-      "sha256": "227cbe25cddbe1b4ff50802afc99ec1ded8132c6523f3508a3c190920c0fd40c",
+      "bytes": 194536,
+      "sha256": "9d5d23e354b28118dea46c341f6235d0c2704965592e520abd539f340a52ef74",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 253,
-      "fetched_at": "2026-05-22T15:31:36+08:00"
+      "duration_ms": 232,
+      "fetched_at": "2026-06-04T14:51:04+08:00"
     },
     {
       "module": "供应商与代发参考",
@@ -1096,11 +1090,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/supplier/auto/api_get_distribution.html",
       "local_path": "docs/wechat-shop-api/raw/supplier/auto/api_get_distribution.html",
       "status": "unchanged",
-      "bytes": 188136,
-      "sha256": "c0ce556b3cef27119da12d90974c7c7f81344158edcd8bb34c8b3f04921b76cf",
+      "bytes": 189765,
+      "sha256": "883cae9d06d01c637e2e81c653b9e573889c3da68c5c55e690fde005a2f55556",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 525,
-      "fetched_at": "2026-05-22T15:31:36+08:00"
+      "duration_ms": 384,
+      "fetched_at": "2026-06-04T14:51:05+08:00"
     },
     {
       "module": "动销与经营分析",
@@ -1111,11 +1105,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/compass/api_getshopoverall.html",
       "local_path": "docs/wechat-shop-api/raw/compass/api_getshopoverall.html",
       "status": "unchanged",
-      "bytes": 189997,
-      "sha256": "9cb5db09d179015ef5f48fc669d29711f978ba98961c90cb7c0c3a87ea6063a2",
+      "bytes": 191626,
+      "sha256": "3a65e486e44b019b79e9b0f1eca9792da3c12d2413427da688834b14b2935ce3",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 249,
-      "fetched_at": "2026-05-22T15:31:36+08:00"
+      "duration_ms": 315,
+      "fetched_at": "2026-06-04T14:51:04+08:00"
     },
     {
       "module": "动销与经营分析",
@@ -1126,11 +1120,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/compass/api_getshopproductlist.html",
       "local_path": "docs/wechat-shop-api/raw/compass/api_getshopproductlist.html",
       "status": "unchanged",
-      "bytes": 245421,
-      "sha256": "f4df755a5e6e36c6304f42780d8a068959f114a8f54d524e7953ffcf0842c00c",
+      "bytes": 247050,
+      "sha256": "046e1d7287bbc25a63f4c4962c6c99a33981df64cb69d172a702a07a4737dff4",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 591,
-      "fetched_at": "2026-05-22T15:31:36+08:00"
+      "duration_ms": 331,
+      "fetched_at": "2026-06-04T14:51:04+08:00"
     },
     {
       "module": "动销与经营分析",
@@ -1141,11 +1135,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/compass/api_getshopproductdata.html",
       "local_path": "docs/wechat-shop-api/raw/compass/api_getshopproductdata.html",
       "status": "unchanged",
-      "bytes": 204303,
-      "sha256": "9d742144066d655ac3af07416146296edd9c53cebd69c9984cafe1b7a9443de9",
+      "bytes": 205932,
+      "sha256": "272446ddfbab4c72a3678da2908d31721449b370619cd3a90dedc801e12ea01e",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 226,
-      "fetched_at": "2026-05-22T15:31:36+08:00"
+      "duration_ms": 305,
+      "fetched_at": "2026-06-04T14:51:04+08:00"
     },
     {
       "module": "动销与经营分析",
@@ -1156,11 +1150,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/compass/api_getshopsaleprofiledata.html",
       "local_path": "docs/wechat-shop-api/raw/compass/api_getshopsaleprofiledata.html",
       "status": "unchanged",
-      "bytes": 201235,
-      "sha256": "6b8b0b1b7ef66a28fd090316046a96c67984a35062290f46e1c571ae355784b7",
+      "bytes": 202864,
+      "sha256": "57b6d59a92a3a0c974e02fbb0e258839c7e9dea914daedf02f0763d094c6d240",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 233,
-      "fetched_at": "2026-05-22T15:31:36+08:00"
+      "duration_ms": 301,
+      "fetched_at": "2026-06-04T14:51:04+08:00"
     },
     {
       "module": "动销与经营分析",
@@ -1171,11 +1165,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/favorite/shopfavorite/api_getfavoritescount.html",
       "local_path": "docs/wechat-shop-api/raw/favorite/shopfavorite/api_getfavoritescount.html",
       "status": "unchanged",
-      "bytes": 187205,
-      "sha256": "3ca357166a68b8b2c7deeeb9e9ec1344fb530ef4ade5f07289fc888e32c488d2",
+      "bytes": 188834,
+      "sha256": "8faf611167060448cc54bf57a480632590ad8a6126020772d786473341e01cc1",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 239,
-      "fetched_at": "2026-05-22T15:31:36+08:00"
+      "duration_ms": 249,
+      "fetched_at": "2026-06-04T14:51:05+08:00"
     },
     {
       "module": "动销与经营分析",
@@ -1186,11 +1180,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/funds/funds/api_listorderflow.html",
       "local_path": "docs/wechat-shop-api/raw/funds/funds/api_listorderflow.html",
       "status": "unchanged",
-      "bytes": 210169,
-      "sha256": "e5bf2c4ad7a8e9252a40bd588d6f517d80125e6630caeafc22f38c4b728ddc01",
+      "bytes": 211798,
+      "sha256": "c936c4c58be05f5f1be0b8bd614439c6d167b89051da3212c7a23ac34761b8d0",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 336,
-      "fetched_at": "2026-05-22T15:31:36+08:00"
+      "duration_ms": 239,
+      "fetched_at": "2026-06-04T14:51:05+08:00"
     },
     {
       "module": "动销与经营分析",
@@ -1201,11 +1195,11 @@
       "source_url": "https://developers.weixin.qq.com/doc/store/shop/API/funds/funds/api_getbalance.html",
       "local_path": "docs/wechat-shop-api/raw/funds/funds/api_getbalance.html",
       "status": "unchanged",
-      "bytes": 186571,
-      "sha256": "a9a6eca20dafe3c6f3ce31a4454d19b0545831ba4e05d1e5f221938bb21ef81a",
+      "bytes": 188200,
+      "sha256": "1b0b254a9451eb5fe88a900940e5b17bded7fb7fe60e068468cb89aa0eb3d19d",
       "content_type": "text/html; charset=utf-8",
-      "duration_ms": 272,
-      "fetched_at": "2026-05-22T15:31:36+08:00"
+      "duration_ms": 229,
+      "fetched_at": "2026-06-04T14:51:05+08:00"
     }
   ]
 }

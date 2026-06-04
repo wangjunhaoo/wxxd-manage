@@ -211,6 +211,45 @@ fn migrate(conn: &Connection) -> AppResult<()> {
           UNIQUE(shop_id, external_product_id)
         );
 
+        -- 微信小店真实商品缓存（sync_shop_products 写入，列表页读取）。
+        CREATE TABLE IF NOT EXISTS wechat_shop_products (
+          id TEXT PRIMARY KEY,
+          shop_id TEXT NOT NULL,
+          shop_name TEXT NOT NULL,
+          wechat_product_id TEXT NOT NULL,
+          out_product_id TEXT,
+          title TEXT NOT NULL,
+          head_img TEXT,
+          status INTEGER NOT NULL,
+          edit_status INTEGER,
+          min_price_cents INTEGER,
+          cat_id INTEGER,
+          total_stock INTEGER NOT NULL DEFAULT 0,
+          sku_count INTEGER NOT NULL DEFAULT 0,
+          audit_summary TEXT,
+          raw_payload TEXT NOT NULL,
+          synced_at TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(shop_id, wechat_product_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS wechat_shop_product_skus (
+          id TEXT PRIMARY KEY,
+          product_row_id TEXT NOT NULL,
+          shop_id TEXT NOT NULL,
+          wechat_product_id TEXT NOT NULL,
+          sku_id TEXT NOT NULL,
+          out_sku_id TEXT,
+          sku_code TEXT,
+          sale_price_cents INTEGER,
+          stock_num INTEGER,
+          sku_attrs TEXT,
+          thumb_img TEXT,
+          synced_at TEXT NOT NULL,
+          UNIQUE(shop_id, wechat_product_id, sku_id)
+        );
+
         CREATE TABLE IF NOT EXISTS price_update_jobs (
           id TEXT PRIMARY KEY,
           request_id TEXT NOT NULL UNIQUE,

@@ -285,3 +285,73 @@ fn apply_publish_pricing_strategy_writes_metadata_fields() {
     assert_eq!(product.metadata["sale_price_floor_cents"], 880);
     assert_eq!(product.metadata["collection_source"], "test");
 }
+
+/// 构造一个仅含单个有库存 SKU、metadata 不带任何价格字段的待发品。
+/// 模拟新流水线进入发品 precheck 前的原始商品：售价完全由后续注入的策略决定。
+fn product_with_single_priced_sku(cost_price: f64) -> ExternalProductInput {
+    ExternalProductInput {
+        external_product_id: "demo".to_string(),
+        title: "示例商品".to_string(),
+        source_url: "https://example.com/item".to_string(),
+        images: vec![],
+        detail_images: vec![],
+        skus: vec![crate::models::ExternalSkuInput {
+            external_sku_id: "sku-1".to_string(),
+            specs: serde_json::json!({}),
+            cost_price,
+            stock: 10,
+        }],
+        supplier_name: None,
+        supplier_product_id: None,
+        category_hint: None,
+        brand_hint: None,
+        weight_gram: None,
+        metadata: serde_json::json!({}),
+    }
+}
+
+#[test]
+fn precheck_pricing_injection_drives_draft_sku_sale_price() {
+    // 复刻 run_precheck_one_item 的注入：先把全局价格策略写进 product.metadata，
+    // 再由 build_add_product_skus 生成微信发品草稿——草稿的 sale_price 必须按注入的策略计算，
+    // 而不是 resolve_sku_sale_price_cents 写死的 1.6 倍兜底。
+    let mut product = product_with_single_priced_sku(12.5);
+    let strategy = PublishPricingStrategy {
+        sale_price_markup_rate: 2.0,
+        sale_price_fixed_cents: 500,
+        sale_price_floor_cents: 1000,
+    };
+
+    apply_publish_pricing_strategy(&mut product, &strategy);
+
+    let mut warnings = Vec::new();
+    let skus = build_add_product_skus(&product, product.metadata.as_object(), &mut warnings)
+        .expect("生成微信发品 SKU 草稿");
+
+    // ceil(12.5 * 100 * 2.0) + 500 = 2500 + 500 = 3000；max(floor 1000, 3000) = 3000
+    assert_eq!(skus.len(), 1);
+    assert_eq!(skus[0]["sale_price"], 3000);
+    assert_eq!(skus[0]["out_sku_id"], "sku-1");
+    assert_eq!(skus[0]["stock_num"], 10);
+}
+
+#[test]
+fn precheck_pricing_injection_respects_floor_for_low_cost_sku() {
+    // 低成本商品按倍率算出的价格低于最低售价时，草稿必须被最低售价托底。
+    let mut product = product_with_single_priced_sku(1.0);
+    let strategy = PublishPricingStrategy {
+        sale_price_markup_rate: 2.0,
+        sale_price_fixed_cents: 0,
+        sale_price_floor_cents: 1000,
+    };
+
+    apply_publish_pricing_strategy(&mut product, &strategy);
+
+    let mut warnings = Vec::new();
+    let skus = build_add_product_skus(&product, product.metadata.as_object(), &mut warnings)
+        .expect("生成微信发品 SKU 草稿");
+
+    // ceil(1.0 * 100 * 2.0) + 0 = 200；max(floor 1000, 200) = 1000（被最低售价托底）
+    assert_eq!(skus.len(), 1);
+    assert_eq!(skus[0]["sale_price"], 1000);
+}

@@ -250,22 +250,6 @@ pub(in crate::commands) fn conn_update_publish_item_error(
     block_target(conn, &item.item_id, error_code, error_summary)
 }
 
-pub(in crate::commands) fn set_publish_item_status_in_conn(
-    conn: &Connection,
-    item: &PendingPublishItem,
-    status: &str,
-    error_code: Option<&str>,
-    error_summary: Option<&str>,
-) -> AppResult<()> {
-    conn.execute(
-        "UPDATE pipeline_shop_targets
-         SET status = ?1, error_code = ?2, error_summary = ?3
-         WHERE id = ?4",
-        params![status, error_code, error_summary, item.item_id.as_str()],
-    )?;
-    Ok(())
-}
-
 pub(in crate::commands) fn publish_failure_notification_severity(error_code: &str) -> &'static str {
     match error_code {
         "CATEGORY_NEEDS_AI_FILL"
@@ -288,23 +272,6 @@ pub(in crate::commands) fn mark_publish_item_failed_for_app(
 ) -> AppResult<()> {
     let conn = open_connection(app)?;
     mark_publish_item_failed(&conn, item, error_code, error_summary)
-}
-
-pub(in crate::commands) fn set_publish_item_status(
-    app: &AppHandle,
-    item: &PendingPublishItem,
-    status: &str,
-    error_code: Option<&str>,
-    error_summary: Option<&str>,
-) -> AppResult<()> {
-    let conn = open_connection(app)?;
-    conn.execute(
-        "UPDATE pipeline_shop_targets
-         SET status = ?1, error_code = ?2, error_summary = ?3
-         WHERE id = ?4",
-        params![status, error_code, error_summary, item.item_id.as_str()],
-    )?;
-    Ok(())
 }
 
 /// 审核轮询：只回写 target 的微信审核元数据（不碰 stage/status 推进——
