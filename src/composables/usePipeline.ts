@@ -1,0 +1,196 @@
+import { onUnmounted, ref } from "vue";
+import { ElMessage } from "element-plus";
+import type {
+  CategoryCacheView,
+  CategoryCatalogListResult,
+  PipelineProductView,
+} from "../types/app";
+
+/** 类目候选选项（ExceptionDrawer 选类目确认用）。 */
+export type CategoryOption = {
+  category_ids: number[];
+  category_path: string;
+  shop_id: string;
+  shop_name: string;
+};
+
+type CommandFn = <T>(name: string, args?: Record<string, unknown>) => Promise<T>;
+
+/**
+ * 统一商品流水线前端状态：以 list_pipeline_products 为唯一数据源，3 秒轮询刷新，
+ * 提供「人工重试」「确认审查」「导入采集」三个用户动作。driver 在后端自动推进，
+ * 前端是观察者 + 异常介入者。
+ */
+export function usePipeline(command: CommandFn) {
+  const pipelineProducts = ref<PipelineProductView[]>([]);
+  const pipelineLoading = ref(false);
+  let timer: ReturnType<typeof setInterval> | null = null;
+
+  async function refreshPipeline() {
+    pipelineLoading.value = true;
+    try {
+      pipelineProducts.value = await command<PipelineProductView[]>(
+        "list_pipeline_products",
+      );
+    } catch (error) {
+      ElMessage.error(`获取流水线商品失败：${error}`);
+    } finally {
+      pipelineLoading.value = false;
+    }
+  }
+
+  function startPipelinePolling() {
+    if (timer) return;
+    void refreshPipeline();
+    timer = setInterval(() => void refreshPipeline(), 3000);
+  }
+
+  function stopPipelinePolling() {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+  }
+
+  /** need_confirm/error 商品在用户补救后手动重试：把 blocked target 推回 pending 重新推进。 */
+  async function retryProduct(productId: string) {
+    try {
+      await command<number>("retry_pipeline_product", { productId });
+      ElMessage.success("已重新排队，driver 将自动推进");
+      await refreshPipeline();
+    } catch (error) {
+      ElMessage.error(`重试失败：${error}`);
+    }
+  }
+
+  /** 确认审查通过（接受 AI 已选类目/属性），商品进入铺货阶段。 */
+  async function confirmReview(productId: string) {
+    try {
+      await command<void>("confirm_collection_review", {
+        request: { task_id: productId, target_shop_ids: [] },
+      });
+      ElMessage.success("已确认，进入铺货");
+      await refreshPipeline();
+    } catch (error) {
+      ElMessage.error(`确认失败：${error}`);
+    }
+  }
+
+  const categoryOptions = ref<CategoryOption[]>([]);
+  const categorySearching = ref(false);
+
+  function buildCategoryOptions(categories: CategoryCacheView[]): CategoryOption[] {
+    const byId = new Map<number, CategoryCacheView>();
+    for (const c of categories) byId.set(c.cat_id, c);
+    const buildPath = (cat: CategoryCacheView): CategoryCacheView[] => {
+      const path: CategoryCacheView[] = [];
+      const visited = new Set<number>();
+      let cur: CategoryCacheView | undefined = cat;
+      while (cur && !visited.has(cur.cat_id)) {
+        visited.add(cur.cat_id);
+        path.unshift(cur);
+        cur = cur.parent_cat_id == null ? undefined : byId.get(cur.parent_cat_id);
+      }
+      return path;
+    };
+    const options = new Map<string, CategoryOption>();
+    for (const c of categories) {
+      if (!c.is_available_for_shop) continue;
+      const path = buildPath(c);
+      if (path.length < 3) continue;
+      const ids = path.map((p) => p.cat_id);
+      const key = ids.join("/");
+      if (options.has(key)) continue;
+      options.set(key, {
+        category_ids: ids,
+        category_path: path.map((p) => p.name).join(" > "),
+        shop_id: c.shop_id,
+        shop_name: c.shop_name,
+      });
+    }
+    return Array.from(options.values()).slice(0, 30);
+  }
+
+  /** 按店搜索可用叶子类目（≥3 层、店铺有权限），供 ExceptionDrawer 选类目。 */
+  async function searchCategories(shopId: string, keyword: string) {
+    if (!shopId || !keyword.trim()) {
+      ElMessage.warning("请输入类目关键词");
+      return;
+    }
+    categorySearching.value = true;
+    try {
+      const result = await command<CategoryCatalogListResult>(
+        "list_category_catalog",
+        { shopId, keyword: keyword.trim(), limit: 300 },
+      );
+      categoryOptions.value = buildCategoryOptions(result.categories);
+      if (categoryOptions.value.length === 0) {
+        ElMessage.warning("没有找到可用类目，请先同步店铺类目权限或换关键词");
+      }
+    } catch (error) {
+      ElMessage.error(`类目搜索失败：${error}`);
+    } finally {
+      categorySearching.value = false;
+    }
+  }
+
+  /** 确认审查（可附带人工选定的标题/类目），商品进入铺货。 */
+  async function confirmWithCategory(
+    productId: string,
+    opts: { title?: string; categoryIds?: number[]; categoryPath?: string },
+  ): Promise<boolean> {
+    try {
+      await command<void>("confirm_collection_review", {
+        request: {
+          task_id: productId,
+          title: opts.title ?? null,
+          category_ids: opts.categoryIds ?? null,
+          category_path: opts.categoryPath ?? null,
+          target_shop_ids: [],
+        },
+      });
+      ElMessage.success("已确认，进入铺货");
+      await refreshPipeline();
+      return true;
+    } catch (error) {
+      ElMessage.error(`确认失败：${error}`);
+      return false;
+    }
+  }
+
+  /** 导入 Excel 并指定本批目标店，商品自动开始采集→审查→铺货。 */
+  async function importExcel(
+    filePath: string,
+    targetShopIds: string[],
+  ): Promise<boolean> {
+    try {
+      const count = await command<number>("import_excel_for_collection", {
+        filePath,
+        targetShopIds,
+      });
+      ElMessage.success(`已导入 ${count} 个商品，开始采集`);
+      await refreshPipeline();
+      return true;
+    } catch (error) {
+      ElMessage.error(`导入失败：${error}`);
+      return false;
+    }
+  }
+
+  onUnmounted(() => stopPipelinePolling());
+
+  return {
+    pipelineProducts,
+    pipelineLoading,
+    refreshPipeline,
+    startPipelinePolling,
+    stopPipelinePolling,
+    retryProduct,
+    confirmReview,
+    confirmWithCategory,
+    searchCategories,
+    categoryOptions,
+    categorySearching,
+    importExcel,
+  };
+}

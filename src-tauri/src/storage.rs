@@ -71,7 +71,13 @@ pub fn open_connection(app: &AppHandle) -> AppResult<Connection> {
     let path = database_path(app)?;
     let conn = Connection::open(path)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
-    conn.pragma_update(None, "foreign_keys", "ON")?;
+    // 后台 driver 与前端命令会并发访问同一 SQLite，设置忙等超时避免 SQLITE_BUSY 直接失败
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    // 外键约束暂时关闭：重构遗留多张仍在用的表(task_logs/publish_attribute_suggestions 等)外键
+    // 仍指向已废弃旧表(task_runs/publish_jobs/publish_products/publish_job_items)，开启会触发
+    // FOREIGN KEY constraint failed → 静默回滚、卡死流水线(precheck/attr_fill 都中过招)。新表
+    // (pipeline_*)完整性由创建顺序的代码逻辑 + loader 的 JOIN 过滤天然保证；待删旧表后可重开。
+    conn.pragma_update(None, "foreign_keys", "OFF")?;
     migrate(&conn)?;
     Ok(conn)
 }
@@ -450,8 +456,7 @@ fn migrate(conn: &Connection) -> AppResult<()> {
           level TEXT NOT NULL,
           message TEXT NOT NULL,
           detail_json TEXT,
-          created_at TEXT NOT NULL,
-          FOREIGN KEY(task_id) REFERENCES task_runs(id)
+          created_at TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS app_settings (
@@ -665,8 +670,110 @@ fn migrate(conn: &Connection) -> AppResult<()> {
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
+
+        -- 统一流水线主表：一行 = 一个商品（一行 Excel 导入），贯穿采集→审查→铺货全生命周期。
+        -- status 是对外 6 个人话态，stage 是内部技术阶段（driver 用，前端不读）。
+        CREATE TABLE IF NOT EXISTS pipeline_products (
+          id TEXT PRIMARY KEY,
+          external_product_id TEXT,
+          title TEXT NOT NULL,
+          source_url TEXT NOT NULL,
+          category_path TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL,
+          stage TEXT NOT NULL,
+          attention TEXT NOT NULL DEFAULT 'none',
+          error_code TEXT,
+          error_reason TEXT,
+          progress_text TEXT,
+          collected_data TEXT,
+          reviewed_data TEXT,
+          review_result_json TEXT,
+          pricing_strategy_json TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        -- 推进执行单位：商品 × 目标店（多对多），driver 真正推进的行；每店各自的阶段/状态/发品结果。
+        CREATE TABLE IF NOT EXISTS pipeline_shop_targets (
+          id TEXT PRIMARY KEY,
+          product_id TEXT NOT NULL,
+          shop_id TEXT NOT NULL,
+          shop_name TEXT NOT NULL,
+          stage TEXT NOT NULL,
+          status TEXT NOT NULL,
+          error_code TEXT,
+          error_summary TEXT,
+          raw_payload TEXT,
+          wechat_product_id TEXT,
+          wechat_sku_id TEXT,
+          wechat_status INTEGER,
+          wechat_edit_status INTEGER,
+          last_status_sync_at TEXT,
+          audit_summary TEXT,
+          retry_count INTEGER NOT NULL DEFAULT 0,
+          next_retry_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(product_id, shop_id),
+          FOREIGN KEY(product_id) REFERENCES pipeline_products(id)
+        );
+
+        -- 素材表：店级图片上传缓存，按 (target, 源链接) 唯一，天然幂等。
+        CREATE TABLE IF NOT EXISTS pipeline_assets (
+          id TEXT PRIMARY KEY,
+          target_id TEXT NOT NULL,
+          product_id TEXT NOT NULL,
+          shop_id TEXT NOT NULL,
+          source_url TEXT NOT NULL,
+          asset_kind TEXT NOT NULL,
+          sort_order INTEGER NOT NULL,
+          wechat_url TEXT,
+          status TEXT NOT NULL,
+          error_code TEXT,
+          error_summary TEXT,
+          uploaded_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(target_id, source_url),
+          FOREIGN KEY(target_id) REFERENCES pipeline_shop_targets(id),
+          FOREIGN KEY(product_id) REFERENCES pipeline_products(id)
+        );
         "#,
     )?;
+
+    // 历史遗留迁移：task_logs.task_id 的旧外键指向已废弃的 task_runs；新流水线模型用
+    // product_id 作 task_id 写日志会触发 FOREIGN KEY constraint failed —— 导致铺货 precheck
+    // 事务回滚、整条流水线悄无声息卡死。检测到旧外键则重建 task_logs 去掉该外键。
+    let task_logs_has_legacy_fk = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_foreign_key_list('task_logs') WHERE \"table\" = 'task_runs'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| count > 0)
+        .unwrap_or(false);
+    if task_logs_has_legacy_fk {
+        conn.pragma_update(None, "foreign_keys", "OFF")?;
+        conn.execute_batch(
+            r#"
+            CREATE TABLE task_logs_rebuilt (
+              id TEXT PRIMARY KEY,
+              task_id TEXT NOT NULL,
+              item_id TEXT,
+              level TEXT NOT NULL,
+              message TEXT NOT NULL,
+              detail_json TEXT,
+              created_at TEXT NOT NULL
+            );
+            INSERT INTO task_logs_rebuilt
+              SELECT id, task_id, item_id, level, message, detail_json, created_at FROM task_logs;
+            DROP TABLE task_logs;
+            ALTER TABLE task_logs_rebuilt RENAME TO task_logs;
+            "#,
+        )?;
+        conn.pragma_update(None, "foreign_keys", "ON")?;
+    }
+
     ensure_column(conn, "shops", "wechat_nickname", "TEXT")?;
     ensure_column(conn, "shops", "wechat_headimg_url", "TEXT")?;
     ensure_column(conn, "shops", "wechat_subject_type", "TEXT")?;
@@ -869,6 +976,24 @@ fn migrate(conn: &Connection) -> AppResult<()> {
 
         CREATE INDEX IF NOT EXISTS idx_collection_tasks_status
           ON collection_tasks(status);
+
+        CREATE INDEX IF NOT EXISTS idx_pipeline_products_status
+          ON pipeline_products(status);
+
+        CREATE INDEX IF NOT EXISTS idx_pipeline_products_stage
+          ON pipeline_products(stage);
+
+        CREATE INDEX IF NOT EXISTS idx_pipeline_shop_targets_product
+          ON pipeline_shop_targets(product_id);
+
+        CREATE INDEX IF NOT EXISTS idx_pipeline_shop_targets_stage_status
+          ON pipeline_shop_targets(stage, status);
+
+        CREATE INDEX IF NOT EXISTS idx_pipeline_shop_targets_retry
+          ON pipeline_shop_targets(next_retry_at);
+
+        CREATE INDEX IF NOT EXISTS idx_pipeline_assets_target
+          ON pipeline_assets(target_id, status);
         "#,
     )?;
     cleanup_stale_wechat_category_cache(conn)?;

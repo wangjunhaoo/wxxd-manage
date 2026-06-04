@@ -266,6 +266,71 @@ async fn run_publish_pipeline_steps(
     result
 }
 
+/// 后台流水线 driver：单 worker tick 循环，自动把每个商品从采集一路推进到上架。
+/// 采集 worker 内部用 COLLECTOR_RUNNING 防重入；审查/铺货每轮处理一批；
+/// 需人工的商品(need_confirm)与冷却中的采集会被各自阶段自动跳过，等待人工或重试。
+pub fn start_pipeline_driver(app: AppHandle) {
+    // spawn 任务的 panic 默认被 JoinHandle 吞掉、不打印到日志（这是之前 driver
+    // "悄无声息卡死"极难定位的根因）。装一个 panic hook 打印 panic 位置与信息。
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        eprintln!("🔥 任务 panic: {info}");
+        default_hook(info);
+    }));
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let app_tick = app.clone();
+            // 单轮 tick 隔离在子任务里：① 子任务 panic 经 JoinError 捕获，不会杀死 driver 主循环
+            //（单个商品的坏数据不应让全部商品停摆）；② 外层 timeout 防止某步外部调用
+            //（AI/微信/淘宝）无限 hang 卡死整个 driver。
+            let handle = tauri::async_runtime::spawn(async move {
+                drive_pipeline_once(&app_tick).await;
+            });
+            match tokio::time::timeout(std::time::Duration::from_secs(180), handle).await {
+                Ok(Ok(())) => {}
+                Ok(Err(join_err)) => {
+                    eprintln!("⚠️ driver tick 异常退出（已隔离，继续下一轮）：{join_err}");
+                }
+                Err(_) => {
+                    eprintln!("⚠️ driver tick 超时 180s（已跳过本轮，继续下一轮）");
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+        }
+    });
+}
+
+async fn drive_pipeline_once(app: &AppHandle) {
+    // 1. 采集：拉起 stage=collect 的商品（trigger 内部防重入，不会重复拉起）
+    trigger_collection_worker(app.clone());
+    // 2. 审查：处理 stage=review 的商品，高置信自动通过并激活各店 target 进入铺货
+    eprintln!("[driver] tick: 审查阶段");
+    if let Err(error) = run_collection_review_once(
+        app.clone(),
+        CollectionReviewRunRequest {
+            task_ids: Vec::new(),
+            target_shop_ids: Vec::new(),
+            limit: Some(20),
+        },
+    )
+    .await
+    {
+        eprintln!("流水线 driver 审查阶段出错：{error}");
+    }
+    // 3. 退避扫描：把到期的可自动重试 blocked target 置回 pending，让 loader 能重新捞取
+    //    (reactivate 内部用 requeue_target 清退避时间并 recompute 受影响商品级状态)
+    if let Ok(conn) = open_connection(app) {
+        if let Err(error) = reactivate_retriable_blocked_targets(&conn) {
+            eprintln!("流水线 driver 退避扫描出错：{error}");
+        }
+    }
+    // 4. 铺货：7 个阶段顺序推进一批（precheck→属性→类目预检→传图→提交→审核同步→上架）
+    eprintln!("[driver] tick: 铺货阶段");
+    let _ =
+        run_publish_pipeline_steps(app.clone(), PublishPipelineStepSwitches::all_enabled()).await;
+    eprintln!("[driver] tick: 本轮完成");
+}
+
 fn push_publish_pipeline_error(result: &mut PublishPipelineRunResult, step: &str, error: AppError) {
     result.errors.push(AutomationStepError {
         step: step.to_string(),

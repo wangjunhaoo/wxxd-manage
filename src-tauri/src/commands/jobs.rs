@@ -14,55 +14,41 @@ pub fn create_external_publish_job(
         ));
     }
 
-    let existing_request: Option<String> = conn
-        .query_row(
-            "SELECT id FROM publish_jobs WHERE request_id = ?1",
-            [request.request_id.as_str()],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if existing_request.is_some() {
-        return Err(AppError::Validation(
-            "request_id 已存在，不能重复创建铺货任务".to_string(),
-        ));
-    }
-
     let tx = conn.transaction()?;
-    let job_id = format!("pub_{}", Uuid::new_v4().simple());
     let created_at = now_shanghai();
     let mut failed_items = 0usize;
     let total_items = request.products.len() * targets.len();
 
-    tx.execute(
-        "INSERT INTO publish_jobs (id, request_id, status, accepted_product_count, target_shop_count, created_at)
-         VALUES (?1, ?2, 'queued', ?3, ?4, ?5)",
-        params![
-            job_id,
-            request.request_id,
-            request.products.len() as i64,
-            targets.len() as i64,
-            created_at
-        ],
-    )?;
-
-    tx.execute(
-        "INSERT INTO task_runs (id, task_type, status, progress, created_at) VALUES (?1, 'publish.create_external_job', 'pending', 0, ?2)",
-        params![job_id, created_at],
-    )?;
-
     for product in &request.products {
-        let product_row_id = format!("product-{}", Uuid::new_v4());
+        // 幂等：同一 external_product_id 已有在途流水线（未上架且未异常）则跳过，
+        // 避免外部 API 网络重试用相同 request 重复创建商品
+        let inflight: Option<String> = tx
+            .query_row(
+                "SELECT id FROM pipeline_products
+                 WHERE external_product_id = ?1 AND status NOT IN ('listed', 'error')
+                 LIMIT 1",
+                params![product.external_product_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if inflight.is_some() {
+            continue;
+        }
+        let product_id = format!("prod_{}", Uuid::new_v4().simple());
+        let reviewed_data = serde_json::to_string(product).unwrap_or_else(|_| "{}".to_string());
+        // 外部 API 直接提供已采集/已审查的商品数据，跳过采集与审查，直接进入铺货阶段
         tx.execute(
-            "INSERT INTO publish_products
-             (id, job_id, external_product_id, title, source_url, raw_payload, status, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'queued', ?7)",
+            "INSERT INTO pipeline_products
+             (id, external_product_id, title, source_url, category_path,
+              status, stage, attention, collected_data, reviewed_data, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'publishing', 'publish', 'none', ?6, ?6, ?7, ?7)",
             params![
-                product_row_id,
-                job_id,
+                product_id,
                 product.external_product_id,
                 product.title,
                 product.source_url,
-                serde_json::to_string(product).unwrap_or_else(|_| "{}".to_string()),
+                product.category_hint.clone().unwrap_or_default(),
+                reviewed_data,
                 created_at
             ],
         )?;
@@ -75,42 +61,48 @@ pub fn create_external_publish_job(
                     |row| row.get::<_, String>(0),
                 )
                 .optional()?;
-            let (status, error_code, error_summary) = if duplicate.is_some() {
+            // 入口期校验失败的 target 直接置 blocked（带退避时间），由商品级聚合显示待确认/异常
+            let (status, error_code, error_summary, next_retry_at) = if duplicate.is_some() {
                 failed_items += 1;
                 (
-                    "failed",
+                    "blocked",
                     Some("DUPLICATE_EXTERNAL_PRODUCT_IN_SHOP"),
                     Some("同一个 external_product_id 已经铺过该店铺"),
+                    Some(created_at.clone()),
                 )
             } else if product.images.len() < 3 {
                 failed_items += 1;
                 (
-                    "failed",
+                    "blocked",
                     Some("INSUFFICIENT_HEAD_IMAGES"),
                     Some("商品主图少于 3 张，无法进入微信发品"),
+                    Some(created_at.clone()),
                 )
             } else {
-                ("pending", None, None)
+                ("pending", None, None, None)
             };
 
             tx.execute(
-                "INSERT INTO publish_job_items
-                 (id, job_id, product_row_id, shop_id, shop_name, status, error_code, error_summary, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "INSERT INTO pipeline_shop_targets
+                 (id, product_id, shop_id, shop_name, stage, status, error_code, error_summary,
+                  retry_count, next_retry_at, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, 'precheck', ?5, ?6, ?7, 0, ?8, ?9, ?9)",
                 params![
-                    format!("item-{}", Uuid::new_v4()),
-                    job_id,
-                    product_row_id,
+                    format!("tgt_{}", Uuid::new_v4().simple()),
+                    product_id,
                     target.id,
                     target.name,
                     status,
                     error_code,
                     error_summary,
+                    next_retry_at,
                     created_at
                 ],
             )?;
         }
     }
+
+    tx.commit()?;
 
     let job_status = if failed_items == total_items {
         "failed"
@@ -119,18 +111,9 @@ pub fn create_external_publish_job(
     } else {
         "queued"
     };
-    tx.execute(
-        "UPDATE publish_jobs SET status = ?1 WHERE id = ?2",
-        params![job_status, job_id],
-    )?;
-    tx.execute(
-        "UPDATE task_runs SET status = ?1 WHERE id = ?2",
-        params![job_status, job_id],
-    )?;
-    tx.commit()?;
 
     Ok(PublishJobCreated {
-        task_id: job_id,
+        task_id: request.request_id.clone(),
         status: job_status.to_string(),
         accepted_product_count: request.products.len(),
         target_shop_count: targets.len(),

@@ -4,9 +4,11 @@ mod analytics;
 mod automation;
 mod collection;
 mod delivery;
+mod errors;
 mod jobs;
 mod order_price_adjustment;
 mod orders;
+mod pipeline;
 mod price_update;
 mod publish;
 mod purchase;
@@ -20,9 +22,11 @@ pub use analytics::*;
 pub use automation::*;
 pub use collection::*;
 pub use delivery::*;
+pub use errors::*;
 pub use jobs::*;
 pub use order_price_adjustment::*;
 pub use orders::*;
+pub use pipeline::*;
 pub use price_update::*;
 pub use publish::*;
 pub use purchase::*;
@@ -77,7 +81,8 @@ use crate::models::{
     ProductSalesAnalysisTotals, ProductSalesAnalysisView, ProductStatusSyncBatchResult,
     ProductSubmitBatchResult, PublishAttributeFillBatchResult, PublishCategoryPrecheckBatchResult,
     PublishJobCreated, PublishJobItemView, PublishJobView, PublishPipelineRunResult,
-    PublishPricingStrategy, PublishProductView, PublishTaskBatchResult, PurchaseTaskBatchResult,
+    PipelineProductView, PipelineShopTargetView, PublishPricingStrategy, PublishProductView,
+    PublishTaskBatchResult, PurchaseTaskBatchResult,
     PurchaseTaskExportResult, PurchaseTaskIssueRequest, PurchaseTaskIssueResult,
     PurchaseTaskListResult, PurchaseTaskMappingRequest, PurchaseTaskMappingResult,
     PurchaseTaskShipmentRequest, PurchaseTaskShipmentResult, PurchaseTaskView, ShipmentListResult,

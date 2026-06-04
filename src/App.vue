@@ -1,15 +1,13 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useWxXdApp } from "./composables/useWxXdApp";
-import CollectionImportDialog from "./components/CollectionImportDialog.vue";
 import OperationsDashboardSection from "./components/sections/OperationsDashboardSection.vue";
 import OperationsExceptionsSection from "./components/sections/OperationsExceptionsSection.vue";
 import OperationsAnalyticsSection from "./components/sections/OperationsAnalyticsSection.vue";
 import SystemSettingsSection from "./components/sections/SystemSettingsSection.vue";
 import PriceUpdateSection from "./components/sections/PriceUpdateSection.vue";
 import ProcurementSection from "./components/sections/ProcurementSection.vue";
-import PublishJobsSection from "./components/sections/PublishJobsSection.vue";
-import PublishTasksSection from "./components/sections/PublishTasksSection.vue";
+import PublishWorkbenchSection from "./components/sections/PublishWorkbenchSection.vue";
 import AgentSkillsSection from "./components/sections/AgentSkillsSection.vue";
 import ProductManagementSection from "./components/sections/ProductManagementSection.vue";
 import OrderManagementSection from "./components/sections/OrderManagementSection.vue";
@@ -29,8 +27,7 @@ const navItems = [
   { key: "workbench", label: "今日工作台", desc: "先看待办" },
   { key: "products", label: "商品管理", desc: "商品与店铺" },
   { key: "orders", label: "订单管理", desc: "订单与履约" },
-  { key: "publish", label: "铺货", desc: "采集到上架" },
-  { key: "publish-tasks", label: "铺货结果", desc: "上架与异常" },
+  { key: "publish", label: "铺货工作台", desc: "采集到上架" },
   { key: "procurement", label: "采购下单", desc: "采购与物流" },
   { key: "price", label: "价格调整", desc: "订单改价" },
   { key: "exceptions", label: "异常处理", desc: "通知与售后" },
@@ -44,8 +41,7 @@ const sectionMeta = computed(() => {
     workbench: { eyebrow: "Asia/Shanghai", title: "运营今日工作台" },
     products: { eyebrow: "商品管理", title: "货源、铺货和动销状态" },
     orders: { eyebrow: "订单管理", title: "订单、采购、发货和售后状态" },
-    publish: { eyebrow: "铺货主流程", title: "从采集选品到微信上架" },
-    "publish-tasks": { eyebrow: "铺货结果", title: "上架结果与异常处理" },
+    publish: { eyebrow: "铺货工作台", title: "导入即自动采集、审查、铺货上架" },
     procurement: { eyebrow: "采购下单", title: "待采购订单与供应商物流" },
     price: { eyebrow: "价格调整", title: "未付款订单批量改价" },
     exceptions: { eyebrow: "异常处理", title: "通知、售后与纠纷" },
@@ -104,11 +100,7 @@ const sectionMeta = computed(() => {
         :ctx="ctx"
       />
       <OrderManagementSection v-if="selectedSection === 'orders'" :ctx="ctx" />
-      <PublishJobsSection v-if="selectedSection === 'publish'" :ctx="ctx" />
-      <PublishTasksSection
-        v-if="selectedSection === 'publish-tasks'"
-        :ctx="ctx"
-      />
+      <PublishWorkbenchSection v-if="selectedSection === 'publish'" :ctx="ctx" />
       <ProcurementSection v-if="selectedSection === 'procurement'" :ctx="ctx" />
       <PriceUpdateSection v-if="selectedSection === 'price'" :ctx="ctx" />
       <OperationsExceptionsSection
@@ -122,7 +114,5 @@ const sectionMeta = computed(() => {
       <AgentSkillsSection v-if="selectedSection === 'skills'" :ctx="ctx" />
       <SystemSettingsSection v-if="selectedSection === 'settings'" :ctx="ctx" />
     </main>
-
-    <CollectionImportDialog :ctx="ctx" />
   </div>
 </template>

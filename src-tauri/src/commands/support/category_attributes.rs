@@ -846,8 +846,8 @@ fn write_wechat_category_metadata(
     let updated_raw = serde_json::to_string(&raw_value)
         .map_err(|error| AppError::Validation(format!("微信类目推断结果无法序列化：{error}")))?;
     conn.execute(
-        "UPDATE publish_products SET raw_payload = ?1 WHERE id = ?2",
-        params![updated_raw, item.product_row_id.as_str()],
+        "UPDATE pipeline_shop_targets SET raw_payload = ?1 WHERE id = ?2",
+        params![updated_raw, item.item_id.as_str()],
     )?;
     item.raw_payload = updated_raw.clone();
     *product = serde_json::from_str(&updated_raw).map_err(|error| {
@@ -2637,8 +2637,8 @@ pub(in crate::commands) fn persist_filled_add_product_payload(
         attribute_suggestions_json(&plan.suggestions),
     );
     conn.execute(
-        "UPDATE publish_products SET raw_payload = ?1 WHERE id = ?2",
-        params![raw_value.to_string(), item.product_row_id.as_str()],
+        "UPDATE pipeline_shop_targets SET raw_payload = ?1 WHERE id = ?2",
+        params![raw_value.to_string(), item.item_id.as_str()],
     )?;
     Ok(())
 }

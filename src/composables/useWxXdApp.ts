@@ -3350,6 +3350,7 @@ export function useWxXdApp() {
   onMounted(refreshAll);
 
   return {
+    command,
     aftersaleActionForm,
     aftersaleActionLabel,
     aftersaleActionStatusLabel,

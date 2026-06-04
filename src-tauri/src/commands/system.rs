@@ -200,6 +200,9 @@ pub fn reset_collection_publish_workspace(
             DELETE FROM publish_products;
             DELETE FROM publish_jobs;
             DELETE FROM collection_tasks;
+            DELETE FROM pipeline_assets;
+            DELETE FROM pipeline_shop_targets;
+            DELETE FROM pipeline_products;
             "#,
         )?;
         tx.commit()?;

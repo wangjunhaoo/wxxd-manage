@@ -205,8 +205,8 @@ pub(in crate::commands) fn persist_generated_add_product_payload(
     let updated_raw = serde_json::to_string(&raw_value)
         .map_err(|error| AppError::Validation(format!("微信发品草稿无法序列化：{error}")))?;
     conn.execute(
-        "UPDATE publish_products SET raw_payload = ?1 WHERE id = ?2",
-        params![updated_raw, item.product_row_id.as_str()],
+        "UPDATE pipeline_shop_targets SET raw_payload = ?1 WHERE id = ?2",
+        params![updated_raw, item.item_id.as_str()],
     )?;
     Ok(())
 }
@@ -217,25 +217,7 @@ pub(in crate::commands) fn mark_publish_item_failed(
     error_code: &str,
     error_summary: &str,
 ) -> AppResult<()> {
-    conn.execute(
-        "UPDATE publish_job_items
-         SET status = 'failed', error_code = ?1, error_summary = ?2
-         WHERE id = ?3",
-        params![error_code, error_summary, item.item_id.as_str()],
-    )?;
-    insert_task_log(
-        conn,
-        &item.job_id,
-        Some(&item.item_id),
-        "error",
-        error_summary,
-        Some(&serde_json::json!({
-            "error_code": error_code,
-            "product_row_id": item.product_row_id,
-            "shop_id": item.shop_id,
-            "external_product_id": item.external_product_id
-        })),
-    )?;
+    block_target(conn, &item.item_id, error_code, error_summary)?;
     upsert_notification(
         conn,
         publish_failure_notification_severity(error_code),
@@ -265,13 +247,7 @@ pub(in crate::commands) fn conn_update_publish_item_error(
     error_code: &str,
     error_summary: &str,
 ) -> AppResult<()> {
-    conn.execute(
-        "UPDATE publish_job_items
-         SET status = 'failed', error_code = ?1, error_summary = ?2
-         WHERE id = ?3",
-        params![error_code, error_summary, item.item_id.as_str()],
-    )?;
-    Ok(())
+    block_target(conn, &item.item_id, error_code, error_summary)
 }
 
 pub(in crate::commands) fn set_publish_item_status_in_conn(
@@ -282,7 +258,7 @@ pub(in crate::commands) fn set_publish_item_status_in_conn(
     error_summary: Option<&str>,
 ) -> AppResult<()> {
     conn.execute(
-        "UPDATE publish_job_items
+        "UPDATE pipeline_shop_targets
          SET status = ?1, error_code = ?2, error_summary = ?3
          WHERE id = ?4",
         params![status, error_code, error_summary, item.item_id.as_str()],
@@ -323,7 +299,7 @@ pub(in crate::commands) fn set_publish_item_status(
 ) -> AppResult<()> {
     let conn = open_connection(app)?;
     conn.execute(
-        "UPDATE publish_job_items
+        "UPDATE pipeline_shop_targets
          SET status = ?1, error_code = ?2, error_summary = ?3
          WHERE id = ?4",
         params![status, error_code, error_summary, item.item_id.as_str()],
@@ -331,11 +307,13 @@ pub(in crate::commands) fn set_publish_item_status(
     Ok(())
 }
 
+/// 审核轮询：只回写 target 的微信审核元数据（不碰 stage/status 推进——
+/// 推进由 audit runner 用 pipeline 原语 finish_target/advance_target/block_target/requeue_target 决定），
+/// 同时把运营态写到 shop_products（运营展示用，独立于流水线推进态）。
 pub(in crate::commands) fn set_publish_status_sync_state(
     app: &AppHandle,
     item: &StatusSyncItem,
-    status: &str,
-    error_code: Option<&str>,
+    shop_status: &str,
     summary: &str,
     wechat_status: Option<i64>,
     wechat_edit_status: Option<i64>,
@@ -343,22 +321,17 @@ pub(in crate::commands) fn set_publish_status_sync_state(
     let conn = open_connection(app)?;
     let now = now_shanghai();
     conn.execute(
-        "UPDATE publish_job_items
-         SET status = ?1,
-             error_code = ?2,
-             error_summary = ?3,
-             wechat_status = COALESCE(?4, wechat_status),
-             wechat_edit_status = COALESCE(?5, wechat_edit_status),
-             last_status_sync_at = ?6,
-             audit_summary = ?3
-         WHERE id = ?7",
+        "UPDATE pipeline_shop_targets
+         SET wechat_status = COALESCE(?1, wechat_status),
+             wechat_edit_status = COALESCE(?2, wechat_edit_status),
+             last_status_sync_at = ?3,
+             audit_summary = ?4
+         WHERE id = ?5",
         params![
-            status,
-            error_code,
-            summary,
             wechat_status,
             wechat_edit_status,
             now,
+            summary,
             item.item_id.as_str()
         ],
     )?;
@@ -371,7 +344,7 @@ pub(in crate::commands) fn set_publish_status_sync_state(
              audit_summary = ?5
          WHERE shop_id = ?6 AND external_product_id = ?7",
         params![
-            status,
+            shop_status,
             wechat_status,
             wechat_edit_status,
             now,
@@ -383,26 +356,20 @@ pub(in crate::commands) fn set_publish_status_sync_state(
     Ok(())
 }
 
+/// 上架阶段：只回写 shop_products 运营态（target 推进由 listing runner 用 pipeline 原语决定）。
 pub(in crate::commands) fn set_shop_product_item_state(
     app: &AppHandle,
     item: &StatusSyncItem,
-    status: &str,
-    error_code: Option<&str>,
+    shop_status: &str,
     summary: &str,
 ) -> AppResult<()> {
     let conn = open_connection(app)?;
-    conn.execute(
-        "UPDATE publish_job_items
-         SET status = ?1, error_code = ?2, error_summary = ?3
-         WHERE id = ?4",
-        params![status, error_code, summary, item.item_id.as_str()],
-    )?;
     conn.execute(
         "UPDATE shop_products
          SET status = ?1, audit_summary = ?2
          WHERE shop_id = ?3 AND external_product_id = ?4",
         params![
-            status,
+            shop_status,
             summary,
             item.shop_id.as_str(),
             item.external_product_id.as_str()
@@ -417,7 +384,11 @@ pub(in crate::commands) fn mark_listing_item_failed(
     error_code: &str,
     error_summary: &str,
 ) -> AppResult<()> {
-    set_shop_product_item_state(app, item, "failed", Some(error_code), error_summary)?;
+    {
+        let conn = open_connection(app)?;
+        block_target(&conn, &item.item_id, error_code, error_summary)?;
+    }
+    set_shop_product_item_state(app, item, "failed", error_summary)?;
     insert_task_log_for_app(
         app,
         &item.job_id,

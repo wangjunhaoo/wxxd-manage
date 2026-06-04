@@ -37,6 +37,13 @@ BATCH_DELAY_MAX_ENV = "WX_XD_TAOBAO_BATCH_DELAY_MAX_SEC"
 CAPTURE_TIMEOUT_ENV = "WX_XD_TAOBAO_CAPTURE_TIMEOUT_SEC"
 CAPTURE_DETAIL_GRACE_ENV = "WX_XD_TAOBAO_CAPTURE_DETAIL_GRACE_SEC"
 CAPTURE_POLL_INTERVAL_ENV = "WX_XD_TAOBAO_CAPTURE_POLL_INTERVAL_SEC"
+CAPTURE_SHORT_GRACE_ENV = "WX_XD_TAOBAO_CAPTURE_SHORT_GRACE_SEC"
+# 批量长停顿节奏（可配，默认更短且概率触发，仍保留真人"歇一会"特征）
+LONG_PAUSE_MIN_ENV = "WX_XD_TAOBAO_LONG_PAUSE_MIN_SEC"
+LONG_PAUSE_MAX_ENV = "WX_XD_TAOBAO_LONG_PAUSE_MAX_SEC"
+LONG_PAUSE_EVERY_MIN_ENV = "WX_XD_TAOBAO_LONG_PAUSE_EVERY_MIN"
+LONG_PAUSE_EVERY_MAX_ENV = "WX_XD_TAOBAO_LONG_PAUSE_EVERY_MAX"
+LONG_PAUSE_PROBABILITY_ENV = "WX_XD_TAOBAO_LONG_PAUSE_PROBABILITY"
 TAOBAO_HOME_WARMUP_URL = "https://www.taobao.com/"
 PROFILE_LOCK_FILE = "taobao_collector.lock"
 PROFILE_PROBE_COMMAND = "__probe-cloak-profile"
@@ -90,26 +97,6 @@ def _hover_first_visible(page, selector_group):
         except Exception:
             continue
     return False
-
-
-def interact_with_page(page):
-    """生成可信的人类交互信号，鼠标曲线与滚动节奏由 CloakBrowser humanize 接管。"""
-    hover_targets = [
-        "#J_ImgBooth, .tb-main-pic img, .gallery img",
-        ".tb-sku, .sku-content, .J_TSaleProp, .tb-prop",
-        ".tm-price, .tb-rmb-num, .tb-price",
-        ".ShopHeader, .shop-header, .tb-shop, [class*='shop']",
-        ".rate, .comment, .Comment, [class*='review'], [class*='comment']",
-    ]
-    random.shuffle(hover_targets)
-
-    _hover_first_visible(page, hover_targets[0])
-    human_like_scroll(page, random.randint(300, 700))
-    _hover_first_visible(page, hover_targets[1])
-    human_like_scroll(page, random.randint(200, 500))
-    _hover_first_visible(page, hover_targets[2])
-    if random.random() < 0.45:
-        human_like_scroll(page, -random.randint(120, 260))
 
 
 def _random_browse_interaction(page, allow_reload=False):
@@ -1248,16 +1235,21 @@ def _wait_for_login_confirm_resolved(page, previous_text="", previous_url="", ti
 
 
 def _wait_for_page_stable(page, timeout_sec=15):
+    """等待页面 URL 稳定后再继续。
+
+    淘宝详情页常持续有后台请求，networkidle 往往迟迟不触发（真机实测），故仍以
+    URL 稳定为准（连续两次 URL 不变即视为稳定），仅适度收紧轮询间隔削减纯等待。
+    """
     deadline = time.time() + timeout_sec
     last_url = page.url
     while time.time() < deadline:
-        time.sleep(0.5)
+        time.sleep(0.35)
         try:
             cur = page.url
             if cur != last_url:
                 last_url = cur
                 continue
-            time.sleep(random.uniform(0.5, 1.0))
+            time.sleep(random.uniform(0.4, 0.8))
             return True
         except Exception:
             return False
@@ -1308,10 +1300,20 @@ def _capture_product_data(page, timeout_sec=None, trigger=None):
     )
     detail_grace_sec = _env_float_range(
         CAPTURE_DETAIL_GRACE_ENV,
-        4.0,
+        2.5,
         min_value=0.1,
         max_value=10.0,
     )
+    # detail 命中但 desc 请求未在途时，只等 short_grace 便提前返回，
+    # 避免对不调 getdesc 的页面每次都白等满 detail_grace（纯削减等待，不增访问频率）。
+    short_grace_sec = _env_float_range(
+        CAPTURE_SHORT_GRACE_ENV,
+        1.2,
+        min_value=0.1,
+        max_value=10.0,
+    )
+    if short_grace_sec > detail_grace_sec:
+        short_grace_sec = detail_grace_sec
     poll_interval_sec = _env_float_range(
         CAPTURE_POLL_INTERVAL_ENV,
         0.3,
@@ -1320,6 +1322,8 @@ def _capture_product_data(page, timeout_sec=None, trigger=None):
     )
     captured = {"detail": None, "desc": None, "container": []}
     captured_urls = set()
+    # 标记 desc 请求是否已发出（在途），用于动态决定 grace 时长。
+    desc_request_seen = {"value": False}
 
     def _handle_response(response):
         try:
@@ -1360,8 +1364,19 @@ def _capture_product_data(page, timeout_sec=None, trigger=None):
         except Exception:
             pass
 
+    def on_request(request):
+        # 仅标记 desc 请求是否已发出，不阻塞、不读响应体。
+        try:
+            url = (request.url or "").lower()
+            if ("mtop.taobao.detail.getdesc" in url or
+                    "mtop.tmall.detail.getdesc" in url):
+                desc_request_seen["value"] = True
+        except Exception:
+            pass
+
     page.on("response", on_response)
     page.on("requestfinished", on_request_finished)
+    page.on("request", on_request)
 
     try:
         trigger_ok = True
@@ -1379,8 +1394,11 @@ def _capture_product_data(page, timeout_sec=None, trigger=None):
                 detail_seen_at = now
             if has_detail and captured["desc"] is not None:
                 break
-            if has_detail and detail_seen_at is not None and now - detail_seen_at >= detail_grace_sec:
-                break
+            # desc 请求在途则等满 detail_grace 尽量拿描述；否则只等 short_grace 提前返回。
+            if has_detail and detail_seen_at is not None:
+                grace = detail_grace_sec if desc_request_seen["value"] else short_grace_sec
+                if now - detail_seen_at >= grace:
+                    break
             if has_detail and now > deadline - 2:
                 break
             time.sleep(poll_interval_sec)
@@ -1393,6 +1411,10 @@ def _capture_product_data(page, timeout_sec=None, trigger=None):
             pass
         try:
             page.remove_listener("requestfinished", on_request_finished)
+        except Exception:
+            pass
+        try:
+            page.remove_listener("request", on_request)
         except Exception:
             pass
     return captured
@@ -2789,7 +2811,11 @@ def run_login(profile_dir):
                 break
 
         if login_detected:
-            print("淘宝登录会话已保存。", file=sys.stderr)
+            # 登录成功即代表账号已恢复可用：清除此前因短信/人脸/扫码验证或访问限制写下的本地冷却，
+            # 否则后续采集会被入口冷却预检直接拦截（连浏览器都不打开）→ 表现为"登录后重试无效"
+            _clear_captcha_failure_cooldown(profile_dir)
+            _clear_access_limit_cooldown(profile_dir)
+            print("淘宝登录会话已保存，已清除本地采集冷却。", file=sys.stderr)
         else:
             print("淘宝登录窗口已关闭，未检测到有效登录态。", file=sys.stderr)
             print(json.dumps({"error": "淘宝登录窗口已关闭，未检测到有效登录态。"}, ensure_ascii=False))
@@ -2966,17 +2992,29 @@ def run_batch_collect(urls, profile_dir, headed=False):
         _check_access_limit_cooldown(profile_dir)
         _check_captcha_failure_cooldown(profile_dir)
         ctx, page = launch_browser(profile_dir, headless=not headed)
-        warm_up_taobao_home(page, skip_by_default=True)
+        # 每批开始预热一次首页，建立正常浏览轨迹，降低"直达详情页"的爬虫特征。
+        # 仅一次开销（~5s/批）即可显著降险；如需跳过可设 WX_XD_TAOBAO_SKIP_WARMUP=1。
+        warm_up_taobao_home(page)
 
         delay_min = _env_float_range(BATCH_DELAY_MIN_ENV, 8.0, min_value=3.0, max_value=30.0)
         delay_max = _env_float_range(BATCH_DELAY_MAX_ENV, 25.0, min_value=5.0, max_value=60.0)
         if delay_max < delay_min:
             delay_max = delay_min
 
-        # 长停顿节奏：每 long_pause_every 个商品插入一次长停顿
-        long_pause_every = random.randint(8, 12)
-        long_pause_min = 120  # 最短 2 分钟
-        long_pause_max = 300  # 最长 5 分钟
+        # 长停顿节奏（可配）：累计若干商品后按概率插入一次长停顿，模拟真人"歇一会"。
+        # 默认更短(60-180s)且概率触发(0.65)，在保留人类节奏特征的同时削减纯等待冗余。
+        long_pause_min = _env_float_range(LONG_PAUSE_MIN_ENV, 60.0, min_value=10.0, max_value=600.0)
+        long_pause_max = _env_float_range(LONG_PAUSE_MAX_ENV, 180.0, min_value=10.0, max_value=900.0)
+        if long_pause_max < long_pause_min:
+            long_pause_max = long_pause_min
+        pause_every_min = _env_int_range(LONG_PAUSE_EVERY_MIN_ENV, 8, min_value=1, max_value=100)
+        pause_every_max = _env_int_range(LONG_PAUSE_EVERY_MAX_ENV, 12, min_value=1, max_value=100)
+        if pause_every_max < pause_every_min:
+            pause_every_max = pause_every_min
+        pause_probability = _env_float_range(
+            LONG_PAUSE_PROBABILITY_ENV, 0.65, min_value=0.0, max_value=1.0
+        )
+        long_pause_every = random.randint(pause_every_min, pause_every_max)
         items_since_pause = 0
 
         for i, item in enumerate(urls):
@@ -3009,17 +3047,19 @@ def run_batch_collect(urls, profile_dir, headed=False):
                     delay = random.gammavariate(2.0, delay_max / 4.0)
                 time.sleep(delay)
 
-            # 长停顿模拟：每 long_pause_every 个商品后，像真人一样放下手机歇一会
+            # 长停顿模拟：累计到阈值后按概率歇一会（更像真人，而非每隔固定个数硬停）。
             items_since_pause += 1
             if items_since_pause >= long_pause_every and i < len(urls) - 1:
-                pause_secs = random.uniform(long_pause_min, long_pause_max)
-                print(
-                    f"已采集 {items_since_pause} 个商品，进入长停顿 {pause_secs:.0f} 秒……",
-                    file=sys.stderr,
-                )
-                time.sleep(pause_secs)
+                if pause_probability > 0 and random.random() < pause_probability:
+                    pause_secs = random.uniform(long_pause_min, long_pause_max)
+                    print(
+                        f"已采集 {items_since_pause} 个商品，进入长停顿 {pause_secs:.0f} 秒……",
+                        file=sys.stderr,
+                    )
+                    time.sleep(pause_secs)
+                # 无论本次是否真停，都重置计数并重新随机下次阈值，避免每个商品都判定。
                 items_since_pause = 0
-                long_pause_every = random.randint(8, 12)
+                long_pause_every = random.randint(pause_every_min, pause_every_max)
 
             try:
                 parsed = _collect_single_product(ctx, page, url, profile_dir)

@@ -21,94 +21,35 @@ pub fn run_publish_tasks_once(
     let mut job_ids = BTreeSet::new();
     let mut ready_items = 0i64;
     let mut failed_items = 0i64;
-    let tx = conn.transaction()?;
 
     for mut item in pending_items {
         job_ids.insert(item.job_id.clone());
-        let started_at = now_shanghai();
-        tx.execute(
-            "UPDATE task_runs
-             SET status = 'running', started_at = COALESCE(started_at, ?1), finished_at = NULL
-             WHERE id = ?2",
-            params![started_at, item.job_id],
-        )?;
-        tx.execute(
-            "UPDATE publish_job_items SET status = 'prechecking' WHERE id = ?1",
-            [item.item_id.as_str()],
-        )?;
-        insert_task_log(
-            &tx,
-            &item.job_id,
-            Some(&item.item_id),
-            "info",
-            "开始本地前置校验",
-            None,
-        )?;
-
-        let mut product = match serde_json::from_str::<ExternalProductInput>(&item.raw_payload) {
-            Ok(product) => product,
+        // 每个 item 独立事务做毒丸隔离：单个商品的类目/payload 错误只回滚自己，
+        // 不会像之前共用一个 tx 那样让整批 target 全部回滚、永远卡在 precheck。
+        match run_precheck_one_item(&mut conn, &mut item) {
+            Ok(true) => ready_items += 1,
+            Ok(false) => failed_items += 1,
             Err(error) => {
-                mark_publish_item_failed(
-                    &tx,
-                    &item,
-                    "INVALID_PRODUCT_PAYLOAD",
-                    &format!("商品原始数据无法解析：{error}"),
-                )?;
                 failed_items += 1;
-                continue;
+                // 处理中发生未预期错误：单独标记该 item 失败（含错误详情便于定位），不波及其他 item
+                if let Err(mark_err) = block_target(
+                    &conn,
+                    &item.item_id,
+                    "PRECHECK_UNEXPECTED_ERROR",
+                    &format!("前置校验异常：{error}"),
+                ) {
+                    eprintln!("标记 precheck 失败 item 出错：{mark_err}");
+                }
             }
-        };
-
-        if let Some(summary) = ensure_wechat_category_metadata(&tx, &mut item, &mut product)? {
-            insert_task_log(
-                &tx,
-                &item.job_id,
-                Some(&item.item_id),
-                "info",
-                &summary,
-                None,
-            )?;
         }
-
-        if let Some((code, summary)) = precheck_publish_item(&tx, &item, &product)? {
-            mark_publish_item_failed(&tx, &item, code, &summary)?;
-            failed_items += 1;
-            continue;
-        }
-
-        let payload_prepare = match prepare_add_product_payload_for_publish(&tx, &item, &product)? {
-            Ok(payload_prepare) => payload_prepare,
-            Err((code, summary)) => {
-                mark_publish_item_failed(&tx, &item, code, &summary)?;
-                failed_items += 1;
-                continue;
-            }
-        };
-        let ready_summary = publish_payload_ready_summary(&payload_prepare);
-        tx.execute(
-            "UPDATE publish_job_items
-             SET status = 'ready_to_publish',
-                 error_code = NULL,
-                 error_summary = ?1
-             WHERE id = ?2",
-            params![ready_summary, item.item_id.as_str()],
-        )?;
-        insert_task_log(
-            &tx,
-            &item.job_id,
-            Some(&item.item_id),
-            "info",
-            &ready_summary,
-            None,
-        )?;
-        ready_items += 1;
     }
 
+    // 统一重算受影响商品的聚合状态
     for job_id in &job_ids {
-        recompute_publish_job(&tx, job_id)?;
+        if let Err(error) = recompute_pipeline_product(&conn, job_id) {
+            eprintln!("precheck 后重算商品聚合状态出错：{error}");
+        }
     }
-
-    tx.commit()?;
 
     Ok(PublishTaskBatchResult {
         processed_jobs: job_ids.len() as i64,
@@ -116,6 +57,67 @@ pub fn run_publish_tasks_once(
         ready_items,
         failed_items,
     })
+}
+
+/// 单个 item 的本地前置校验，使用独立事务：成功返回 Ok(true)；业务校验失败返回 Ok(false)
+/// 并已在事务内标记失败；处理过程中的未预期错误以 Err 返回（事务回滚），由调用方单独隔离标记。
+fn run_precheck_one_item(conn: &mut Connection, item: &mut PendingPublishItem) -> AppResult<bool> {
+    let tx = conn.transaction()?;
+    mark_target_running(&tx, &item.item_id)?;
+    insert_task_log(
+        &tx,
+        &item.job_id,
+        Some(&item.item_id),
+        "info",
+        "开始本地前置校验",
+        None,
+    )?;
+
+    let mut product = match serde_json::from_str::<ExternalProductInput>(&item.raw_payload) {
+        Ok(product) => product,
+        Err(error) => {
+            mark_publish_item_failed(
+                &tx,
+                item,
+                "INVALID_PRODUCT_PAYLOAD",
+                &format!("商品原始数据无法解析：{error}"),
+            )?;
+            tx.commit()?;
+            return Ok(false);
+        }
+    };
+
+    if let Some(summary) = ensure_wechat_category_metadata(&tx, item, &mut product)? {
+        insert_task_log(&tx, &item.job_id, Some(&item.item_id), "info", &summary, None)?;
+    }
+
+    if let Some((code, summary)) = precheck_publish_item(&tx, item, &product)? {
+        mark_publish_item_failed(&tx, item, code, &summary)?;
+        tx.commit()?;
+        return Ok(false);
+    }
+
+    let payload_prepare = match prepare_add_product_payload_for_publish(&tx, item, &product)? {
+        Ok(payload_prepare) => payload_prepare,
+        Err((code, summary)) => {
+            mark_publish_item_failed(&tx, item, code, &summary)?;
+            tx.commit()?;
+            return Ok(false);
+        }
+    };
+    let ready_summary = publish_payload_ready_summary(&payload_prepare);
+    advance_target(&tx, &item.item_id, target_stage::ATTR_FILL)?;
+    insert_task_log(
+        &tx,
+        &item.job_id,
+        Some(&item.item_id),
+        "info",
+        &ready_summary,
+        None,
+    )?;
+    recompute_pipeline_product(&tx, &item.job_id)?;
+    tx.commit()?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -146,17 +148,16 @@ pub fn run_publish_attribute_fill_once(
 
     for mut item in items {
         job_ids.insert(item.job_id.clone());
+        mark_target_running(&tx, &item.item_id)?;
         let mut product = match serde_json::from_str::<ExternalProductInput>(&item.raw_payload) {
             Ok(product) => product,
             Err(error) => {
                 failed_items += 1;
-                insert_task_log(
+                block_target(
                     &tx,
-                    &item.job_id,
-                    Some(&item.item_id),
-                    "error",
+                    &item.item_id,
+                    "INVALID_PRODUCT_PAYLOAD",
                     &format!("属性补齐失败：商品原始数据无法解析：{error}"),
-                    None,
                 )?;
                 continue;
             }
@@ -195,13 +196,11 @@ pub fn run_publish_attribute_fill_once(
         };
         let Some(cat_id) = extract_leaf_category_id_from_payload(&draft.payload) else {
             failed_items += 1;
-            insert_task_log(
+            block_target(
                 &tx,
-                &item.job_id,
-                Some(&item.item_id),
-                "error",
+                &item.item_id,
+                "MISSING_WECHAT_LEAF_CATEGORY_ID",
                 "属性补齐失败：缺少微信叶子类目 ID",
-                None,
             )?;
             continue;
         };
@@ -210,13 +209,7 @@ pub fn run_publish_attribute_fill_once(
             if inferred_category.is_some() {
                 persist_generated_add_product_payload(&tx, &item, &draft)?;
                 let summary = "已补齐微信类目，等待执行微信类目预检";
-                set_publish_item_status_in_conn(
-                    &tx,
-                    &item,
-                    "ready_to_publish",
-                    None,
-                    Some(summary),
-                )?;
+                advance_target(&tx, &item.item_id, target_stage::CATEGORY_PRECHECK)?;
                 insert_task_log(
                     &tx,
                     &item.job_id,
@@ -249,13 +242,7 @@ pub fn run_publish_attribute_fill_once(
         let requirement_check =
             check_cached_category_requirements(&tx, &item.shop_id, cat_id, &draft.payload)?;
         if !requirement_check.has_missing_attrs() {
-            set_publish_item_status_in_conn(
-                &tx,
-                &item,
-                "ready_to_publish",
-                None,
-                Some("必填属性已完整，等待重新执行微信类目预检"),
-            )?;
+            advance_target(&tx, &item.item_id, target_stage::CATEGORY_PRECHECK)?;
             auto_filled_items += 1;
             continue;
         }
@@ -279,7 +266,7 @@ pub fn run_publish_attribute_fill_once(
             } else {
                 "必填属性已完整，等待重新执行微信类目预检".to_string()
             };
-            set_publish_item_status_in_conn(&tx, &item, "ready_to_publish", None, Some(&summary))?;
+            advance_target(&tx, &item.item_id, target_stage::CATEGORY_PRECHECK)?;
             insert_task_log(
                 &tx,
                 &item.job_id,
@@ -315,7 +302,7 @@ pub fn run_publish_attribute_fill_once(
                 "已自动补齐 {} 个必填属性，等待重新执行微信类目预检",
                 plan.suggestions.len()
             );
-            set_publish_item_status_in_conn(&tx, &item, "ready_to_publish", None, Some(&summary))?;
+            advance_target(&tx, &item.item_id, target_stage::CATEGORY_PRECHECK)?;
             insert_task_log(
                 &tx,
                 &item.job_id,
@@ -362,7 +349,7 @@ pub fn run_publish_attribute_fill_once(
     }
 
     for job_id in &job_ids {
-        recompute_publish_job(&tx, job_id)?;
+        recompute_pipeline_product(&tx, job_id)?;
     }
     tx.commit()?;
 
@@ -406,18 +393,23 @@ pub async fn run_publish_ai_attribute_suggestions_once(
 
     for mut item in items {
         job_ids.insert(item.job_id.clone());
+        {
+            let conn = open_connection(&app)?;
+            mark_target_running(&conn, &item.item_id)?;
+        }
         let mut product = match serde_json::from_str::<ExternalProductInput>(&item.raw_payload) {
             Ok(product) => product,
             Err(error) => {
                 failed_items += 1;
-                insert_task_log_for_app(
-                    &app,
-                    &item.job_id,
-                    Some(&item.item_id),
-                    "error",
-                    &format!("类目/属性补齐失败：商品原始数据无法解析：{error}"),
-                    None,
-                )?;
+                {
+                    let conn = open_connection(&app)?;
+                    block_target(
+                        &conn,
+                        &item.item_id,
+                        "INVALID_PRODUCT_PAYLOAD",
+                        &format!("类目/属性补齐失败：商品原始数据无法解析：{error}"),
+                    )?;
+                }
                 continue;
             }
         };
@@ -459,14 +451,15 @@ pub async fn run_publish_ai_attribute_suggestions_once(
         };
         let Some(cat_id) = extract_leaf_category_id_from_payload(&draft.payload) else {
             failed_items += 1;
-            insert_task_log_for_app(
-                &app,
-                &item.job_id,
-                Some(&item.item_id),
-                "error",
-                "类目/属性补齐失败：缺少微信叶子类目 ID",
-                None,
-            )?;
+            {
+                let conn = open_connection(&app)?;
+                block_target(
+                    &conn,
+                    &item.item_id,
+                    "MISSING_WECHAT_LEAF_CATEGORY_ID",
+                    "类目/属性补齐失败：缺少微信叶子类目 ID",
+                )?;
+            }
             continue;
         };
         let raw_detail = {
@@ -478,13 +471,7 @@ pub async fn run_publish_ai_attribute_suggestions_once(
                 let conn = open_connection(&app)?;
                 persist_generated_add_product_payload(&conn, &item, &draft)?;
                 let summary = "已补齐微信类目，等待执行微信类目预检";
-                set_publish_item_status_in_conn(
-                    &conn,
-                    &item,
-                    "ready_to_publish",
-                    None,
-                    Some(summary),
-                )?;
+                advance_target(&conn, &item.item_id, target_stage::CATEGORY_PRECHECK)?;
                 insert_task_log(
                     &conn,
                     &item.job_id,
@@ -493,11 +480,21 @@ pub async fn run_publish_ai_attribute_suggestions_once(
                     summary,
                     Some(&serde_json::json!({ "cat_id": cat_id })),
                 )?;
-                recompute_publish_job(&conn, &item.job_id)?;
+                recompute_pipeline_product(&conn, &item.job_id)?;
                 auto_filled_items += 1;
                 continue;
             }
+            // 类目详情未缓存且无新推断类目：标记阻塞并退避，避免 target 停留在 running 空转重试
             failed_items += 1;
+            {
+                let conn = open_connection(&app)?;
+                block_target(
+                    &conn,
+                    &item.item_id,
+                    "MISSING_WECHAT_LEAF_CATEGORY_ID",
+                    "类目/属性补齐失败：缺少微信类目详情缓存，请先同步该店类目后重试",
+                )?;
+            }
             continue;
         };
         let requirement_check = {
@@ -506,14 +503,8 @@ pub async fn run_publish_ai_attribute_suggestions_once(
         };
         if !requirement_check.has_missing_attrs() {
             let conn = open_connection(&app)?;
-            set_publish_item_status_in_conn(
-                &conn,
-                &item,
-                "ready_to_publish",
-                None,
-                Some("必填属性已完整，等待重新执行微信类目预检"),
-            )?;
-            recompute_publish_job(&conn, &item.job_id)?;
+            advance_target(&conn, &item.item_id, target_stage::CATEGORY_PRECHECK)?;
+            recompute_pipeline_product(&conn, &item.job_id)?;
             auto_filled_items += 1;
             continue;
         }
@@ -563,7 +554,20 @@ pub async fn run_publish_ai_attribute_suggestions_once(
             agent_started = Some(std::time::Instant::now());
         }
         let ai_generated = if let Some(ai_config) = ai_config.as_ref() {
-            match fill_attribute_plan_with_ai(&app, ai_config, &mut plan).await {
+            // AI 属性补齐调用加超时：同审查，provider 偶发 hang 不该挂死整轮 tick；
+            // 120s 内未返回按失败处理，走下方 Err 分支(标失败+退避)。
+            let ai_call_result = match tokio::time::timeout(
+                std::time::Duration::from_secs(120),
+                fill_attribute_plan_with_ai(&app, ai_config, &mut plan),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => Err(AppError::Validation(
+                    "AI 属性补齐调用超时(120s)".to_string(),
+                )),
+            };
+            match ai_call_result {
                 Ok(count) => {
                     if let Some(run_id) = agent_run_id.as_deref() {
                         let conn = open_connection(&app)?;
@@ -669,13 +673,7 @@ pub async fn run_publish_ai_attribute_suggestions_once(
             } else {
                 "已按本地规则补齐必填属性，等待重新执行微信类目预检".to_string()
             };
-            set_publish_item_status_in_conn(
-                &conn,
-                &item,
-                "ready_to_publish",
-                None,
-                Some(&summary),
-            )?;
+            advance_target(&conn, &item.item_id, target_stage::CATEGORY_PRECHECK)?;
             insert_task_log(
                 &conn,
                 &item.job_id,
@@ -708,7 +706,7 @@ pub async fn run_publish_ai_attribute_suggestions_once(
             )?;
             suggestion_only_items += 1;
         }
-        recompute_publish_job(&conn, &item.job_id)?;
+        recompute_pipeline_product(&conn, &item.job_id)?;
     }
 
     Ok(PublishAttributeFillBatchResult {
@@ -1328,8 +1326,8 @@ fn persist_filled_add_product_payload_from_suggestions(
         Value::String(now_shanghai()),
     );
     conn.execute(
-        "UPDATE publish_products SET raw_payload = ?1 WHERE id = ?2",
-        params![raw_value.to_string(), item.product_row_id.as_str()],
+        "UPDATE pipeline_shop_targets SET raw_payload = ?1 WHERE id = ?2",
+        params![raw_value.to_string(), item.item_id.as_str()],
     )?;
     Ok(())
 }
@@ -1464,20 +1462,8 @@ pub async fn run_publish_category_prechecks_once(
         job_ids.insert(item.job_id.clone());
         {
             let conn = open_connection(&app)?;
-            conn.execute(
-                "UPDATE task_runs
-                 SET status = 'running', started_at = COALESCE(started_at, ?1), finished_at = NULL
-                 WHERE id = ?2",
-                params![now_shanghai(), item.job_id.as_str()],
-            )?;
+            mark_target_running(&conn, &item.item_id)?;
         }
-        set_publish_item_status(
-            &app,
-            &item,
-            "category_prechecking",
-            None,
-            Some("正在执行微信发品前类目预检"),
-        )?;
         insert_task_log_for_app(
             &app,
             &item.job_id,
@@ -1703,13 +1689,7 @@ pub async fn run_publish_category_prechecks_once(
                     )),
                 )?;
                 if result.all_pass {
-                    set_publish_item_status(
-                        &app,
-                        &item,
-                        "category_prechecked",
-                        None,
-                        Some("微信类目预检通过，等待素材上传"),
-                    )?;
+                    advance_target(&conn, &item.item_id, target_stage::ASSET_UPLOAD)?;
                     insert_task_log(
                         &conn,
                         &item.job_id,
@@ -1760,7 +1740,7 @@ pub async fn run_publish_category_prechecks_once(
 
     for job_id in &job_ids {
         let conn = open_connection(&app)?;
-        recompute_publish_job(&conn, job_id)?;
+        recompute_pipeline_product(&conn, job_id)?;
     }
 
     Ok(PublishCategoryPrecheckBatchResult {
@@ -1805,20 +1785,8 @@ pub async fn run_publish_asset_uploads_once(
         job_ids.insert(item.job_id.clone());
         {
             let conn = open_connection(&app)?;
-            conn.execute(
-                "UPDATE task_runs
-                 SET status = 'running', started_at = COALESCE(started_at, ?1), finished_at = NULL
-                 WHERE id = ?2",
-                params![now_shanghai(), item.job_id.as_str()],
-            )?;
+            mark_target_running(&conn, &item.item_id)?;
         }
-        set_publish_item_status(
-            &app,
-            &item,
-            "asset_uploading",
-            None,
-            Some("正在上传微信商品素材"),
-        )?;
         insert_task_log_for_app(
             &app,
             &item.job_id,
@@ -1973,13 +1941,10 @@ pub async fn run_publish_asset_uploads_once(
             continue;
         }
 
-        set_publish_item_status(
-            &app,
-            &item,
-            "assets_ready",
-            None,
-            Some("微信素材上传完成，等待 addproduct"),
-        )?;
+        {
+            let conn = open_connection(&app)?;
+            advance_target(&conn, &item.item_id, target_stage::SUBMIT)?;
+        }
         insert_task_log_for_app(
             &app,
             &item.job_id,
@@ -1992,7 +1957,7 @@ pub async fn run_publish_asset_uploads_once(
 
     for job_id in &job_ids {
         let conn = open_connection(&app)?;
-        recompute_publish_job(&conn, job_id)?;
+        recompute_pipeline_product(&conn, job_id)?;
     }
 
     Ok(AssetUploadBatchResult {
@@ -2035,20 +2000,8 @@ pub async fn run_publish_submits_once(
         job_ids.insert(item.job_id.clone());
         {
             let conn = open_connection(&app)?;
-            conn.execute(
-                "UPDATE task_runs
-                 SET status = 'running', started_at = COALESCE(started_at, ?1), finished_at = NULL
-                 WHERE id = ?2",
-                params![now_shanghai(), item.job_id.as_str()],
-            )?;
+            mark_target_running(&conn, &item.item_id)?;
         }
-        set_publish_item_status(
-            &app,
-            &item,
-            "publishing",
-            None,
-            Some("正在提交微信 addproduct"),
-        )?;
         insert_task_log_for_app(
             &app,
             &item.job_id,
@@ -2241,17 +2194,25 @@ pub async fn run_publish_submits_once(
                     Some(&format!("addproduct ok, product_id={}", result.product_id)),
                 )?;
                 conn.execute(
-                    "UPDATE publish_job_items
-                     SET status = 'submitted',
+                    "UPDATE pipeline_shop_targets
+                     SET stage = ?1,
+                         status = ?2,
                          error_code = NULL,
-                         error_summary = '微信 addproduct 已提交，等待审核状态同步',
-                         wechat_product_id = ?1
-                     WHERE id = ?2",
-                    params![result.product_id, item.item_id],
+                         error_summary = NULL,
+                         wechat_product_id = ?3,
+                         updated_at = ?4
+                     WHERE id = ?5",
+                    params![
+                        target_stage::AUDIT,
+                        target_status::PENDING,
+                        result.product_id,
+                        now_shanghai(),
+                        item.item_id
+                    ],
                 )?;
                 let source_url = conn
                     .query_row(
-                        "SELECT source_url FROM publish_products WHERE id = ?1",
+                        "SELECT source_url FROM pipeline_products WHERE id = ?1",
                         [item.product_row_id.as_str()],
                         |row| row.get::<_, String>(0),
                     )
@@ -2310,7 +2271,7 @@ pub async fn run_publish_submits_once(
 
     for job_id in &job_ids {
         let conn = open_connection(&app)?;
-        recompute_publish_job(&conn, job_id)?;
+        recompute_pipeline_product(&conn, job_id)?;
     }
 
     Ok(ProductSubmitBatchResult {
@@ -2363,7 +2324,6 @@ pub async fn run_publish_status_sync_once(
             &app,
             &item,
             "audit_pending",
-            None,
             "正在同步微信审核/商品状态",
             None,
             None,
@@ -2386,7 +2346,6 @@ pub async fn run_publish_status_sync_once(
                     &app,
                     &item,
                     "audit_pending",
-                    Some("ACCESS_TOKEN_FAILED"),
                     &format!("获取 access_token 失败，稍后可重试状态同步：{error}"),
                     None,
                     None,
@@ -2406,7 +2365,6 @@ pub async fn run_publish_status_sync_once(
                     &app,
                     &item,
                     "audit_pending",
-                    Some("WECHAT_GETPRODUCT_HTTP_FAILED"),
                     &format!("微信 getproduct 请求失败，稍后可重试：{error}"),
                     None,
                     None,
@@ -2444,11 +2402,28 @@ pub async fn run_publish_status_sync_once(
                     &app,
                     &item,
                     resolution.status,
-                    resolution.error_code.as_deref(),
                     &resolution.summary,
                     resolution.wechat_status,
                     resolution.wechat_edit_status,
                 )?;
+                {
+                    // 方案Y：审核结果决定 target 推进——已上架→完成；审核通过→进上架阶段；
+                    // 拒绝→阻塞等人工；审核中→保持 audit 阶段待下轮 tick 重查（不推进）。
+                    let conn = open_connection(&app)?;
+                    match resolution.status {
+                        "success" => finish_target(&conn, &item.item_id)?,
+                        "audit_passed" => {
+                            advance_target(&conn, &item.item_id, target_stage::LISTING)?
+                        }
+                        "failed" => block_target(
+                            &conn,
+                            &item.item_id,
+                            resolution.error_code.as_deref().unwrap_or("WECHAT_API_ERROR"),
+                            &resolution.summary,
+                        )?,
+                        _ => {}
+                    }
+                }
                 insert_task_log_for_app(
                     &app,
                     &item.job_id,
@@ -2482,7 +2457,6 @@ pub async fn run_publish_status_sync_once(
                     &app,
                     &item,
                     "audit_pending",
-                    Some(&format!("WECHAT_GETPRODUCT_{}", error.errcode)),
                     &format!("微信 getproduct 返回错误，稍后可重试：{}", error.errmsg),
                     None,
                     None,
@@ -2494,7 +2468,7 @@ pub async fn run_publish_status_sync_once(
 
     for job_id in &job_ids {
         let conn = open_connection(&app)?;
-        recompute_publish_job(&conn, job_id)?;
+        recompute_pipeline_product(&conn, job_id)?;
     }
 
     Ok(ProductStatusSyncBatchResult {
@@ -2546,7 +2520,6 @@ pub async fn run_publish_listing_once(
             &app,
             &item,
             "listing",
-            None,
             "正在调用微信 listingproduct 上架商品",
         )?;
         insert_task_log_for_app(
@@ -2608,12 +2581,16 @@ pub async fn run_publish_listing_once(
                     )),
                 )?;
                 drop(conn);
+                {
+                    // 方案Y：listingproduct 成功即上架完成，target 收尾到 done。
+                    let conn = open_connection(&app)?;
+                    finish_target(&conn, &item.item_id)?;
+                }
                 set_shop_product_item_state(
                     &app,
                     &item,
-                    "audit_pending",
-                    None,
-                    "微信 listingproduct 已提交，等待 getproduct 确认已上架",
+                    "listed",
+                    "微信 listingproduct 成功，商品已上架",
                 )?;
                 insert_task_log_for_app(
                     &app,
@@ -2652,7 +2629,7 @@ pub async fn run_publish_listing_once(
 
     for job_id in &job_ids {
         let conn = open_connection(&app)?;
-        recompute_publish_job(&conn, job_id)?;
+        recompute_pipeline_product(&conn, job_id)?;
     }
 
     Ok(ProductListingBatchResult {
@@ -2770,10 +2747,10 @@ mod tests {
     fn review_ai_attr_suggestions_persist_filled_payload() {
         let conn = Connection::open_in_memory().expect("应能创建内存数据库");
         conn.execute(
-            "CREATE TABLE publish_products (id TEXT PRIMARY KEY, raw_payload TEXT NOT NULL)",
+            "CREATE TABLE pipeline_shop_targets (id TEXT PRIMARY KEY, raw_payload TEXT)",
             [],
         )
-        .expect("应能创建商品表");
+        .expect("应能创建店级 target 表");
 
         let raw_payload = serde_json::json!({
             "external_product_id": "external-1",
@@ -2785,11 +2762,12 @@ mod tests {
             }
         })
         .to_string();
+        // persist 按 item.item_id 写回店级 target 的 raw_payload（方案Y）
         conn.execute(
-            "INSERT INTO publish_products (id, raw_payload) VALUES (?1, ?2)",
-            params!["product-1", raw_payload.as_str()],
+            "INSERT INTO pipeline_shop_targets (id, raw_payload) VALUES (?1, ?2)",
+            params!["item-1", raw_payload.as_str()],
         )
-        .expect("应能插入商品");
+        .expect("应能插入店级 target");
 
         let item = PendingPublishItem {
             item_id: "item-1".to_string(),
@@ -2862,11 +2840,11 @@ mod tests {
         assert_eq!(filled, 2);
         let saved: String = conn
             .query_row(
-                "SELECT raw_payload FROM publish_products WHERE id = ?1",
-                ["product-1"],
+                "SELECT raw_payload FROM pipeline_shop_targets WHERE id = ?1",
+                ["item-1"],
                 |row| row.get(0),
             )
-            .expect("应能读取更新后的商品");
+            .expect("应能读取更新后的店级 target");
         let saved_value = serde_json::from_str::<Value>(&saved).expect("raw_payload 应为 JSON");
         let saved_payload = saved_value
             .pointer("/metadata/wechat_add_product_payload")

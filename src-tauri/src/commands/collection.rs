@@ -26,7 +26,11 @@ pub fn save_publish_pricing_strategy(
 
 // 1. Excel 导入并创建采集任务
 #[tauri::command]
-pub fn import_excel_for_collection(app: AppHandle, file_path: String) -> AppResult<i64> {
+pub fn import_excel_for_collection(
+    app: AppHandle,
+    file_path: String,
+    target_shop_ids: Vec<String>,
+) -> AppResult<i64> {
     let path = PathBuf::from(&file_path);
     if !path.exists() {
         return Err(AppError::Validation(format!(
@@ -38,9 +42,22 @@ pub fn import_excel_for_collection(app: AppHandle, file_path: String) -> AppResu
     let mut excel: Xlsx<_> = open_workbook(&path)
         .map_err(|e| AppError::Validation(format!("无法打开 Excel 文件: {}", e)))?;
 
+    if target_shop_ids.is_empty() {
+        return Err(AppError::Validation(
+            "请先选择本批要铺货的目标微信小店".to_string(),
+        ));
+    }
+
     let conn = open_connection(&app)?;
     let now = now_shanghai();
-    let target_shops_json = "[]";
+
+    // 校验目标店铺并取得店名，导入时即为「每个商品 × 每个目标店」建好流水线推进单位
+    let target_shops = resolve_target_shops_for_scope(&conn, &[], &target_shop_ids)?;
+    if target_shops.len() != target_shop_ids.len() {
+        return Err(AppError::Validation(
+            "目标微信小店不存在或已被删除，请刷新店铺列表后重试".to_string(),
+        ));
+    }
 
     let mut imported_count = 0i64;
 
@@ -74,19 +91,22 @@ pub fn import_excel_for_collection(app: AppHandle, file_path: String) -> AppResu
                 )));
             }
 
-            let task_id = format!("col_{}", Uuid::new_v4().simple());
+            let product_id = format!("prod_{}", Uuid::new_v4().simple());
             conn.execute(
-                "INSERT INTO collection_tasks (id, title, source_url, category_path, target_shop_ids, status, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?6)",
-                params![
-                    task_id,
-                    title,
-                    source_url,
-                    category_path,
-                    target_shops_json,
-                    now,
-                ],
+                "INSERT INTO pipeline_products
+                 (id, title, source_url, category_path, status, stage, attention, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, 'pending_collect', 'collect', 'none', ?5, ?5)",
+                params![product_id, title, source_url, category_path, now],
             )?;
+            for shop in &target_shops {
+                let target_id = format!("tgt_{}", Uuid::new_v4().simple());
+                conn.execute(
+                    "INSERT INTO pipeline_shop_targets
+                     (id, product_id, shop_id, shop_name, stage, status, retry_count, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, 'await_review', 'pending', 0, ?5, ?5)",
+                    params![target_id, product_id, shop.id, shop.name, now],
+                )?;
+            }
             imported_count += 1;
         }
     }
@@ -106,19 +126,7 @@ pub async fn open_taobao_login(app: AppHandle) -> AppResult<()> {
     let profile_dir = app_data_dir.join("taobao_profile");
     let profile_dir_str = profile_dir.to_string_lossy().to_string();
 
-    let mut script_path = PathBuf::from("scripts").join("taobao_collector.py");
-    if !script_path.exists() {
-        if let Ok(res_dir) = app.path().resource_dir() {
-            let check_path = res_dir.join("scripts").join("taobao_collector.py");
-            if check_path.exists() {
-                script_path = check_path;
-            }
-        }
-    }
-    if !script_path.exists() {
-        script_path =
-            PathBuf::from("/Users/wangjunhao/Code/project/wx-xd/scripts/taobao_collector.py");
-    }
+    let script_path = resolve_collector_script(&app);
 
     // 异步启动登录子进程，直到用户关闭浏览器；本地冷却期会由脚本预检拦截。
     let mut command = python_command(&app);
@@ -210,23 +218,36 @@ pub fn get_collection_tasks(app: AppHandle) -> AppResult<Vec<CollectionTaskView>
 #[tauri::command]
 pub async fn retry_collection_task(app: AppHandle, task_id: String) -> AppResult<()> {
     let conn = open_connection(&app)?;
-    let task = {
-        let sql = collection_task_select_sql("WHERE id = ?1");
-        let mut stmt = conn.prepare(&sql)?;
-        let mut rows = stmt.query(params![task_id])?;
-        match rows.next()? {
-            Some(row) => map_collection_task(row)?,
-            None => return Err(AppError::Validation(format!("采集任务 {} 不存在", task_id))),
-        }
-    };
+    let task = conn
+        .query_row(
+            "SELECT id, title, source_url, category_path FROM pipeline_products WHERE id = ?1",
+            [task_id.as_str()],
+            |row| {
+                Ok(CollectTask {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    source_url: row.get(2)?,
+                    category_path: row.get(3)?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(|| AppError::Validation(format!("流水线商品 {} 不存在", task_id)))?;
+
+    // 重置为待采集，并立即采集单个商品；清掉上一轮采集/审查的残留结果，避免确认时用到旧数据
+    conn.execute(
+        "UPDATE pipeline_products
+         SET status = 'pending_collect', stage = 'collect', attention = 'none',
+             error_code = NULL, error_reason = NULL, progress_text = NULL,
+             reviewed_data = NULL, review_result_json = NULL, updated_at = ?1
+         WHERE id = ?2",
+        params![now_shanghai(), task_id],
+    )?;
 
     let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
-        match run_single_collection_task(&app_clone, &task).await {
-            Ok(_) => {}
-            Err(e) => {
-                eprintln!("重试采集任务 {} 失败: {:?}", task.id, e);
-            }
+        if let Err(e) = run_single_collection_task(&app_clone, &task).await {
+            eprintln!("重试采集任务 {} 失败: {:?}", task.id, e);
         }
     });
 
@@ -237,7 +258,9 @@ pub async fn retry_collection_task(app: AppHandle, task_id: String) -> AppResult
 #[tauri::command]
 pub fn clear_collection_tasks(app: AppHandle) -> AppResult<()> {
     let conn = open_connection(&app)?;
-    conn.execute("DELETE FROM collection_tasks", [])?;
+    conn.execute("DELETE FROM pipeline_assets", [])?;
+    conn.execute("DELETE FROM pipeline_shop_targets", [])?;
+    conn.execute("DELETE FROM pipeline_products", [])?;
     Ok(())
 }
 
@@ -272,8 +295,10 @@ pub fn retry_all_failed_collection_tasks(app: AppHandle) -> AppResult<i64> {
     let conn = open_connection(&app)?;
     let now = now_shanghai();
     let count = conn.execute(
-        "UPDATE collection_tasks SET status = 'pending', error_summary = NULL, updated_at = ?1
-         WHERE status = 'failed'",
+        "UPDATE pipeline_products
+         SET status = 'pending_collect', stage = 'collect', attention = 'none',
+             error_code = NULL, error_reason = NULL, progress_text = NULL, updated_at = ?1
+         WHERE stage = 'collect' AND status = 'error'",
         params![now],
     )?;
     if count > 0 {
@@ -317,14 +342,19 @@ pub async fn run_collection_review_once(
                     tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                 }
                 let _permit = sem.acquire().await;
-                let review_result = review_collection_task(
-                    &app,
-                    &task,
-                    config.as_ref(),
-                    &shop_ids,
-                    &ai_rate_limited,
+                // AI 审查调用加超时：provider(小米 mimo)偶发 hang，无超时会卡死整轮 driver tick
+                // 并可能累积 agent 子进程；120s 内未返回按失败处理，走退避重试而非永久挂起。
+                let review_result = match tokio::time::timeout(
+                    std::time::Duration::from_secs(120),
+                    review_collection_task(&app, &task, config.as_ref(), &shop_ids, &ai_rate_limited),
                 )
-                .await;
+                .await
+                {
+                    Ok(result) => result,
+                    Err(_) => Err(AppError::Validation(
+                        "审查 AI 调用超时(120s)，已按失败处理".to_string(),
+                    )),
+                };
                 (task.id, review_result)
             })
         })
@@ -404,21 +434,32 @@ fn collection_review_start_delay_ms(index: usize, max_concurrency: usize, stagge
 pub fn confirm_collection_review(
     app: AppHandle,
     request: CollectionReviewConfirmRequest,
-) -> AppResult<CollectionTaskView> {
+) -> AppResult<()> {
     let conn = open_connection(&app)?;
-    let task = load_collection_task_by_id(&conn, request.task_id.trim())?;
-    let raw = task
-        .reviewed_data
+    let product_id = request.task_id.trim().to_string();
+    let (reviewed_data, collected_data, review_result_json): (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = conn
+        .query_row(
+            "SELECT reviewed_data, collected_data, review_result_json
+             FROM pipeline_products WHERE id = ?1",
+            [product_id.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?
+        .ok_or_else(|| AppError::Validation(format!("流水线商品 {product_id} 不存在")))?;
+    let raw = reviewed_data
         .as_deref()
-        .or(task.collected_data.as_deref())
+        .or(collected_data.as_deref())
         .unwrap_or_default()
-        .trim();
+        .trim()
+        .to_string();
     if raw.is_empty() {
-        return Err(AppError::Validation(
-            "采集任务缺少可确认的商品数据".to_string(),
-        ));
+        return Err(AppError::Validation("商品缺少可确认的数据".to_string()));
     }
-    let mut product = serde_json::from_str::<ExternalProductInput>(raw)
+    let mut product = serde_json::from_str::<ExternalProductInput>(&raw)
         .map_err(|error| AppError::Validation(format!("采集审查结果无法解析：{error}")))?;
     if let Some(title) = request
         .title
@@ -428,16 +469,18 @@ pub fn confirm_collection_review(
     {
         product.title = title.to_string();
     }
+    // 目标店从该商品的 targets 聚合（新模型目标店在 pipeline_shop_targets）
+    let target_shop_ids = load_review_target_shop_ids(&conn, &product_id)?;
     if let Some(category_ids) = request.category_ids.as_ref().filter(|ids| ids.len() >= 3) {
         let leaf_cat_id = *category_ids
             .last()
             .ok_or_else(|| AppError::Validation("微信类目 ID 不能为空".to_string()))?;
-        let target_shop_ids = if request.target_shop_ids.is_empty() {
-            task.target_shop_ids.clone()
+        let effective_shop_ids = if request.target_shop_ids.is_empty() {
+            target_shop_ids.clone()
         } else {
             request.target_shop_ids.clone()
         };
-        let normalized_target_shop_ids = target_shop_ids
+        let normalized_target_shop_ids = effective_shop_ids
             .iter()
             .map(|shop_id| shop_id.trim())
             .filter(|shop_id| !shop_id.is_empty())
@@ -493,28 +536,27 @@ pub fn confirm_collection_review(
         .map_err(|error| AppError::Validation(format!("审查确认结果无法序列化：{error}")))?;
     let now = now_shanghai();
     let result_json = merge_review_confirmation_json(
-        task.review_result_json.as_deref(),
+        review_result_json.as_deref(),
         request.category_ids,
         request.category_path,
     )?;
+    // 人工确认通过：商品进入铺货阶段，激活各目标店 target 从 precheck 开始推进
     conn.execute(
-        "UPDATE collection_tasks
-         SET review_status = 'passed',
-             review_summary = ?1,
-             reviewed_data = ?2,
-             review_result_json = ?3,
-             reviewed_at = ?4,
-             updated_at = ?4
-         WHERE id = ?5",
-        params![
-            "人工确认采集审查通过",
-            reviewed_data,
-            result_json,
-            now,
-            task.id
-        ],
+        "UPDATE pipeline_products
+         SET reviewed_data = ?1, review_result_json = ?2, stage = 'publish', status = 'publishing',
+             attention = 'none', error_code = NULL, error_reason = NULL,
+             progress_text = '准备铺货', updated_at = ?3
+         WHERE id = ?4",
+        params![reviewed_data, result_json, now, product_id],
     )?;
-    load_collection_task_by_id(&conn, &task.id)
+    conn.execute(
+        "UPDATE pipeline_shop_targets
+         SET stage = 'precheck', status = 'pending', error_code = NULL,
+             error_summary = NULL, updated_at = ?1
+         WHERE product_id = ?2",
+        params![now, product_id],
+    )?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -902,37 +944,77 @@ struct CollectionReviewOutcome {
     result_json: Value,
 }
 
+/// 审查 handler 内部传递的轻量商品（来自 pipeline_products，目标店从 targets 聚合）。
+struct ReviewTask {
+    id: String,
+    status: String,
+    collected_data: Option<String>,
+    target_shop_ids: Vec<String>,
+}
+
+fn load_review_target_shop_ids(conn: &Connection, product_id: &str) -> AppResult<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT shop_id FROM pipeline_shop_targets WHERE product_id = ?1 ORDER BY shop_name",
+    )?;
+    let ids = stmt
+        .query_map([product_id], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ids)
+}
+
 fn load_collection_review_tasks(
     app: &AppHandle,
     task_ids: &[String],
     limit: i64,
-) -> AppResult<Vec<CollectionTaskView>> {
+) -> AppResult<Vec<ReviewTask>> {
     let conn = open_connection(app)?;
+    let mut products: Vec<(String, Option<String>)> = Vec::new();
     if task_ids.is_empty() {
-        let sql = collection_task_select_sql(
-            "WHERE status = 'success'
+        let mut stmt = conn.prepare(
+            "SELECT id, collected_data FROM pipeline_products
+             WHERE stage = 'review'
+               AND status = 'collecting'
                AND collected_data IS NOT NULL
                AND TRIM(collected_data) <> ''
-               AND COALESCE(review_status, 'pending') <> 'passed'
              ORDER BY updated_at DESC
              LIMIT ?1",
-        );
-        let mut stmt = conn.prepare(&sql)?;
-        return Ok(stmt
-            .query_map([limit], map_collection_task)?
-            .collect::<Result<Vec<_>, _>>()?);
+        )?;
+        products = stmt
+            .query_map([limit], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+    } else {
+        for task_id in task_ids.iter().take(limit as usize) {
+            if let Some(row) = conn
+                .query_row(
+                    "SELECT id, collected_data FROM pipeline_products WHERE id = ?1",
+                    [task_id.as_str()],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                )
+                .optional()?
+            {
+                products.push(row);
+            }
+        }
     }
 
-    let mut tasks = Vec::new();
-    for task_id in task_ids.iter().take(limit as usize) {
-        tasks.push(load_collection_task_by_id(&conn, task_id)?);
+    let mut tasks = Vec::with_capacity(products.len());
+    for (id, collected_data) in products {
+        let target_shop_ids = load_review_target_shop_ids(&conn, &id)?;
+        tasks.push(ReviewTask {
+            id,
+            status: "success".to_string(),
+            collected_data,
+            target_shop_ids,
+        });
     }
     Ok(tasks)
 }
 
 fn ensure_collection_review_target_shop_ready(
     app: &AppHandle,
-    tasks: &[CollectionTaskView],
+    tasks: &[ReviewTask],
     target_shop_ids: &[String],
 ) -> AppResult<()> {
     if !target_shop_ids.is_empty()
@@ -947,7 +1029,7 @@ fn ensure_collection_review_target_shop_ready(
 
 async fn review_collection_task(
     app: &AppHandle,
-    task: &CollectionTaskView,
+    task: &ReviewTask,
     ai_config: Option<&AiProviderConfig>,
     target_shop_ids: &[String],
     ai_rate_limited: &AtomicBool,
@@ -1411,24 +1493,47 @@ fn persist_collection_review_result(
         .map_err(|error| AppError::Validation(format!("审查结果无法序列化：{error}")))?;
     let review_result_json = serde_json::to_string(&review.result_json)
         .map_err(|error| AppError::Validation(format!("审查详情无法序列化：{error}")))?;
-    conn.execute(
-        "UPDATE collection_tasks
-         SET review_status = ?1,
-             review_summary = ?2,
-             reviewed_data = ?3,
-             review_result_json = ?4,
-             reviewed_at = ?5,
-             updated_at = ?5
-         WHERE id = ?6",
-        params![
-            review.status,
-            review.summary,
-            reviewed_data,
-            review_result_json,
-            now,
-            task_id
-        ],
-    )?;
+
+    if review.status == "passed" {
+        // 审查通过：商品进入铺货阶段，激活各目标店 target 从类目预检开始推进
+        conn.execute(
+            "UPDATE pipeline_products
+             SET status = 'publishing', stage = 'publish', attention = 'none',
+                 error_code = NULL, error_reason = NULL, progress_text = '准备铺货',
+                 reviewed_data = ?1, review_result_json = ?2, updated_at = ?3
+             WHERE id = ?4",
+            params![reviewed_data, review_result_json, now, task_id],
+        )?;
+        conn.execute(
+            "UPDATE pipeline_shop_targets
+             SET stage = 'precheck', status = 'pending', error_code = NULL,
+                 error_summary = NULL, updated_at = ?1
+             WHERE product_id = ?2",
+            params![now, task_id],
+        )?;
+    } else {
+        // needs_review / blocked：停在待确认，等人工处理
+        let error_code = if review.status == "blocked" {
+            "REVIEW_BLOCKED"
+        } else {
+            "REVIEW_NEEDS_CONFIRM"
+        };
+        conn.execute(
+            "UPDATE pipeline_products
+             SET status = 'need_confirm', stage = 'review', attention = 'need_confirm',
+                 error_code = ?1, error_reason = ?2, progress_text = NULL,
+                 reviewed_data = ?3, review_result_json = ?4, updated_at = ?5
+             WHERE id = ?6",
+            params![
+                error_code,
+                review.summary,
+                reviewed_data,
+                review_result_json,
+                now,
+                task_id
+            ],
+        )?;
+    }
     Ok(())
 }
 
@@ -1444,12 +1549,10 @@ fn persist_collection_review_failure(app: &AppHandle, task_id: &str, error: &str
         "reviewed_at": now
     });
     conn.execute(
-        "UPDATE collection_tasks
-         SET review_status = 'failed',
-             review_summary = ?1,
-             review_result_json = ?2,
-             reviewed_at = ?3,
-             updated_at = ?3
+        "UPDATE pipeline_products
+         SET status = 'error', stage = 'review', attention = 'error',
+             error_code = 'UNKNOWN_AGENT_ERROR', error_reason = ?1,
+             review_result_json = ?2, progress_text = NULL, updated_at = ?3
          WHERE id = ?4",
         params![summary, result_json.to_string(), now, task_id],
     )?;
@@ -1928,7 +2031,7 @@ fn collection_review_sku_attrs_from_specs(specs: &Value) -> Vec<Value> {
 }
 
 fn collection_review_pending_publish_item(
-    task: &CollectionTaskView,
+    task: &ReviewTask,
     shop_id: &str,
     product: &ExternalProductInput,
 ) -> AppResult<PendingPublishItem> {
@@ -2415,9 +2518,8 @@ fn resolve_collector_script(app: &AppHandle) -> PathBuf {
             }
         }
     }
-    if !p.exists() {
-        p = PathBuf::from("/Users/wangjunhao/Code/project/wx-xd/scripts/taobao_collector.py");
-    }
+    // 前两个候选(工作目录相对路径 / 资源目录)未命中时返回相对路径，
+    // 由调用方拉起子进程时报"脚本不存在"，不再指向已不存在的他项目绝对路径。
     p
 }
 
@@ -2679,7 +2781,7 @@ pub fn trigger_collection_worker(app: AppHandle) {
 
     tauri::async_runtime::spawn(async move {
         // 一次性取出所有待采集任务，批量处理
-        let pending_tasks: Vec<CollectionTaskView> = match get_all_pending_tasks(&app) {
+        let pending_tasks: Vec<CollectTask> = match get_all_pending_tasks(&app) {
             Ok(tasks) => tasks,
             Err(e) => {
                 eprintln!("获取待采集任务发生数据库错误: {:?}", e);
@@ -2721,24 +2823,37 @@ fn is_taobao_collection_protection_error(message: &str) -> bool {
     .any(|keyword| message.contains(keyword))
 }
 
-fn get_all_pending_tasks(app: &AppHandle) -> AppResult<Vec<CollectionTaskView>> {
-    let conn = open_connection(app)?;
-    let sql = collection_task_select_sql(
-        "WHERE status IN ('pending', 'running') ORDER BY created_at ASC",
-    );
-    let mut stmt = conn.prepare(&sql)?;
+/// 采集 worker 内部传递的轻量商品（来自 pipeline_products 主表）。
+struct CollectTask {
+    id: String,
+    title: String,
+    source_url: String,
+    category_path: String,
+}
 
+fn get_all_pending_tasks(app: &AppHandle) -> AppResult<Vec<CollectTask>> {
+    let conn = open_connection(app)?;
+    let mut stmt = conn.prepare(
+        "SELECT id, title, source_url, category_path
+         FROM pipeline_products
+         WHERE stage = 'collect' AND status IN ('pending_collect', 'collecting')
+         ORDER BY created_at ASC",
+    )?;
     let list = stmt
-        .query_map([], map_collection_task)?
+        .query_map([], |row| {
+            Ok(CollectTask {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                source_url: row.get(2)?,
+                category_path: row.get(3)?,
+            })
+        })?
         .filter_map(|r| r.ok())
         .collect();
     Ok(list)
 }
 
-async fn run_batch_collection_tasks(
-    app: &AppHandle,
-    tasks: &[CollectionTaskView],
-) -> AppResult<()> {
+async fn run_batch_collection_tasks(app: &AppHandle, tasks: &[CollectTask]) -> AppResult<()> {
     if tasks.is_empty() {
         return Ok(());
     }
@@ -2764,13 +2879,20 @@ async fn run_batch_collection_tasks(
 
     // 4. 执行批量采集，并实时读取 NDJSON 输出，让页面能看到逐条进度。
     let mut command = python_command(app);
-    let mut child = match command
+    command
         .arg(&script_path)
         .arg("batch-collect")
         .arg("--urls")
         .arg(&urls_json)
         .arg("--profile-dir")
-        .arg(&profile_dir_str)
+        .arg(&profile_dir_str);
+    // 实测：淘宝对无头浏览器即便带有效登录态仍会触发短信验证，可见窗口则直接放行。
+    // 故批量采集默认走 headed（复用 headed 登录的低风控通道）；
+    // 仅排查时可设 WX_XD_TAOBAO_BATCH_HEADLESS=1 强制无头（大概率被风控拦截）。
+    if std::env::var("WX_XD_TAOBAO_BATCH_HEADLESS").as_deref() != Ok("1") {
+        command.arg("--headed");
+    }
+    let mut child = match command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -2807,7 +2929,7 @@ async fn run_batch_collection_tasks(
     });
 
     // 5. 解析 NDJSON 结果，逐行处理
-    let task_map: std::collections::HashMap<&str, &CollectionTaskView> =
+    let task_map: std::collections::HashMap<&str, &CollectTask> =
         tasks.iter().map(|t| (t.id.as_str(), t)).collect();
 
     let mut protection_hit = false;
@@ -2832,17 +2954,19 @@ async fn run_batch_collection_tasks(
             }
         };
 
-        // 致命错误
+        // 致命错误：仅标记尚未出结果的任务，避免覆盖已成功项。
         if result.get("fatal_error").is_some() {
             let err = result["fatal_error"].as_str().unwrap_or("未知致命错误");
             for task in tasks {
-                let _ = update_task_status(
-                    app,
-                    &task.id,
-                    "failed",
-                    Some(format!("批量采集致命错误: {}", err)),
-                    None,
-                );
+                if !handled_task_ids.contains(&task.id) {
+                    let _ = update_task_status(
+                        app,
+                        &task.id,
+                        "failed",
+                        Some(format!("批量采集致命错误: {}", err)),
+                        None,
+                    );
+                }
             }
             return Err(AppError::Validation(format!("批量采集失败: {}", err)));
         }
@@ -2984,7 +3108,7 @@ async fn run_batch_collection_tasks(
     Ok(())
 }
 
-async fn run_single_collection_task(app: &AppHandle, task: &CollectionTaskView) -> AppResult<bool> {
+async fn run_single_collection_task(app: &AppHandle, task: &CollectTask) -> AppResult<bool> {
     // 1. 设置状态为 running
     update_task_status(app, &task.id, "running", None, None)?;
 
@@ -2993,19 +3117,7 @@ async fn run_single_collection_task(app: &AppHandle, task: &CollectionTaskView) 
     let profile_dir = app_data_dir.join("taobao_profile");
     let profile_dir_str = profile_dir.to_string_lossy().to_string();
 
-    let mut script_path = PathBuf::from("scripts").join("taobao_collector.py");
-    if !script_path.exists() {
-        if let Ok(res_dir) = app.path().resource_dir() {
-            let check_path = res_dir.join("scripts").join("taobao_collector.py");
-            if check_path.exists() {
-                script_path = check_path;
-            }
-        }
-    }
-    if !script_path.exists() {
-        script_path =
-            PathBuf::from("/Users/wangjunhao/Code/project/wx-xd/scripts/taobao_collector.py");
-    }
+    let script_path = resolve_collector_script(app);
 
     // 3. 执行 Python 采集子进程
     let mut command = python_command(app);
@@ -3387,31 +3499,45 @@ fn update_task_status(
     let conn = open_connection(app)?;
     let now = now_shanghai();
 
-    if error_summary.is_some() {
-        conn.execute(
-            "UPDATE collection_tasks SET status = ?1, error_summary = ?2, updated_at = ?3 WHERE id = ?4",
-            params![status, error_summary, now, task_id],
-        )?;
-    } else if collected_data.is_some() {
-        conn.execute(
-            "UPDATE collection_tasks
-             SET status = ?1,
-                 error_summary = NULL,
-                 collected_data = ?2,
-                 review_status = 'pending',
-                 review_summary = NULL,
-                 reviewed_data = NULL,
-                 review_result_json = NULL,
-                 reviewed_at = NULL,
-                 updated_at = ?3
-             WHERE id = ?4",
-            params![status, collected_data, now, task_id],
-        )?;
-    } else {
-        conn.execute(
-            "UPDATE collection_tasks SET status = ?1, error_summary = NULL, updated_at = ?2 WHERE id = ?3",
-            params![status, now, task_id],
-        )?;
+    match status {
+        "running" => {
+            // 采集进行中；error_summary 此处承载进度文案
+            conn.execute(
+                "UPDATE pipeline_products
+                 SET status = 'collecting', stage = 'collect', attention = 'none',
+                     error_code = NULL, error_reason = NULL, progress_text = ?1, updated_at = ?2
+                 WHERE id = ?3",
+                params![error_summary, now, task_id],
+            )?;
+        }
+        "success" => {
+            // 采集成功 → 进入审查阶段，等审查 handler 处理
+            conn.execute(
+                "UPDATE pipeline_products
+                 SET status = 'collecting', stage = 'review', attention = 'none',
+                     collected_data = ?1, reviewed_data = NULL, review_result_json = NULL,
+                     error_code = NULL, error_reason = NULL, progress_text = '等待审查',
+                     updated_at = ?2
+                 WHERE id = ?3",
+                params![collected_data, now, task_id],
+            )?;
+        }
+        _ => {
+            // 采集失败：区分淘宝风控冷却与一般失败
+            let message = error_summary.unwrap_or_else(|| "采集失败".to_string());
+            let code = if is_taobao_collection_protection_error(&message) {
+                "COLLECT_ACCESS_LIMITED"
+            } else {
+                "COLLECT_FAILED"
+            };
+            conn.execute(
+                "UPDATE pipeline_products
+                 SET status = 'error', stage = 'collect', attention = 'error',
+                     error_code = ?1, error_reason = ?2, progress_text = NULL, updated_at = ?3
+                 WHERE id = ?4",
+                params![code, message, now, task_id],
+            )?;
+        }
     }
 
     Ok(())

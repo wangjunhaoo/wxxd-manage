@@ -1198,6 +1198,48 @@ export type CollectionTaskView = {
   updated_at: string;
 };
 
+// 统一流水线商品视图（后端 list_pipeline_products 返回，字段 snake_case）
+export type PipelineShopTargetView = {
+  id: string;
+  shop_id: string;
+  shop_name: string;
+  status_text: string;
+  error_code: string | null;
+  error_reason: string | null;
+  can_retry: boolean;
+  wechat_product_id: string | null;
+  audit_summary: string | null;
+  updated_at: string;
+};
+
+export type PipelineProductView = {
+  id: string;
+  external_product_id: string | null;
+  title: string;
+  source_url: string;
+  category_path: string;
+  status:
+    | "pending_collect"
+    | "collecting"
+    | "need_confirm"
+    | "publishing"
+    | "listed"
+    | "error";
+  attention: "none" | "need_confirm" | "error";
+  progress_text: string | null;
+  error_code: string | null;
+  error_reason: string | null;
+  total_shops: number;
+  listed_shops: number;
+  failed_shops: number;
+  pending_shops: number;
+  can_retry: boolean;
+  can_confirm: boolean;
+  confirm_kind: string | null;
+  updated_at: string;
+  shops: PipelineShopTargetView[];
+};
+
 export type PublishPricingStrategy = {
   sale_price_markup_rate: number;
   sale_price_fixed_cents: number;

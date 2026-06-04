@@ -45,10 +45,10 @@ pub(crate) fn get_agent_product_detail(
 ) -> AppResult<AgentProductDetail> {
     let conn = open_connection(app)?;
     let row = conn.query_row(
-        "SELECT id, title, source_url, category_path, status, error_summary,
-                collected_data, review_status, review_summary, reviewed_data, review_result_json,
-                published_shop_ids, publish_job_ids, published_at, created_at, updated_at
-         FROM collection_tasks WHERE id = ?1",
+        "SELECT id, title, source_url, category_path, status, error_reason,
+                collected_data, stage, progress_text, reviewed_data, review_result_json,
+                '[]', '[]', NULL, created_at, updated_at
+         FROM pipeline_products WHERE id = ?1",
         params![task_id],
         |row| {
             Ok((

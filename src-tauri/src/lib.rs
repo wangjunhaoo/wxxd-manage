@@ -17,6 +17,7 @@ pub fn run() {
             }
             local_api::start(app.handle().clone());
             commands::trigger_collection_worker(app.handle().clone());
+            commands::start_pipeline_driver(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -126,7 +127,9 @@ pub fn run() {
             commands::get_taobao_access_limit_state,
             commands::clear_taobao_access_limit_state,
             commands::mark_taobao_access_limited,
-            commands::test_taobao_collect
+            commands::test_taobao_collect,
+            commands::list_pipeline_products,
+            commands::retry_pipeline_product
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

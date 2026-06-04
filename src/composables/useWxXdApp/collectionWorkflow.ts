@@ -747,12 +747,10 @@ export function useCollectionWorkflow({
     }
     collectionReviewConfirming.value = true;
     try {
-      const updated = await command<CollectionTaskView>(
-        "confirm_collection_review",
-        { request },
-      );
-      selectedCollectionDetailTask.value = updated;
+      // 后端 confirm_collection_review 现返回 ()，确认后直接刷新列表（不再回填详情任务）
+      await command<void>("confirm_collection_review", { request });
       ElMessage.success("已确认审查通过");
+      collectionDetailVisible.value = false;
       await refreshCollectionTasks();
     } catch (error) {
       ElMessage.error(`确认失败：${error}`);

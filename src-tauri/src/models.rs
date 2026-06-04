@@ -1623,3 +1623,46 @@ pub struct CollectionTaskView {
     pub created_at: String,
     pub updated_at: String,
 }
+
+/// 统一流水线商品视图（前端工作台一行 = 一条流水线）。后端直接吐出，前端零适配层。
+#[derive(Debug, Serialize)]
+pub struct PipelineProductView {
+    pub id: String,
+    pub external_product_id: Option<String>,
+    pub title: String,
+    pub source_url: String,
+    pub category_path: String,
+    /// 对外 6 态：pending_collect / collecting / need_confirm / publishing / listed / error
+    pub status: String,
+    /// none / need_confirm / error —— 驱动前端红黄点
+    pub attention: String,
+    pub progress_text: Option<String>,
+    pub error_code: Option<String>,
+    pub error_reason: Option<String>,
+    pub total_shops: i64,
+    pub listed_shops: i64,
+    pub failed_shops: i64,
+    pub pending_shops: i64,
+    pub can_retry: bool,
+    pub can_confirm: bool,
+    /// 待确认子类型（CATEGORY/ATTR/IMAGE/SHOP_SETTING/REVIEW/GENERIC），决定前端弹哪种确认 UI
+    pub confirm_kind: Option<String>,
+    pub updated_at: String,
+    pub shops: Vec<PipelineShopTargetView>,
+}
+
+/// 流水线商品在单个目标店的推进视图（主行展开）。
+#[derive(Debug, Serialize)]
+pub struct PipelineShopTargetView {
+    pub id: String,
+    pub shop_id: String,
+    pub shop_name: String,
+    /// 人话状态：已上架 / 类目预检中 / 等待微信审核 / 失败原因 …
+    pub status_text: String,
+    pub error_code: Option<String>,
+    pub error_reason: Option<String>,
+    pub can_retry: bool,
+    pub wechat_product_id: Option<String>,
+    pub audit_summary: Option<String>,
+    pub updated_at: String,
+}

@@ -1,28 +1,49 @@
 use super::*;
 
+// ============================================================================
+// 铺货链路加载层（统一流水线版）
+//
+// 数据源从旧表（publish_job_items / publish_products / task_runs）切换到
+// 新表 pipeline_shop_targets（店级推进单位）+ pipeline_products（商品主表）。
+// 每个 loader 按 target.stage 取「正落在该阶段、待 runner 推进」的店级单位：
+//   status = 'pending'（新到达本阶段） 或 'running'（上次被中断，幂等重做）。
+// status = 'blocked' 的失败项不在此捞取，统一交由 driver 退避后置回 pending
+//（与采集链路靠 retry_collection_task 手动重试同理），避免 runner 无退避狂重试。
+//
+// raw_payload 取 COALESCE(target.raw_payload, product.reviewed_data, '')：
+// precheck 阶段 target 尚未生成店级发品 payload，回退到商品级审查结果
+// （reviewed_data 即序列化后的 ExternalProductInput）；后续 runner 把生成的
+// 店级发品 payload 写回 target.raw_payload，形成「读当前态 → 写当前态」闭环。
+//
+// PendingPublishItem 字段映射：
+//   item_id        ← target.id        （店级推进单位主键）
+//   job_id         ← target.product_id（新模型无 job 概念，占位为商品 id，
+//                                       便于 runner 收尾时调 recompute_pipeline_product）
+//   product_row_id ← target.product_id
+//   shop_id / shop_status / shop_has_secret / external_product_id 同旧语义
+// ============================================================================
+
 pub(in crate::commands) fn load_pending_publish_items(
     conn: &Connection,
     limit: i64,
 ) -> AppResult<Vec<PendingPublishItem>> {
     let mut stmt = conn.prepare(
         "SELECT
-           i.id,
-           i.job_id,
-           i.product_row_id,
-           i.shop_id,
+           t.id,
+           t.product_id,
+           t.product_id,
+           t.shop_id,
            s.status,
            c.shop_id IS NOT NULL AS shop_has_secret,
-           p.external_product_id,
-           p.raw_payload
-         FROM publish_job_items i
-         JOIN publish_products p ON p.id = i.product_row_id
-         JOIN shops s ON s.id = i.shop_id
+           COALESCE(p.external_product_id, ''),
+           COALESCE(t.raw_payload, p.reviewed_data, '')
+         FROM pipeline_shop_targets t
+         JOIN pipeline_products p ON p.id = t.product_id
+         JOIN shops s ON s.id = t.shop_id
          LEFT JOIN shop_credentials c ON c.shop_id = s.id
-         JOIN task_runs t ON t.id = i.job_id
-         WHERE i.status = 'pending'
-           AND t.task_type = 'publish.create_external_job'
-           AND t.status IN ('pending', 'queued', 'running', 'partial_success')
-         ORDER BY i.created_at ASC
+         WHERE t.stage = 'precheck'
+           AND t.status IN ('pending', 'running')
+         ORDER BY t.created_at ASC
          LIMIT ?1",
     )?;
     let items = stmt
@@ -48,40 +69,21 @@ pub(in crate::commands) fn load_category_precheck_items(
 ) -> AppResult<Vec<PendingPublishItem>> {
     let mut stmt = conn.prepare(
         "SELECT
-           i.id,
-           i.job_id,
-           i.product_row_id,
-           i.shop_id,
+           t.id,
+           t.product_id,
+           t.product_id,
+           t.shop_id,
            s.status,
            c.shop_id IS NOT NULL AS shop_has_secret,
-           p.external_product_id,
-           p.raw_payload
-         FROM publish_job_items i
-         JOIN publish_products p ON p.id = i.product_row_id
-         JOIN shops s ON s.id = i.shop_id
+           COALESCE(p.external_product_id, ''),
+           COALESCE(t.raw_payload, p.reviewed_data, '')
+         FROM pipeline_shop_targets t
+         JOIN pipeline_products p ON p.id = t.product_id
+         JOIN shops s ON s.id = t.shop_id
          LEFT JOIN shop_credentials c ON c.shop_id = s.id
-         JOIN task_runs t ON t.id = i.job_id
-         WHERE (
-             i.status = 'ready_to_publish'
-             OR (
-               i.status = 'failed'
-               AND (
-                 i.error_code IN (
-                   'MISSING_AFTER_SALE_ADDRESS',
-                   'AMBIGUOUS_AFTER_SALE_ADDRESS',
-                   'WECHAT_ADDRESS_LIST_HTTP_FAILED',
-                   'WECHAT_ADDRESS_DETAIL_HTTP_FAILED',
-                   'CATEGORY_DETAIL_SYNC_HTTP_FAILED'
-                 )
-                 OR i.error_code LIKE 'WECHAT_ADDRESS_LIST_%'
-                 OR i.error_code LIKE 'WECHAT_ADDRESS_DETAIL_%'
-                 OR i.error_code LIKE 'WECHAT_CATEGORY_DETAIL_%'
-               )
-             )
-           )
-           AND t.task_type = 'publish.create_external_job'
-           AND t.status IN ('failed', 'ready_to_publish', 'partial_success', 'running')
-         ORDER BY i.created_at ASC
+         WHERE t.stage = 'category_precheck'
+           AND t.status IN ('pending', 'running')
+         ORDER BY t.created_at ASC
          LIMIT ?1",
     )?;
     let items = stmt
@@ -107,28 +109,21 @@ pub(in crate::commands) fn load_attribute_fill_items(
 ) -> AppResult<Vec<PendingPublishItem>> {
     let mut stmt = conn.prepare(
         "SELECT
-           i.id,
-           i.job_id,
-           i.product_row_id,
-           i.shop_id,
+           t.id,
+           t.product_id,
+           t.product_id,
+           t.shop_id,
            s.status,
            c.shop_id IS NOT NULL AS shop_has_secret,
-           p.external_product_id,
-           p.raw_payload
-         FROM publish_job_items i
-         JOIN publish_products p ON p.id = i.product_row_id
-         JOIN shops s ON s.id = i.shop_id
+           COALESCE(p.external_product_id, ''),
+           COALESCE(t.raw_payload, p.reviewed_data, '')
+         FROM pipeline_shop_targets t
+         JOIN pipeline_products p ON p.id = t.product_id
+         JOIN shops s ON s.id = t.shop_id
          LEFT JOIN shop_credentials c ON c.shop_id = s.id
-         JOIN task_runs t ON t.id = i.job_id
-         WHERE i.status = 'failed'
-           AND i.error_code IN (
-             'CATEGORY_NEEDS_AI_FILL',
-             'WECHAT_PAYLOAD_NEEDS_AI_FILL',
-             'CATEGORY_ATTRS_NEED_AI_FILL'
-           )
-           AND t.task_type = 'publish.create_external_job'
-           AND t.status IN ('failed', 'partial_success', 'running', 'ready_to_publish')
-         ORDER BY i.created_at ASC
+         WHERE t.stage = 'attr_fill'
+           AND t.status IN ('pending', 'running')
+         ORDER BY t.created_at ASC
          LIMIT ?1",
     )?;
     let items = stmt
@@ -277,43 +272,21 @@ pub(in crate::commands) fn load_asset_upload_items(
 ) -> AppResult<Vec<PendingPublishItem>> {
     let mut stmt = conn.prepare(
         "SELECT
-           i.id,
-           i.job_id,
-           i.product_row_id,
-           i.shop_id,
+           t.id,
+           t.product_id,
+           t.product_id,
+           t.shop_id,
            s.status,
            c.shop_id IS NOT NULL AS shop_has_secret,
-           p.external_product_id,
-           p.raw_payload
-         FROM publish_job_items i
-         JOIN publish_products p ON p.id = i.product_row_id
-         JOIN shops s ON s.id = i.shop_id
+           COALESCE(p.external_product_id, ''),
+           COALESCE(t.raw_payload, p.reviewed_data, '')
+         FROM pipeline_shop_targets t
+         JOIN pipeline_products p ON p.id = t.product_id
+         JOIN shops s ON s.id = t.shop_id
          LEFT JOIN shop_credentials c ON c.shop_id = s.id
-         JOIN task_runs t ON t.id = i.job_id
-         WHERE (
-             i.status IN ('ready_to_publish', 'category_prechecked')
-             OR (
-               i.status = 'failed'
-               AND (
-                 i.error_code IN (
-                   'INVALID_IMAGE_SOURCE_URL',
-                   'IMAGE_PREPROCESS_FAILED',
-                   'MISSING_WECHAT_PRODUCT_PAYLOAD',
-                   'MISSING_AFTER_SALE_ADDRESS',
-                   'AMBIGUOUS_AFTER_SALE_ADDRESS',
-                   'WECHAT_ADDRESS_LIST_HTTP_FAILED',
-                   'WECHAT_ADDRESS_DETAIL_HTTP_FAILED',
-                   'CATEGORY_DETAIL_SYNC_HTTP_FAILED'
-                 )
-                 OR i.error_code LIKE 'WECHAT_ADDRESS_LIST_%'
-                 OR i.error_code LIKE 'WECHAT_ADDRESS_DETAIL_%'
-                 OR i.error_code LIKE 'WECHAT_CATEGORY_DETAIL_%'
-               )
-             )
-           )
-           AND t.task_type = 'publish.create_external_job'
-           AND t.status IN ('failed', 'ready_to_publish', 'partial_success', 'running')
-         ORDER BY i.created_at ASC
+         WHERE t.stage = 'asset_upload'
+           AND t.status IN ('pending', 'running')
+         ORDER BY t.created_at ASC
          LIMIT ?1",
     )?;
     let items = stmt
@@ -339,43 +312,21 @@ pub(in crate::commands) fn load_product_submit_items(
 ) -> AppResult<Vec<PendingPublishItem>> {
     let mut stmt = conn.prepare(
         "SELECT
-           i.id,
-           i.job_id,
-           i.product_row_id,
-           i.shop_id,
+           t.id,
+           t.product_id,
+           t.product_id,
+           t.shop_id,
            s.status,
            c.shop_id IS NOT NULL AS shop_has_secret,
-           p.external_product_id,
-           p.raw_payload
-         FROM publish_job_items i
-         JOIN publish_products p ON p.id = i.product_row_id
-         JOIN shops s ON s.id = i.shop_id
+           COALESCE(p.external_product_id, ''),
+           COALESCE(t.raw_payload, p.reviewed_data, '')
+         FROM pipeline_shop_targets t
+         JOIN pipeline_products p ON p.id = t.product_id
+         JOIN shops s ON s.id = t.shop_id
          LEFT JOIN shop_credentials c ON c.shop_id = s.id
-         JOIN task_runs t ON t.id = i.job_id
-         WHERE (
-             i.status = 'assets_ready'
-             OR (
-               i.status = 'failed'
-               AND (
-                 i.error_code IN (
-                   'WECHAT_ADDPRODUCT_-999997',
-                   'WECHAT_ADDPRODUCT_10020110',
-                   'WECHAT_ADDPRODUCT_HTTP_FAILED',
-                   'MISSING_AFTER_SALE_ADDRESS',
-                   'AMBIGUOUS_AFTER_SALE_ADDRESS',
-                   'WECHAT_ADDRESS_LIST_HTTP_FAILED',
-                   'WECHAT_ADDRESS_DETAIL_HTTP_FAILED',
-                   'CATEGORY_DETAIL_SYNC_HTTP_FAILED'
-                 )
-                 OR i.error_code LIKE 'WECHAT_ADDRESS_LIST_%'
-                 OR i.error_code LIKE 'WECHAT_ADDRESS_DETAIL_%'
-                 OR i.error_code LIKE 'WECHAT_CATEGORY_DETAIL_%'
-               )
-             )
-           )
-           AND t.task_type = 'publish.create_external_job'
-           AND t.status IN ('failed', 'assets_ready', 'partial_success', 'running')
-         ORDER BY i.created_at ASC
+         WHERE t.stage = 'submit'
+           AND t.status IN ('pending', 'running')
+         ORDER BY t.created_at ASC
          LIMIT ?1",
     )?;
     let items = stmt
@@ -401,20 +352,18 @@ pub(in crate::commands) fn load_product_status_sync_items(
 ) -> AppResult<Vec<StatusSyncItem>> {
     let mut stmt = conn.prepare(
         "SELECT
-           i.id,
-           i.job_id,
-           i.shop_id,
-           p.external_product_id,
-           i.wechat_product_id
-         FROM publish_job_items i
-         JOIN publish_products p ON p.id = i.product_row_id
-         JOIN task_runs t ON t.id = i.job_id
-         WHERE i.status IN ('submitted', 'audit_pending')
-           AND i.wechat_product_id IS NOT NULL
-           AND i.wechat_product_id != ''
-           AND t.task_type = 'publish.create_external_job'
-           AND t.status IN ('submitted', 'audit_pending', 'running', 'partial_success')
-         ORDER BY i.last_status_sync_at IS NOT NULL ASC, i.created_at ASC
+           t.id,
+           t.product_id,
+           t.shop_id,
+           COALESCE(p.external_product_id, ''),
+           t.wechat_product_id
+         FROM pipeline_shop_targets t
+         JOIN pipeline_products p ON p.id = t.product_id
+         WHERE t.stage = 'audit'
+           AND t.status IN ('pending', 'running')
+           AND t.wechat_product_id IS NOT NULL
+           AND t.wechat_product_id != ''
+         ORDER BY t.last_status_sync_at IS NOT NULL ASC, t.created_at ASC
          LIMIT ?1",
     )?;
     let items = stmt
@@ -437,20 +386,18 @@ pub(in crate::commands) fn load_product_listing_items(
 ) -> AppResult<Vec<StatusSyncItem>> {
     let mut stmt = conn.prepare(
         "SELECT
-           i.id,
-           i.job_id,
-           i.shop_id,
-           p.external_product_id,
-           i.wechat_product_id
-         FROM publish_job_items i
-         JOIN publish_products p ON p.id = i.product_row_id
-         JOIN task_runs t ON t.id = i.job_id
-         WHERE i.status = 'audit_passed'
-           AND i.wechat_product_id IS NOT NULL
-           AND i.wechat_product_id != ''
-           AND t.task_type = 'publish.create_external_job'
-           AND t.status IN ('audit_passed', 'running', 'partial_success')
-         ORDER BY i.last_status_sync_at ASC, i.created_at ASC
+           t.id,
+           t.product_id,
+           t.shop_id,
+           COALESCE(p.external_product_id, ''),
+           t.wechat_product_id
+         FROM pipeline_shop_targets t
+         JOIN pipeline_products p ON p.id = t.product_id
+         WHERE t.stage = 'listing'
+           AND t.status IN ('pending', 'running')
+           AND t.wechat_product_id IS NOT NULL
+           AND t.wechat_product_id != ''
+         ORDER BY t.last_status_sync_at ASC, t.created_at ASC
          LIMIT ?1",
     )?;
     let items = stmt
