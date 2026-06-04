@@ -42,22 +42,22 @@ pub fn import_excel_for_collection(
     let mut excel: Xlsx<_> = open_workbook(&path)
         .map_err(|e| AppError::Validation(format!("无法打开 Excel 文件: {}", e)))?;
 
-    if target_shop_ids.is_empty() {
-        return Err(AppError::Validation(
-            "请先选择本批要铺货的目标微信小店".to_string(),
-        ));
-    }
-
     let conn = open_connection(&app)?;
     let now = now_shanghai();
 
-    // 校验目标店铺并取得店名，导入时即为「每个商品 × 每个目标店」建好流水线推进单位
-    let target_shops = resolve_target_shops_for_scope(&conn, &[], &target_shop_ids)?;
-    if target_shops.len() != target_shop_ids.len() {
-        return Err(AppError::Validation(
-            "目标微信小店不存在或已被删除，请刷新店铺列表后重试".to_string(),
-        ));
-    }
+    // 目标店可选：不选店则只采集不铺货（采集审查后停在「待铺货」，稍后可补选店）。
+    // 选了店则导入时即为「每个商品 × 每个目标店」建好流水线推进单位。
+    let target_shops = if target_shop_ids.is_empty() {
+        Vec::new()
+    } else {
+        let shops = resolve_target_shops_for_scope(&conn, &[], &target_shop_ids)?;
+        if shops.len() != target_shop_ids.len() {
+            return Err(AppError::Validation(
+                "目标微信小店不存在或已被删除，请刷新店铺列表后重试".to_string(),
+            ));
+        }
+        shops
+    };
 
     let mut imported_count = 0i64;
 
@@ -117,6 +117,101 @@ pub fn import_excel_for_collection(
     }
 
     Ok(imported_count)
+}
+
+/// 给已存在的商品补选目标店并铺货（「只采集」后再选店的入口）。
+///
+/// 按商品当前所处阶段决定新建 target 的初始 stage：
+/// - 已采集审查完成（stage=publish/done，即 collected 或已在铺货）→ target 从 precheck 起，直接铺货；
+/// - 仍在采集/审查中（stage=collect/review）→ target 置 await_review，待审查通过时一并激活。
+///
+/// 已存在的店（UNIQUE(product_id, shop_id)）由 INSERT OR IGNORE 跳过，重复补店无副作用。
+#[tauri::command]
+pub fn add_publish_targets(
+    app: AppHandle,
+    product_ids: Vec<String>,
+    target_shop_ids: Vec<String>,
+) -> AppResult<()> {
+    if target_shop_ids.is_empty() {
+        return Err(AppError::Validation(
+            "请先选择要铺货的目标微信小店".to_string(),
+        ));
+    }
+    if product_ids.is_empty() {
+        return Err(AppError::Validation("没有指定要铺货的商品".to_string()));
+    }
+
+    let conn = open_connection(&app)?;
+    let now = now_shanghai();
+
+    let target_shops = resolve_target_shops_for_scope(&conn, &[], &target_shop_ids)?;
+    if target_shops.len() != target_shop_ids.len() {
+        return Err(AppError::Validation(
+            "目标微信小店不存在或已被删除，请刷新店铺列表后重试".to_string(),
+        ));
+    }
+
+    for product_id in &product_ids {
+        // 读商品阶段、状态与已审查数据：阶段决定新 target 初始 stage，状态用于跳过已上架商品，
+        // reviewed_data 用于补店前的类目准入校验
+        let row: Option<(String, String, Option<String>)> = conn
+            .query_row(
+                "SELECT stage, status, reviewed_data FROM pipeline_products WHERE id = ?1",
+                [product_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let Some((stage, status, reviewed_data)) = row else {
+            continue; // 商品不存在则跳过
+        };
+        // 已全部上架的商品不再补货：防止陈旧的批量勾选把 listed 商品误回退到「铺货中」
+        if status == product_status::LISTED {
+            continue;
+        }
+        // 审查已通过（已进入铺货阶段）→ 直接 precheck；否则等审查激活（await_review）
+        let reviewed = stage == product_stage::PUBLISH || stage == product_stage::DONE;
+        let target_stage = if reviewed {
+            target_stage::PRECHECK
+        } else {
+            target_stage::AWAIT_REVIEW
+        };
+
+        // 已审查商品补店即将直接铺货：先按「真实目标店」校验微信类目准入，把原来推迟到铺货
+        // precheck 阶段才暴雷的类目不准入提前到补店点立即反馈（审查期用任意店校验无法覆盖真实目标店）。
+        if reviewed {
+            let leaf_cat_id = reviewed_data
+                .as_deref()
+                .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                .and_then(|data| {
+                    data.get("metadata")
+                        .and_then(|m| m.get("wechat_category_ids"))
+                        .and_then(Value::as_array)
+                        .and_then(|ids| ids.last())
+                        .and_then(Value::as_i64)
+                });
+            if let Some(leaf_cat_id) = leaf_cat_id {
+                for shop in &target_shops {
+                    ensure_category_available_for_shop(&conn, &shop.id, leaf_cat_id)?;
+                }
+            }
+        }
+
+        for shop in &target_shops {
+            let target_id = format!("tgt_{}", Uuid::new_v4().simple());
+            conn.execute(
+                "INSERT OR IGNORE INTO pipeline_shop_targets
+                 (id, product_id, shop_id, shop_name, stage, status, retry_count, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'pending', 0, ?6, ?6)",
+                params![target_id, product_id, shop.id, shop.name, target_stage, now],
+            )?;
+        }
+
+        // 重算商品级状态：collected（stage=publish）补 precheck target 后聚合成 publishing；
+        // 采集/审查中的商品 recompute 直接返回，保持当前状态，待审查通过时激活。
+        recompute_pipeline_product(&conn, product_id)?;
+    }
+
+    Ok(())
 }
 
 // 2. 淘宝登录以保存 Profile
@@ -540,22 +635,41 @@ pub fn confirm_collection_review(
         request.category_ids,
         request.category_path,
     )?;
-    // 人工确认通过：商品进入铺货阶段，激活各目标店 target 从 precheck 开始推进
-    conn.execute(
-        "UPDATE pipeline_products
-         SET reviewed_data = ?1, review_result_json = ?2, stage = 'publish', status = 'publishing',
-             attention = 'none', error_code = NULL, error_reason = NULL,
-             progress_text = '准备铺货', updated_at = ?3
-         WHERE id = ?4",
-        params![reviewed_data, result_json, now, product_id],
+    let target_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pipeline_shop_targets WHERE product_id = ?1",
+        [product_id.as_str()],
+        |row| row.get(0),
     )?;
-    conn.execute(
-        "UPDATE pipeline_shop_targets
-         SET stage = 'precheck', status = 'pending', error_code = NULL,
-             error_summary = NULL, updated_at = ?1
-         WHERE product_id = ?2",
-        params![now, product_id],
-    )?;
+    if target_count > 0 {
+        // 人工确认通过且已选店：商品进入铺货阶段，激活各目标店 target 从 precheck 开始推进
+        conn.execute(
+            "UPDATE pipeline_products
+             SET reviewed_data = ?1, review_result_json = ?2, stage = 'publish', status = 'publishing',
+                 attention = 'none', error_code = NULL, error_reason = NULL,
+                 progress_text = '准备铺货', updated_at = ?3
+             WHERE id = ?4",
+            params![reviewed_data, result_json, now, product_id],
+        )?;
+        conn.execute(
+            "UPDATE pipeline_shop_targets
+             SET stage = 'precheck', status = 'pending', error_code = NULL,
+                 error_summary = NULL, updated_at = ?1
+             WHERE product_id = ?2",
+            params![now, product_id],
+        )?;
+    } else {
+        // 人工确认通过但还没选店（「只采集」模式）：稳定在「待铺货」，stage 保持 publish
+        // 让 recompute_pipeline_product 能正确聚合补店后的状态，等用户补选店后由
+        // add_publish_targets 推进铺货。绝不能写成 publishing，否则视图层会因无 target 误判异常。
+        conn.execute(
+            "UPDATE pipeline_products
+             SET reviewed_data = ?1, review_result_json = ?2, stage = 'publish', status = 'collected',
+                 attention = 'none', error_code = NULL, error_reason = NULL,
+                 progress_text = '待选店铺货', updated_at = ?3
+             WHERE id = ?4",
+            params![reviewed_data, result_json, now, product_id],
+        )?;
+    }
     Ok(())
 }
 
@@ -1495,22 +1609,45 @@ fn persist_collection_review_result(
         .map_err(|error| AppError::Validation(format!("审查详情无法序列化：{error}")))?;
 
     if review.status == "passed" {
-        // 审查通过：商品进入铺货阶段，激活各目标店 target 从类目预检开始推进
-        conn.execute(
-            "UPDATE pipeline_products
-             SET status = 'publishing', stage = 'publish', attention = 'none',
-                 error_code = NULL, error_reason = NULL, progress_text = '准备铺货',
-                 reviewed_data = ?1, review_result_json = ?2, updated_at = ?3
-             WHERE id = ?4",
-            params![reviewed_data, review_result_json, now, task_id],
+        let target_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pipeline_shop_targets WHERE product_id = ?1",
+            [task_id],
+            |row| row.get(0),
         )?;
-        conn.execute(
-            "UPDATE pipeline_shop_targets
-             SET stage = 'precheck', status = 'pending', error_code = NULL,
-                 error_summary = NULL, updated_at = ?1
-             WHERE product_id = ?2",
-            params![now, task_id],
-        )?;
+        if target_count > 0 {
+            // 审查通过且已选店：商品进入铺货阶段，激活各目标店 target 从类目预检开始推进
+            conn.execute(
+                "UPDATE pipeline_products
+                 SET status = 'publishing', stage = 'publish', attention = 'none',
+                     error_code = NULL, error_reason = NULL, progress_text = '准备铺货',
+                     reviewed_data = ?1, review_result_json = ?2, updated_at = ?3
+                 WHERE id = ?4",
+                params![reviewed_data, review_result_json, now, task_id],
+            )?;
+            conn.execute(
+                "UPDATE pipeline_shop_targets
+                 SET stage = 'precheck', status = 'pending', error_code = NULL,
+                     error_summary = NULL, updated_at = ?1
+                 WHERE product_id = ?2",
+                params![now, task_id],
+            )?;
+        } else {
+            // 审查通过但还没选店（「只采集」模式）：稳定在「待铺货」，reviewed_data 已是
+            // 平台级完整数据，等用户补选店后由 add_publish_targets 推进铺货。
+            // stage 保持 publish 让 recompute_pipeline_product 能正确聚合补店后的状态。
+            conn.execute(
+                "UPDATE pipeline_products
+                 SET status = 'collected', stage = 'publish', attention = 'none',
+                     error_code = NULL, error_reason = NULL, progress_text = '待选店铺货',
+                     reviewed_data = ?1, review_result_json = ?2, updated_at = ?3
+                 WHERE id = ?4",
+                params![reviewed_data, review_result_json, now, task_id],
+            )?;
+        }
+        // 兜底：审查通过后统一重算一次商品级状态。若在上面 COUNT 读取与 UPDATE 之间，
+        // 用户并发调用 add_publish_targets 插入了 await_review target，这里的 recompute 会
+        // 把它提升为 precheck 并聚合成 publishing，彻底堵死「补店与审查并发」的孤儿窗口。
+        recompute_pipeline_product(&conn, task_id)?;
     } else {
         // needs_review / blocked：停在待确认，等人工处理
         let error_code = if review.status == "blocked" {
@@ -2346,25 +2483,22 @@ fn resolve_collection_review_category_shop(
     if !normalized_target_shop_ids.is_empty() {
         return Ok(None);
     }
-    let shop_ids = {
-        let mut stmt = conn.prepare(
+    // 未指定目标店（如「只采集」模式下的自动审查）：微信类目树是平台级的，
+    // 任意一个已同步类目权限的店都能作为类目匹配数据源，确定性取第一个即可，
+    // 不再因「多店有缓存」而报错拦截审查。店级类目准入由铺货阶段按目标店兜底校验。
+    let category_shop_id = conn
+        .query_row(
             "SELECT shop_id
              FROM wechat_category_relations
              WHERE status = 1
              GROUP BY shop_id
              ORDER BY shop_id ASC
-             LIMIT 2",
-        )?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-        rows.collect::<Result<Vec<_>, _>>()?
-    };
-    match shop_ids.as_slice() {
-        [] => Ok(None),
-        [shop_id] => Ok(Some(shop_id.clone())),
-        _ => Err(AppError::Validation(
-            "存在多个已同步类目权限的店铺，请先选择目标微信小店".to_string(),
-        )),
-    }
+             LIMIT 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    Ok(category_shop_id)
 }
 
 fn review_issue(kind: &str, severity: &str, message: &str) -> Value {

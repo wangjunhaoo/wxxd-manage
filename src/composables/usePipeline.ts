@@ -177,6 +177,22 @@ export function usePipeline(command: CommandFn) {
     }
   }
 
+  /** 给已采集的商品补选目标店并铺货（「只采集」后再选店，或采集中提前补店）。 */
+  async function addPublishTargets(
+    productIds: string[],
+    targetShopIds: string[],
+  ): Promise<boolean> {
+    try {
+      await command<void>("add_publish_targets", { productIds, targetShopIds });
+      ElMessage.success(`已为 ${productIds.length} 个商品加入铺货队列`);
+      await refreshPipeline();
+      return true;
+    } catch (error) {
+      ElMessage.error(`铺货失败：${error}`);
+      return false;
+    }
+  }
+
   onUnmounted(() => stopPipelinePolling());
 
   return {
@@ -192,5 +208,6 @@ export function usePipeline(command: CommandFn) {
     categoryOptions,
     categorySearching,
     importExcel,
+    addPublishTargets,
   };
 }

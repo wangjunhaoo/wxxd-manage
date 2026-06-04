@@ -1221,6 +1221,7 @@ export type PipelineProductView = {
   status:
     | "pending_collect"
     | "collecting"
+    | "collected"
     | "need_confirm"
     | "publishing"
     | "listed"

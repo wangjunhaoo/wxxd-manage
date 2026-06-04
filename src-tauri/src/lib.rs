@@ -129,7 +129,8 @@ pub fn run() {
             commands::mark_taobao_access_limited,
             commands::test_taobao_collect,
             commands::list_pipeline_products,
-            commands::retry_pipeline_product
+            commands::retry_pipeline_product,
+            commands::add_publish_targets
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

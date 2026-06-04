@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
 import type { WxXdAppContext } from "../../composables/useWxXdApp";
 import type { PipelineProductView } from "../../types/app";
@@ -30,6 +30,7 @@ const {
   categoryOptions,
   categorySearching,
   importExcel,
+  addPublishTargets,
 } = usePipeline(command);
 
 const importDialogVisible = ref(false);
@@ -43,11 +44,21 @@ const STATUS_META: Record<
 > = {
   pending_collect: { label: "待采集", tone: "info" },
   collecting: { label: "采集/审查中", tone: "info" },
+  collected: { label: "待铺货", tone: "warning" },
   need_confirm: { label: "待确认", tone: "warning" },
   publishing: { label: "铺货中", tone: "primary" },
   listed: { label: "已上架", tone: "success" },
   error: { label: "异常", tone: "danger" },
 };
+
+/** 可补选店铺货的状态：待铺货（已采集审查完成）或仍在采集/审查中（提前补店）。 */
+function canAddTargets(status: string) {
+  return (
+    status === "collected" ||
+    status === "pending_collect" ||
+    status === "collecting"
+  );
+}
 
 function statusLabel(s: string) {
   return STATUS_META[s]?.label ?? s;
@@ -60,6 +71,7 @@ const stats = computed(() => {
   const c: Record<string, number> = {
     all: pipelineProducts.value.length,
     collecting: 0,
+    collected: 0,
     need_confirm: 0,
     publishing: 0,
     listed: 0,
@@ -75,6 +87,7 @@ const stats = computed(() => {
 const overviewItems = computed(() => [
   { key: "all", label: "全部", value: stats.value.all },
   { key: "collecting", label: "采集中", value: stats.value.collecting },
+  { key: "collected", label: "待铺货", value: stats.value.collected },
   { key: "need_confirm", label: "待确认", value: stats.value.need_confirm },
   { key: "publishing", label: "铺货中", value: stats.value.publishing },
   { key: "listed", label: "已上架", value: stats.value.listed },
@@ -105,10 +118,7 @@ async function onImport() {
     ElMessage.warning("请先选择 Excel 文件");
     return;
   }
-  if (importTargetShopIds.value.length === 0) {
-    ElMessage.warning("请先选择本批要铺货的目标小店");
-    return;
-  }
+  // 目标店可选：不选店则只采集不铺货，采集完成后可在列表中补选店铺货
   importing.value = true;
   const ok = await importExcel(
     collectionFilePath.value.trim(),
@@ -117,7 +127,60 @@ async function onImport() {
   importing.value = false;
   if (ok) {
     importDialogVisible.value = false;
+    importTargetShopIds.value = [];
     clearCollectionExcelFile();
+  }
+}
+
+// 表格多选：仅「待铺货 / 采集审查中」的商品可勾选，供批量补铺货
+const selectedRows = ref<PipelineProductView[]>([]);
+function onSelectionChange(rows: PipelineProductView[]) {
+  selectedRows.value = rows;
+}
+function isRowSelectable(row: PipelineProductView) {
+  return canAddTargets(row.status);
+}
+
+// 轮询每隔几秒整表替换 pipelineProducts：用最新数据重建选中集，剔除已被推进到
+// 不可补货状态（如审查通过转铺货中/已上架）的陈旧勾选，避免批量铺货误操作过期商品。
+watch(pipelineProducts, (latest) => {
+  if (selectedRows.value.length === 0) return;
+  const selectedIds = new Set(selectedRows.value.map((r) => r.id));
+  selectedRows.value = latest.filter(
+    (p) => selectedIds.has(p.id) && canAddTargets(p.status),
+  );
+});
+
+// 选店铺货对话框：单个（行内按钮）或批量（勾选后顶部按钮）复用同一对话框
+const shopPickerVisible = ref(false);
+const shopPickerProductIds = ref<string[]>([]);
+const shopPickerShopIds = ref<string[]>([]);
+const shopPickerSubmitting = ref(false);
+
+function openShopPickerDrawer(productIds: string[]) {
+  if (productIds.length === 0) {
+    ElMessage.warning("请先选择要铺货的商品");
+    return;
+  }
+  shopPickerProductIds.value = productIds;
+  shopPickerShopIds.value = [];
+  shopPickerVisible.value = true;
+}
+
+async function onShopPickerConfirm() {
+  if (shopPickerShopIds.value.length === 0) {
+    ElMessage.warning("请先选择要铺货到的微信小店");
+    return;
+  }
+  shopPickerSubmitting.value = true;
+  const ok = await addPublishTargets(
+    shopPickerProductIds.value,
+    shopPickerShopIds.value,
+  );
+  shopPickerSubmitting.value = false;
+  if (ok) {
+    shopPickerVisible.value = false;
+    selectedRows.value = [];
   }
 }
 
@@ -180,6 +243,13 @@ onMounted(() => startPipelinePolling());
           <el-button type="primary" :icon="UploadFilled" @click="openImport">
             导入铺货表
           </el-button>
+          <el-button
+            v-if="selectedRows.length > 0"
+            type="success"
+            @click="openShopPickerDrawer(selectedRows.map((r) => r.id))"
+          >
+            批量铺货到…（已选 {{ selectedRows.length }}）
+          </el-button>
           <el-dropdown trigger="click">
             <el-button>淘宝采集</el-button>
             <template #dropdown>
@@ -215,7 +285,17 @@ onMounted(() => startPipelinePolling());
     </div>
 
     <div class="panel">
-      <el-table :data="filteredProducts" class="dense-table" row-key="id">
+      <el-table
+        :data="filteredProducts"
+        class="dense-table"
+        row-key="id"
+        @selection-change="onSelectionChange"
+      >
+        <el-table-column
+          type="selection"
+          width="48"
+          :selectable="isRowSelectable"
+        />
         <el-table-column type="expand">
           <template #default="{ row }">
             <div class="target-rows">
@@ -275,7 +355,7 @@ onMounted(() => startPipelinePolling());
           </template>
         </el-table-column>
 
-        <el-table-column label="操作" width="150" fixed="right">
+        <el-table-column label="操作" width="220" fixed="right">
           <template #default="{ row }">
             <el-button
               v-if="row.can_confirm"
@@ -288,7 +368,19 @@ onMounted(() => startPipelinePolling());
             <el-button v-if="row.can_retry" size="small" @click="retryProduct(row.id)">
               重试
             </el-button>
-            <span v-if="!row.can_confirm && !row.can_retry" class="muted">—</span>
+            <el-button
+              v-if="canAddTargets(row.status)"
+              size="small"
+              type="success"
+              @click="openShopPickerDrawer([row.id])"
+            >
+              选店铺货
+            </el-button>
+            <span
+              v-if="!row.can_confirm && !row.can_retry && !canAddTargets(row.status)"
+              class="muted"
+              >—</span
+            >
           </template>
         </el-table-column>
 
@@ -323,12 +415,12 @@ onMounted(() => startPipelinePolling());
           </p>
         </div>
         <div class="import-step">
-          <span class="step-title">2. 选择本批目标小店</span>
+          <span class="step-title">2. 选择本批目标小店（可选）</span>
           <el-select
             v-model="importTargetShopIds"
             multiple
             collapse-tags
-            placeholder="选择要铺货到的微信小店"
+            placeholder="不选则仅采集，采集完成后可在列表中补选店铺货"
             style="width: 100%"
           >
             <el-option
@@ -338,12 +430,55 @@ onMounted(() => startPipelinePolling());
               :value="shop.id"
             />
           </el-select>
+          <p class="muted small">
+            不选店则仅采集不铺货；采集审查完成后状态为「待铺货」，可在列表中补选店铺货。
+          </p>
         </div>
       </div>
       <template #footer>
         <el-button @click="importDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="importing" @click="onImport">
           开始导入并采集
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="shopPickerVisible"
+      title="选店铺货"
+      width="520px"
+      append-to-body
+    >
+      <div class="import-step">
+        <span class="step-title">
+          为 {{ shopPickerProductIds.length }} 个商品选择目标小店
+        </span>
+        <el-select
+          v-model="shopPickerShopIds"
+          multiple
+          collapse-tags
+          placeholder="选择要铺货到的微信小店"
+          style="width: 100%"
+        >
+          <el-option
+            v-for="shop in shops"
+            :key="shop.id"
+            :label="`${shop.name} (${shop.group_name})`"
+            :value="shop.id"
+          />
+        </el-select>
+        <p class="muted small">
+          已采集完成的商品选店后直接进入铺货；仍在采集/审查中的商品会在审查通过后自动铺货。
+        </p>
+      </div>
+      <template #footer>
+        <el-button @click="shopPickerVisible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="shopPickerSubmitting"
+          @click="onShopPickerConfirm"
+        >
+          确认铺货
         </el-button>
       </template>
     </el-dialog>

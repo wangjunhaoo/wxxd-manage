@@ -14,6 +14,8 @@ use super::*;
 pub mod product_status {
     pub const PENDING_COLLECT: &str = "pending_collect";
     pub const COLLECTING: &str = "collecting";
+    /// 已采集审查完成、但还没选店：待选店铺货（解耦采集与铺货）。
+    pub const COLLECTED: &str = "collected";
     pub const NEED_CONFIRM: &str = "need_confirm";
     pub const PUBLISHING: &str = "publishing";
     pub const LISTED: &str = "listed";
@@ -258,6 +260,34 @@ pub(in crate::commands) fn recompute_pipeline_product(
         return Ok(());
     }
     let targets = load_targets(conn, product_id)?;
+    if targets.is_empty() {
+        // 审查已通过但还没选店：稳定在「待铺货」，等用户补店后再进铺货。
+        // （能走到 stage=publish 且无 target，只可能是「只采集」模式审查通过的商品）
+        conn.execute(
+            "UPDATE pipeline_products
+             SET status = ?1, attention = 'none', error_code = NULL, error_reason = NULL,
+                 progress_text = '待选店铺货', stage = ?2, updated_at = ?3
+             WHERE id = ?4",
+            params![
+                product_status::COLLECTED,
+                product_stage::PUBLISH,
+                now_shanghai(),
+                product_id
+            ],
+        )?;
+        return Ok(());
+    }
+    // 能走到这说明商品已进入铺货阶段（stage=publish/done，即采集审查已通过）。
+    // 把任何仍停在 await_review 的 target 统一提升为 precheck：这是 await_review→铺货的
+    // 唯一可靠激活点，消除「采集中提前补店 + 审查并发完成（按旧快照走了无 target 分支）」
+    // 导致该 target 永远停在 await_review、无任何 loader 捞取的竞态。
+    conn.execute(
+        "UPDATE pipeline_shop_targets
+         SET stage = 'precheck', status = 'pending', error_code = NULL,
+             error_summary = NULL, updated_at = ?1
+         WHERE product_id = ?2 AND stage = 'await_review'",
+        params![now_shanghai(), product_id],
+    )?;
     let agg = aggregate_targets(&targets);
     let (status, attention, error_code, error_reason, progress_text) = derive_publish_state(&agg);
     // 全部目标店上架后，把商品级 stage 推进到 done
@@ -547,8 +577,21 @@ pub fn list_pipeline_products(app: AppHandle) -> AppResult<Vec<PipelineProductVi
         // 铺货阶段(publish/done)实时聚合商品级状态；采集/审查阶段用主表已存状态
         let (status, attention, error_code, error_reason, progress_text) =
             if product.stage == product_stage::PUBLISH || product.stage == product_stage::DONE {
-                let (s, a, ec, er, pt) = derive_publish_state(&agg);
-                (s.to_string(), a.to_string(), ec, er, pt)
+                if targets.is_empty() {
+                    // 「只采集」审查通过但还没选店：稳定显示「待铺货」，与
+                    // recompute_pipeline_product 的空 target 分支一致，
+                    // 不能让 derive_publish_state 的 total==0 把它误算成「异常」。
+                    (
+                        product_status::COLLECTED.to_string(),
+                        "none".to_string(),
+                        None,
+                        None,
+                        Some("待选店铺货".to_string()),
+                    )
+                } else {
+                    let (s, a, ec, er, pt) = derive_publish_state(&agg);
+                    (s.to_string(), a.to_string(), ec, er, pt)
+                }
             } else {
                 (
                     product.status.clone(),
