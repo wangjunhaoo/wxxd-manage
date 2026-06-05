@@ -1,17 +1,7 @@
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "../runtime/reactive";
 import { invoke } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { ElMessage, ElMessageBox } from "element-plus";
-import {
-  Bell,
-  CircleCheck,
-  CircleClose,
-  Delete,
-  Plus,
-  Refresh,
-  Search,
-  UploadFilled,
-} from "@element-plus/icons-vue";
+import { ElMessage, ElMessageBox } from "../runtime/feedback";
 import type {
   DashboardSummary,
   ShopGroup,
@@ -3396,7 +3386,6 @@ export function useWxXdApp() {
     automationSettings,
     backupRunning,
     workspaceResetRunning,
-    Bell,
     buildPreviewInventoryRisks,
     buildPreviewJob,
     buildPreviewOrderProfitResult,
@@ -3411,10 +3400,7 @@ export function useWxXdApp() {
     checkShopQuota,
     checkTaobaoLoginState,
     closeCurrentPublishJob,
-    CircleCheck,
-    CircleClose,
     clearCollectionHistory,
-    Delete,
     clearTaobaoAccessLimitState,
     clearEvidenceTargetFilter,
     clearSupplierFollowupTargetFilter,
@@ -3556,7 +3542,6 @@ export function useWxXdApp() {
     orderProfitTotal,
     orderProfitTotals,
     paginatedCollectionTasks,
-    Plus,
     previewAftersaleEvidence,
     previewAftersaleRejectReasons,
     previewAftersales,
@@ -3617,7 +3602,6 @@ export function useWxXdApp() {
     recordOrderShipment,
     recordPurchaseTaskShipment,
     recordSupplierAftersaleFollowup,
-    Refresh,
     resetCollectionPublishWorkspace,
     refreshAftersaleEvidence,
     refreshAftersaleRejectReasons,
@@ -3679,7 +3663,6 @@ export function useWxXdApp() {
     saveAutomationSettings,
     savePublishPricingStrategyFromForm,
     searchCollectionReviewCategories,
-    Search,
     selectAftersaleAction,
     selectAftersaleResponsibility,
     selectedAgentSkill,
@@ -3758,7 +3741,6 @@ export function useWxXdApp() {
     triggerTaobaoLogin,
     unreadNotificationCount,
     updateAftersaleEvidenceStatus,
-    UploadFilled,
     uploadCollectionImage,
     upsertPreviewShipment,
     verifyShop,

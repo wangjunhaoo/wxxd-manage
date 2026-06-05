@@ -108,7 +108,7 @@
 ## 系统设计决策
 
 - 系统先按 Tauri v2 桌面端优先设计，面向两人内部使用；默认不建设独立 Web 服务端。
-- 默认技术栈为 `Tauri v2 + Vue 3 + TypeScript + Rust + SQLite`，Rust 侧承载微信 API client、本地任务、加密、文件和数据库能力。
+- 默认技术栈为 `Tauri v2 + React 18 + TypeScript + Vite + Rust + SQLite`，Rust 侧承载微信 API client、本地任务、加密、文件和数据库能力；前端用自研响应式 shim（`src/runtime/reactive.ts`）承接原 composable 状态，UI 为「Soft」设计方向。
 - 系统仍按模块化单体设计，模块边界清晰但不拆微服务；跨模块异步工作通过本地任务表和 Rust 后台 worker 解耦。
 - 默认不引入 `PostgreSQL`、`Redis`、`Celery`、`FastAPI`；只有明确需要多人在线协作或服务器无人值守任务时才升级为 Web/服务端架构。
 - 核心商品模型固定为“供应商商品 -> 标准商品 -> 店铺商品”，不要把供应商商品或微信商品直接当作唯一业务商品。
