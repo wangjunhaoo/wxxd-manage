@@ -1,8 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox, ElTable } from "element-plus";
 import type { WxXdAppContext } from "../../composables/useWxXdApp";
-import type { PipelineProductView } from "../../types/app";
+import type {
+  PipelineProductDetailSku,
+  PipelineProductDetailView,
+  PipelineProductView,
+} from "../../types/app";
 import { usePipeline } from "../../composables/usePipeline";
 
 const props = defineProps<{ ctx: WxXdAppContext }>();
@@ -32,14 +36,50 @@ const {
   pipelineLoading,
   refreshPipeline,
   startPipelinePolling,
-  retryProduct,
+  recollectProduct,
+  republishProduct,
+  recollectProducts,
+  republishProducts,
   confirmWithCategory,
   searchCategories,
   categoryOptions,
   categorySearching,
   importExcel,
   addPublishTargets,
+  loadProductDetail,
 } = usePipeline(command);
+
+// 采集明细抽屉：点商品标题按需拉取 collected_data 展示（主图/SKU/详情图）
+const detailDrawerVisible = ref(false);
+const detailProduct = ref<PipelineProductDetailView | null>(null);
+const detailLoading = ref(false);
+const detailImagesExpanded = ref(false);
+
+async function openDetailDrawer(row: PipelineProductView) {
+  detailDrawerVisible.value = true;
+  detailProduct.value = null;
+  detailImagesExpanded.value = false;
+  detailLoading.value = true;
+  detailProduct.value = await loadProductDetail(row.id);
+  detailLoading.value = false;
+}
+
+/** 把 SKU 规格对象拼成可读文本（尺码: xxx / 身高: yyy），无规格回退 external_sku_id。 */
+function skuSpecText(sku: PipelineProductDetailSku): string {
+  if (sku.specs && typeof sku.specs === "object") {
+    const parts = Object.entries(sku.specs).map(
+      ([key, value]) => `${key}: ${String(value)}`,
+    );
+    if (parts.length > 0) return parts.join(" / ");
+  }
+  return sku.external_sku_id || "—";
+}
+
+/** 淘宝商品参数（taobao_item_params）键值对，供抽屉展示。 */
+const itemParamEntries = computed<[string, unknown][]>(() => {
+  const params = detailProduct.value?.item_params;
+  return params && typeof params === "object" ? Object.entries(params) : [];
+});
 
 const importDialogVisible = ref(false);
 const importTargetShopIds = ref<string[]>([]);
@@ -66,6 +106,35 @@ function canAddTargets(status: string) {
     status === "pending_collect" ||
     status === "collecting"
   );
+}
+
+/** 可重新采集：已采集过且非进行中/非全上架的稳定态（待铺货/待确认/失败）。 */
+function canRecollect(row: PipelineProductView) {
+  return (
+    row.status === "collected" ||
+    row.status === "need_confirm" ||
+    row.status === "error"
+  );
+}
+
+/** 可重新铺货：有店铺货失败（blocked）且非「待确认」。need_confirm 的失败店要走「确认」补
+ *  类目/属性，直接重推类目没解决会再次失败、形成无效循环，故不在此开放（只对真失败开放）。 */
+function canRepublish(row: PipelineProductView) {
+  return row.failed_shops > 0 && !row.can_confirm;
+}
+
+/** 单个重新采集（破坏性，二次确认）。 */
+async function onRecollect(productId: string) {
+  try {
+    await ElMessageBox.confirm(
+      "重新采集会清空已采集/审查结果并重走流水线，已上架的店保持不动。确认重新采集？",
+      "重新采集",
+      { type: "warning", confirmButtonText: "重新采集", cancelButtonText: "取消" },
+    );
+  } catch {
+    return; // 用户取消
+  }
+  await recollectProduct(productId);
 }
 
 function statusLabel(s: string) {
@@ -140,24 +209,50 @@ async function onImport() {
   }
 }
 
-// 表格多选：仅「待铺货 / 采集审查中」的商品可勾选，供批量补铺货
+// 表格多选：可铺货/可重采/可重铺的商品都能勾选，供批量操作。
+// el-table 配 row-key + reserve-selection，3 秒轮询整表替换数据时按 id 保留勾选，
+// 不再因对象引用失效而几秒后自动取消全选；选中集由 selection-change 单一维护。
+const tableRef = ref<InstanceType<typeof ElTable>>();
 const selectedRows = ref<PipelineProductView[]>([]);
 function onSelectionChange(rows: PipelineProductView[]) {
   selectedRows.value = rows;
 }
 function isRowSelectable(row: PipelineProductView) {
-  return canAddTargets(row.status);
+  return canAddTargets(row.status) || canRecollect(row) || canRepublish(row);
 }
 
-// 轮询每隔几秒整表替换 pipelineProducts：用最新数据重建选中集，剔除已被推进到
-// 不可补货状态（如审查通过转铺货中/已上架）的陈旧勾选，避免批量铺货误操作过期商品。
-watch(pipelineProducts, (latest) => {
-  if (selectedRows.value.length === 0) return;
-  const selectedIds = new Set(selectedRows.value.map((r) => r.id));
-  selectedRows.value = latest.filter(
-    (p) => selectedIds.has(p.id) && canAddTargets(p.status),
-  );
-});
+// 勾选集按可执行动作分组，顶部据此显示对应批量按钮（同一批勾选可含不同状态商品）
+const selectedAddable = computed(() =>
+  selectedRows.value.filter((r) => canAddTargets(r.status)),
+);
+const selectedRecollectable = computed(() =>
+  selectedRows.value.filter((r) => canRecollect(r)),
+);
+const selectedRepublishable = computed(() =>
+  selectedRows.value.filter((r) => canRepublish(r)),
+);
+
+/** 批量重新铺货：重推所有勾选中铺货失败的店。 */
+async function onBatchRepublish() {
+  await republishProducts(selectedRepublishable.value.map((r) => r.id));
+  tableRef.value?.clearSelection();
+}
+
+/** 批量重新采集（破坏性，二次确认）。 */
+async function onBatchRecollect() {
+  const ids = selectedRecollectable.value.map((r) => r.id);
+  try {
+    await ElMessageBox.confirm(
+      `确认对 ${ids.length} 个商品重新采集？将清空已采集/审查结果重走流水线，已上架的店保持不动。`,
+      "批量重新采集",
+      { type: "warning", confirmButtonText: "重新采集", cancelButtonText: "取消" },
+    );
+  } catch {
+    return;
+  }
+  await recollectProducts(ids);
+  tableRef.value?.clearSelection();
+}
 
 // 选店铺货对话框：单个（行内按钮）或批量（勾选后顶部按钮）复用同一对话框
 const shopPickerVisible = ref(false);
@@ -188,47 +283,92 @@ async function onShopPickerConfirm() {
   shopPickerSubmitting.value = false;
   if (ok) {
     shopPickerVisible.value = false;
-    selectedRows.value = [];
+    tableRef.value?.clearSelection();
   }
 }
 
-// 确认抽屉：need_confirm 商品在此查看详情、可改标题/选类目后确认进入铺货
+// 确认抽屉：need_confirm 商品在此查看详情、可改标题/选类目后确认进入铺货；
+// 没店的「只采集」商品在此补选店，选店→搜该店类目→确认即建店铺货。
 const confirmDrawerVisible = ref(false);
 const confirmProduct = ref<PipelineProductView | null>(null);
 const confirmTitle = ref("");
 const confirmCategoryKeyword = ref("");
 const confirmCategoryKey = ref("");
+const confirmPickedShopId = ref<string>("");
 const confirming = ref(false);
 
-const confirmShopId = computed(() => confirmProduct.value?.shops[0]?.shop_id ?? "");
+// 没有目标店的商品（只采集没选店）需在确认抽屉里补选店后才能确认
+const needShopPicker = computed(
+  () => (confirmProduct.value?.shops.length ?? 0) === 0,
+);
+// 类目搜索/校验所用的店：已有店用第一个 target 店，没店则用抽屉里补选的店。
+// 补选店刻意单选——微信类目按店确定，多选会出现「类目只在首店有权限、其余店校验不过」必然报错。
+const confirmShopId = computed(
+  () => confirmProduct.value?.shops[0]?.shop_id ?? confirmPickedShopId.value,
+);
+
+/** 淘宝类目路径（形如「童装/婴儿装/亲子装>T恤」）取最末一级作微信类目搜索词。 */
+function lastCategorySegment(path: string): string {
+  const parts = path
+    .split(/[>/]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return parts[parts.length - 1] ?? "";
+}
 
 function openConfirmDrawer(product: PipelineProductView) {
   confirmProduct.value = product;
   confirmTitle.value = product.title;
-  confirmCategoryKeyword.value = "";
+  // 预填类目候选：用淘宝原始类目末级作搜索词，少打字
+  confirmCategoryKeyword.value = lastCategorySegment(product.category_path);
   confirmCategoryKey.value = "";
+  confirmPickedShopId.value = "";
   categoryOptions.value = [];
   confirmDrawerVisible.value = true;
+  // 已有目标店的商品立即按预填词搜一次类目候选；没店的等补选店后由 watch 触发
+  if (confirmShopId.value && confirmCategoryKeyword.value) {
+    void doSearchCategories();
+  }
 }
 
 async function doSearchCategories() {
   if (!confirmShopId.value) {
-    ElMessage.warning("该商品没有目标店铺");
+    ElMessage.warning(
+      needShopPicker.value ? "请先在上方选择目标小店" : "该商品没有目标店铺",
+    );
     return;
   }
   await searchCategories(confirmShopId.value, confirmCategoryKeyword.value);
 }
 
+// 没店商品在抽屉里补选店后，自动按预填词搜该店类目候选（换店亦重搜）
+watch(confirmShopId, (shopId) => {
+  if (!confirmDrawerVisible.value || !needShopPicker.value || !shopId) return;
+  confirmCategoryKey.value = "";
+  if (confirmCategoryKeyword.value) void doSearchCategories();
+});
+
 async function onConfirm() {
   if (!confirmProduct.value) return;
+  // 没店的商品确认时必须补选店（类目须按真实目标店确定）
+  if (needShopPicker.value && !confirmPickedShopId.value) {
+    ElMessage.warning("请先选择要铺货到的微信小店");
+    return;
+  }
   const selected = categoryOptions.value.find(
     (o) => o.category_ids.join("/") === confirmCategoryKey.value,
   );
+  // 没店商品的 reviewed_data 还没类目，必须在此选定叶子类目，否则后端校验会拦截
+  if (needShopPicker.value && !selected) {
+    ElMessage.warning("请搜索并选择一个微信叶子类目");
+    return;
+  }
   confirming.value = true;
   const ok = await confirmWithCategory(confirmProduct.value.id, {
     title: confirmTitle.value.trim() || undefined,
     categoryIds: selected?.category_ids,
     categoryPath: selected?.category_path,
+    targetShopIds: needShopPicker.value ? [confirmPickedShopId.value] : undefined,
   });
   confirming.value = false;
   if (ok) confirmDrawerVisible.value = false;
@@ -277,11 +417,24 @@ onMounted(() => startPipelinePolling());
             导入铺货表
           </el-button>
           <el-button
-            v-if="selectedRows.length > 0"
+            v-if="selectedAddable.length > 0"
             type="success"
-            @click="openShopPickerDrawer(selectedRows.map((r) => r.id))"
+            @click="openShopPickerDrawer(selectedAddable.map((r) => r.id))"
           >
-            批量铺货到…（已选 {{ selectedRows.length }}）
+            批量铺货到…（{{ selectedAddable.length }}）
+          </el-button>
+          <el-button
+            v-if="selectedRepublishable.length > 0"
+            type="warning"
+            @click="onBatchRepublish"
+          >
+            批量重新铺货（{{ selectedRepublishable.length }}）
+          </el-button>
+          <el-button
+            v-if="selectedRecollectable.length > 0"
+            @click="onBatchRecollect"
+          >
+            批量重新采集（{{ selectedRecollectable.length }}）
           </el-button>
           <el-dropdown trigger="click">
             <el-button>淘宝采集</el-button>
@@ -322,6 +475,7 @@ onMounted(() => startPipelinePolling());
 
     <div class="panel">
       <el-table
+        ref="tableRef"
         :data="filteredProducts"
         class="dense-table"
         row-key="id"
@@ -331,6 +485,7 @@ onMounted(() => startPipelinePolling());
           type="selection"
           width="48"
           :selectable="isRowSelectable"
+          reserve-selection
         />
         <el-table-column type="expand">
           <template #default="{ row }">
@@ -349,7 +504,9 @@ onMounted(() => startPipelinePolling());
         <el-table-column label="商品" min-width="300" show-overflow-tooltip>
           <template #default="{ row }">
             <div class="product-cell">
-              <strong>{{ row.title }}</strong>
+              <a class="product-title-link" @click="openDetailDrawer(row)">
+                {{ row.title }}
+              </a>
               <a :href="row.source_url" target="_blank" class="muted product-link">
                 {{ row.source_url }}
               </a>
@@ -391,7 +548,7 @@ onMounted(() => startPipelinePolling());
           </template>
         </el-table-column>
 
-        <el-table-column label="操作" width="220" fixed="right">
+        <el-table-column label="操作" width="340" fixed="right">
           <template #default="{ row }">
             <el-button
               v-if="row.can_confirm"
@@ -401,8 +558,13 @@ onMounted(() => startPipelinePolling());
             >
               确认
             </el-button>
-            <el-button v-if="row.can_retry" size="small" @click="retryProduct(row.id)">
-              重试
+            <el-button
+              v-if="canRepublish(row)"
+              size="small"
+              type="warning"
+              @click="republishProduct(row.id)"
+            >
+              重新铺货
             </el-button>
             <el-button
               v-if="canAddTargets(row.status)"
@@ -412,8 +574,20 @@ onMounted(() => startPipelinePolling());
             >
               选店铺货
             </el-button>
+            <el-button
+              v-if="canRecollect(row)"
+              size="small"
+              @click="onRecollect(row.id)"
+            >
+              重新采集
+            </el-button>
             <span
-              v-if="!row.can_confirm && !row.can_retry && !canAddTargets(row.status)"
+              v-if="
+                !row.can_confirm &&
+                !canRepublish(row) &&
+                !canAddTargets(row.status) &&
+                !canRecollect(row)
+              "
               class="muted"
               >—</span
             >
@@ -614,8 +788,29 @@ onMounted(() => startPipelinePolling());
           <el-input v-model="confirmTitle" placeholder="商品标题" />
         </div>
 
+        <div v-if="needShopPicker" class="confirm-section">
+          <span class="step-title">目标小店（必选 · 单店）</span>
+          <el-select
+            v-model="confirmPickedShopId"
+            placeholder="该商品当时只采集没选店，请选择要铺货到的微信小店"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="shop in shops"
+              :key="shop.id"
+              :label="`${shop.name} (${shop.group_name})`"
+              :value="shop.id"
+            />
+          </el-select>
+          <p class="muted small">
+            类目按所选店确定，故此处单选；确认后直接建店铺货。要一次铺到多个店，请用列表的「选店铺货」。
+          </p>
+        </div>
+
         <div class="confirm-section">
-          <span class="step-title">微信类目（不选则沿用 AI 已选）</span>
+          <span class="step-title">
+            微信类目{{ needShopPicker ? "（必选）" : "（不选则沿用 AI 已选）" }}
+          </span>
           <div class="category-search">
             <el-input
               v-model="confirmCategoryKeyword"
@@ -655,6 +850,116 @@ onMounted(() => startPipelinePolling());
           确认并铺货
         </el-button>
       </template>
+    </el-drawer>
+
+    <el-drawer
+      v-model="detailDrawerVisible"
+      title="采集明细"
+      size="600px"
+      append-to-body
+    >
+      <div v-loading="detailLoading" class="detail-drawer">
+        <template v-if="detailProduct">
+          <div v-if="detailProduct.images.length" class="detail-images">
+            <el-image
+              v-for="(img, i) in detailProduct.images"
+              :key="i"
+              :src="img"
+              :preview-src-list="detailProduct.images"
+              :initial-index="i"
+              fit="cover"
+              class="detail-thumb"
+            />
+          </div>
+
+          <h3 class="detail-title">{{ detailProduct.title }}</h3>
+          <a
+            :href="detailProduct.source_url"
+            target="_blank"
+            class="muted product-link"
+          >
+            {{ detailProduct.source_url }}
+          </a>
+
+          <el-descriptions :column="2" size="small" border class="detail-desc">
+            <el-descriptions-item label="供应商">
+              {{ detailProduct.supplier_name || "—" }}
+            </el-descriptions-item>
+            <el-descriptions-item label="品牌">
+              {{ detailProduct.brand_hint || "—" }}
+            </el-descriptions-item>
+            <el-descriptions-item label="重量">
+              {{ detailProduct.weight_gram ? `${detailProduct.weight_gram}g` : "—" }}
+            </el-descriptions-item>
+            <el-descriptions-item label="SKU 数">
+              {{ detailProduct.skus.length }}
+            </el-descriptions-item>
+            <el-descriptions-item label="类目" :span="2">
+              {{ detailProduct.category_path || detailProduct.category_hint || "—" }}
+            </el-descriptions-item>
+          </el-descriptions>
+
+          <template v-if="itemParamEntries.length">
+            <div class="detail-section-title">
+              商品参数（{{ itemParamEntries.length }}）
+            </div>
+            <el-descriptions :column="2" size="small" border class="detail-desc">
+              <el-descriptions-item
+                v-for="[key, value] in itemParamEntries"
+                :key="key"
+                :label="key"
+              >
+                {{ String(value) }}
+              </el-descriptions-item>
+            </el-descriptions>
+          </template>
+
+          <div class="detail-section-title">SKU（{{ detailProduct.skus.length }}）</div>
+          <el-table
+            :data="detailProduct.skus"
+            size="small"
+            border
+            max-height="320"
+            class="detail-sku-table"
+          >
+            <el-table-column label="规格" min-width="200">
+              <template #default="{ row }">{{ skuSpecText(row) }}</template>
+            </el-table-column>
+            <el-table-column label="成本价" width="90" align="right">
+              <template #default="{ row }">¥{{ row.cost_price }}</template>
+            </el-table-column>
+            <el-table-column label="库存" width="70" align="right" prop="stock" />
+          </el-table>
+
+          <div
+            v-if="detailProduct.detail_images.length"
+            class="detail-section-title"
+          >
+            <el-button
+              text
+              type="primary"
+              @click="detailImagesExpanded = !detailImagesExpanded"
+            >
+              {{ detailImagesExpanded ? "收起" : "查看" }}详情图（{{
+                detailProduct.detail_images.length
+              }}）
+            </el-button>
+          </div>
+          <div v-if="detailImagesExpanded" class="detail-long-images">
+            <el-image
+              v-for="(img, i) in detailProduct.detail_images"
+              :key="i"
+              :src="img"
+              :preview-src-list="detailProduct.detail_images"
+              :initial-index="i"
+              fit="contain"
+              loading="lazy"
+              class="detail-long-img"
+            />
+          </div>
+        </template>
+        <el-empty v-else-if="!detailLoading" description="暂无采集明细" />
+      </div>
     </el-drawer>
   </section>
 </template>
@@ -700,6 +1005,55 @@ onMounted(() => startPipelinePolling());
 .product-link {
   font-size: 12px;
   text-decoration: none;
+}
+.product-title-link {
+  font-weight: 600;
+  color: #2563eb;
+  cursor: pointer;
+  text-decoration: none;
+}
+.product-title-link:hover {
+  text-decoration: underline;
+}
+.detail-drawer {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 200px;
+}
+.detail-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.detail-thumb {
+  width: 96px;
+  height: 96px;
+  border-radius: 6px;
+  border: 1px solid #ebe8e0;
+}
+.detail-title {
+  margin: 4px 0 0;
+  font-size: 15px;
+  line-height: 1.4;
+}
+.detail-desc {
+  margin-top: 4px;
+}
+.detail-section-title {
+  margin-top: 4px;
+  font-weight: 600;
+  font-size: 13px;
+  color: #6c685e;
+}
+.detail-long-images {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.detail-long-img {
+  width: 100%;
+  border-radius: 4px;
 }
 .target-rows {
   display: flex;

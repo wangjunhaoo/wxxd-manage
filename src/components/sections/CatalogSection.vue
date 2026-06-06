@@ -28,6 +28,7 @@ const {
   refreshCategoryCatalog,
   selectedCategoryShopId,
   shops,
+  prewarmSelectedShopCategoryDetails,
   syncSelectedCategoryRules,
   syncSelectedShopCategoryCatalog,
 } = props.ctx;
@@ -165,6 +166,7 @@ function relationStatusLabel(row: CategoryRelationView) {
             <div class="button-group">
               <el-button :icon="Refresh" @click="refreshCategoryCatalog">刷新</el-button>
               <el-button type="primary" :icon="Refresh" @click="syncSelectedShopCategoryCatalog">同步店铺类目</el-button>
+              <el-button :icon="Refresh" @click="prewarmSelectedShopCategoryDetails">预热类目详情</el-button>
             </div>
           </div>
           <div class="form-grid compact-form">

@@ -934,3 +934,146 @@ pub async fn sync_category_rules(
     )?;
     Ok(result)
 }
+
+/// 批量预热某店全部生效准入类目的「叶子属性详情」(四层类目缓存第④层 wechat_category_details)。
+///
+/// 走量场景根治：开工前一次性把该店准入类目的 getdetail 详情拉满缓存，之后铺货 attr_fill 阶段
+/// 离线即可命中并补齐属性，不再逐个商品在线拉详情、频繁卡在「缺少微信类目详情缓存」。
+/// 增量幂等：已缓存详情的 cat_id 自动跳过；单个 cat_id 拉取失败只记录、不中断整批，可重跑补齐。
+#[tauri::command]
+pub async fn prewarm_shop_category_details(
+    app: AppHandle,
+    shop_id: String,
+) -> AppResult<CategoryDetailPrewarmResult> {
+    let client = WechatShopClient::default();
+    let access_token = ensure_access_token(&app, &shop_id, &client).await?;
+    let task_id = format!("category-detail-prewarm-{}", Uuid::new_v4());
+    let started_at = now_shanghai();
+
+    // 待预热集合 = 该店全部生效准入类目中、尚未缓存详情的 cat_id（LEFT JOIN 取差集，天然增量幂等）
+    let (total, pending) = {
+        let conn = open_connection(&app)?;
+        conn.execute(
+            "INSERT INTO task_runs (id, task_type, status, progress, started_at, created_at)
+             VALUES (?1, 'catalog.prewarm_category_details', 'running', 0, ?2, ?2)",
+            params![task_id, started_at],
+        )?;
+        let total: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM wechat_category_relations WHERE shop_id = ?1 AND status = 1",
+            [&shop_id],
+            |row| row.get(0),
+        )?;
+        let pending: Vec<i64> = {
+            let mut stmt = conn.prepare(
+                "SELECT rel.cat_id
+                 FROM wechat_category_relations rel
+                 LEFT JOIN wechat_category_details det
+                   ON det.shop_id = rel.shop_id AND det.cat_id = rel.cat_id
+                 WHERE rel.shop_id = ?1 AND rel.status = 1 AND det.cat_id IS NULL
+                 ORDER BY rel.cat_id ASC",
+            )?;
+            let pending = stmt
+                .query_map([&shop_id], |row| row.get::<_, i64>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            pending
+        };
+        insert_task_log(
+            &conn,
+            &task_id,
+            None,
+            "info",
+            &format!(
+                "开始预热类目详情：准入类目 {} 个，待拉取 {} 个（其余已缓存）",
+                total,
+                pending.len()
+            ),
+            Some(&serde_json::json!({ "shop_id": shop_id })),
+        )?;
+        (total, pending)
+    };
+
+    let mut result = CategoryDetailPrewarmResult {
+        task_id: task_id.clone(),
+        shop_id: shop_id.clone(),
+        total,
+        synced: 0,
+        skipped: total - pending.len() as i64,
+        failed_count: 0,
+        failed_cats: Vec::new(),
+    };
+
+    for cat_id in pending {
+        let detail_call = match client.get_category_detail(&access_token, cat_id).await {
+            Ok(call) => call,
+            Err(error) => {
+                result.failed_count += 1;
+                result.failed_cats.push(cat_id);
+                let conn = open_connection(&app)?;
+                insert_task_log(
+                    &conn,
+                    &task_id,
+                    None,
+                    "error",
+                    &format!("类目 {cat_id} 详情请求失败：{error}"),
+                    Some(&serde_json::json!({ "cat_id": cat_id })),
+                )?;
+                continue;
+            }
+        };
+        match &detail_call.result {
+            WechatCallResult::Success(raw) => {
+                let counts = category_detail_counts(&raw.raw_payload);
+                let conn = open_connection(&app)?;
+                upsert_category_detail(&conn, &shop_id, cat_id, &raw.raw_payload, &counts)?;
+                insert_api_call_log(
+                    &conn,
+                    Some(&shop_id),
+                    detail_call.meta.endpoint,
+                    detail_call.meta.method,
+                    "success",
+                    None,
+                    None,
+                    Some(&format!(
+                        "prewarm category detail cat_id={cat_id}, product_attrs={}, sale_attrs={}",
+                        counts.product_attr_count, counts.sale_attr_count
+                    )),
+                )?;
+                result.synced += 1;
+            }
+            WechatCallResult::ApiError(error) => {
+                result.failed_count += 1;
+                result.failed_cats.push(cat_id);
+                insert_api_error_and_task_log(&app, &task_id, &shop_id, &detail_call.meta, error)?;
+            }
+        }
+        // 轻微节流，避免密集 getdetail 触发微信接口限频（走量场景多店连续预热尤其需要）
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    }
+
+    let final_status = if result.failed_count == 0 {
+        "success"
+    } else if result.synced == 0 {
+        "failed"
+    } else {
+        "partial_success"
+    };
+    {
+        let conn = open_connection(&app)?;
+        insert_task_log(
+            &conn,
+            &task_id,
+            None,
+            "info",
+            &format!(
+                "类目详情预热结束：成功 {}，已缓存跳过 {}，失败 {}",
+                result.synced, result.skipped, result.failed_count
+            ),
+            None,
+        )?;
+        conn.execute(
+            "UPDATE task_runs SET status = ?1, progress = 100, finished_at = ?2 WHERE id = ?3",
+            params![final_status, now_shanghai(), task_id],
+        )?;
+    }
+    Ok(result)
+}
