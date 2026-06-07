@@ -147,6 +147,16 @@ export type CategoryRuleSyncResult = {
   failed_steps: string[];
 };
 
+export type CategoryDetailPrewarmResult = {
+  task_id: string;
+  shop_id: string;
+  total: number;
+  synced: number;
+  skipped: number;
+  failed_count: number;
+  failed_cats: number[];
+};
+
 export type PublishJobCreated = {
   task_id: string;
   status: string;
@@ -1239,6 +1249,30 @@ export type PipelineProductView = {
   confirm_kind: string | null;
   updated_at: string;
   shops: PipelineShopTargetView[];
+};
+
+// 采集明细（后端 get_pipeline_product_detail，点商品标题按需拉取，不在列表里）
+export type PipelineProductDetailSku = {
+  external_sku_id: string;
+  specs: Record<string, unknown> | null;
+  cost_price: number;
+  stock: number;
+};
+
+export type PipelineProductDetailView = {
+  id: string;
+  external_product_id: string | null;
+  title: string;
+  source_url: string;
+  category_path: string;
+  images: string[];
+  detail_images: string[];
+  supplier_name: string | null;
+  brand_hint: string | null;
+  category_hint: string | null;
+  weight_gram: number | null;
+  item_params: Record<string, unknown> | null;
+  skus: PipelineProductDetailSku[];
 };
 
 // 微信小店真实商品（后端 list_cached_shop_products / get_cached_shop_product_detail / sync_shop_products，字段 snake_case）

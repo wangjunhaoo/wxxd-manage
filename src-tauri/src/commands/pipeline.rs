@@ -531,6 +531,108 @@ pub fn retry_pipeline_product(app: AppHandle, product_id: String) -> AppResult<i
     Ok(affected as i64)
 }
 
+/// 重新采集：把商品退回采集流程重抓数据、重走审查铺货。保留已选目标店，已上架(stage=done)的
+/// 店保持不动、不重复铺货，仅未上架的 target 重置为 await_review 等重新审查通过后激活。清空
+/// 采集结果与审查中间态强制重抓。用于采集数据不满意、或采集/审查/铺货失败想从头重来。
+#[tauri::command]
+pub fn recollect_pipeline_product(app: AppHandle, product_id: String) -> AppResult<()> {
+    let conn = open_connection(&app)?;
+    let now = now_shanghai();
+    // 未提交微信的 target 重置为 await_review（等重新审查通过激活）；已提交微信的
+    // (wechat_product_id 非空：submit 成功/audit/listing/done) 保持不动——它们在微信侧已建商品，
+    // 打回会丢失同步链路且重采后必然撞 DUPLICATE，只能继续走原同步流程。同时清错误码与退避时间。
+    conn.execute(
+        "UPDATE pipeline_shop_targets
+         SET stage = ?1, status = ?2, error_code = NULL, error_summary = NULL,
+             next_retry_at = NULL, updated_at = ?3
+         WHERE product_id = ?4 AND wechat_product_id IS NULL",
+        params![
+            target_stage::AWAIT_REVIEW,
+            target_status::PENDING,
+            now,
+            product_id
+        ],
+    )?;
+    // 商品退回待采集，清空采集结果与审查中间态强制重抓重审，由 driver 自动重新采集。
+    let affected = conn.execute(
+        "UPDATE pipeline_products
+         SET status = 'pending_collect', stage = 'collect', attention = 'none',
+             error_code = NULL, error_reason = NULL, progress_text = NULL,
+             collected_data = NULL, reviewed_data = NULL, review_result_json = NULL,
+             updated_at = ?1
+         WHERE id = ?2",
+        params![now, product_id],
+    )?;
+    if affected == 0 {
+        return Err(AppError::Validation(format!(
+            "流水线商品 {product_id} 不存在"
+        )));
+    }
+    Ok(())
+}
+
+/// 拉取单个流水线商品的采集明细（点商品标题打开详情抽屉用）。
+/// 解析 pipeline_products.collected_data（采集原始 ExternalProductInput，无则回退
+/// reviewed_data），category_path 取主表。商品不存在或无采集数据时返回校验错误。
+#[tauri::command]
+pub fn get_pipeline_product_detail(
+    app: AppHandle,
+    product_id: String,
+) -> AppResult<PipelineProductDetailView> {
+    let conn = open_connection(&app)?;
+    let row: Option<(String, Option<String>)> = conn
+        .query_row(
+            "SELECT category_path, COALESCE(collected_data, reviewed_data)
+             FROM pipeline_products WHERE id = ?1",
+            params![product_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let (category_path, collected) =
+        row.ok_or_else(|| AppError::Validation(format!("流水线商品 {product_id} 不存在")))?;
+    let Some(collected) = collected else {
+        return Err(AppError::Validation(
+            "该商品暂无采集数据（可能尚未采集或已被重置）".to_string(),
+        ));
+    };
+    let input: ExternalProductInput = serde_json::from_str(&collected)
+        .map_err(|error| AppError::Validation(format!("采集数据解析失败：{error}")))?;
+
+    // 淘宝商品参数存在采集 metadata.taobao_item_params（产地/面料/安全等级等），单独提取展示
+    let item_params = input
+        .metadata
+        .get("taobao_item_params")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+
+    let skus = input
+        .skus
+        .into_iter()
+        .map(|sku| PipelineProductDetailSku {
+            external_sku_id: sku.external_sku_id,
+            specs: sku.specs,
+            cost_price: sku.cost_price,
+            stock: sku.stock,
+        })
+        .collect();
+
+    Ok(PipelineProductDetailView {
+        id: product_id,
+        external_product_id: Some(input.external_product_id).filter(|id| !id.is_empty()),
+        title: input.title,
+        source_url: input.source_url,
+        category_path,
+        images: input.images,
+        detail_images: input.detail_images,
+        supplier_name: input.supplier_name,
+        brand_hint: input.brand_hint,
+        category_hint: input.category_hint,
+        weight_gram: input.weight_gram,
+        item_params,
+        skus,
+    })
+}
+
 /// 统一流水线视图查询：前端工作台数据源，前端零适配层。
 #[tauri::command]
 pub fn list_pipeline_products(app: AppHandle) -> AppResult<Vec<PipelineProductView>> {

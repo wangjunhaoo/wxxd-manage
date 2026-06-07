@@ -181,6 +181,12 @@ export default function CatalogSection() {
                   >
                     同步店铺类目
                   </Button>
+                  <Button
+                    icon="refresh"
+                    onClick={() => ctx.prewarmSelectedShopCategoryDetails()}
+                  >
+                    预热类目详情
+                  </Button>
                 </>
               }
             />

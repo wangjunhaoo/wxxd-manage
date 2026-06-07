@@ -3,6 +3,7 @@ import { ElMessage } from "../runtime/feedback";
 import type {
   CategoryCacheView,
   CategoryCatalogListResult,
+  PipelineProductDetailView,
   PipelineProductView,
 } from "../types/app";
 
@@ -52,14 +53,65 @@ export function usePipeline(command: CommandFn) {
     }
   }
 
-  /** need_confirm/error 商品在用户补救后手动重试：把 blocked target 推回 pending 重新推进。 */
-  async function retryProduct(productId: string) {
+  /** 重新铺货：把铺货失败/卡住的店推回重推（已上架的店不动）。 */
+  async function republishProduct(productId: string) {
     try {
       await command<number>("retry_pipeline_product", { productId });
-      ElMessage.success("已重新排队，driver 将自动推进");
+      ElMessage.success("已重新排队铺货，driver 将自动推进");
       await refreshPipeline();
     } catch (error) {
-      ElMessage.error(`重试失败：${error}`);
+      ElMessage.error(`重新铺货失败：${error}`);
+    }
+  }
+
+  /** 重新采集：退回采集流程重抓数据重走（保留店、跳过已上架店）。 */
+  async function recollectProduct(productId: string) {
+    try {
+      await command<void>("recollect_pipeline_product", { productId });
+      ElMessage.success("已退回重新采集，driver 将自动重采");
+      await refreshPipeline();
+    } catch (error) {
+      ElMessage.error(`重新采集失败：${error}`);
+    }
+  }
+
+  /** 批量重新铺货：逐个重推铺货失败的店，单个失败不中断整批。 */
+  async function republishProducts(productIds: string[]) {
+    let ok = 0;
+    const failed: string[] = [];
+    for (const id of productIds) {
+      try {
+        await command<number>("retry_pipeline_product", { productId: id });
+        ok += 1;
+      } catch {
+        failed.push(id);
+      }
+    }
+    await refreshPipeline();
+    if (failed.length === 0) {
+      ElMessage.success(`已对 ${ok} 个商品重新铺货`);
+    } else {
+      ElMessage.warning(`重新铺货完成 ${ok} 个，${failed.length} 个失败`);
+    }
+  }
+
+  /** 批量重新采集：逐个退回采集重走，单个失败不中断整批。 */
+  async function recollectProducts(productIds: string[]) {
+    let ok = 0;
+    const failed: string[] = [];
+    for (const id of productIds) {
+      try {
+        await command<void>("recollect_pipeline_product", { productId: id });
+        ok += 1;
+      } catch {
+        failed.push(id);
+      }
+    }
+    await refreshPipeline();
+    if (failed.length === 0) {
+      ElMessage.success(`已对 ${ok} 个商品重新采集`);
+    } else {
+      ElMessage.warning(`重新采集完成 ${ok} 个，${failed.length} 个失败`);
     }
   }
 
@@ -134,10 +186,18 @@ export function usePipeline(command: CommandFn) {
     }
   }
 
-  /** 确认审查（可附带人工选定的标题/类目），商品进入铺货。 */
+  /**
+   * 确认审查（可附带人工选定的标题/类目），商品进入铺货。
+   * 传 targetShopIds 时用于「没店的只采集商品在确认抽屉补选店」：后端据此建 target 即铺货。
+   */
   async function confirmWithCategory(
     productId: string,
-    opts: { title?: string; categoryIds?: number[]; categoryPath?: string },
+    opts: {
+      title?: string;
+      categoryIds?: number[];
+      categoryPath?: string;
+      targetShopIds?: string[];
+    },
   ): Promise<boolean> {
     try {
       await command<void>("confirm_collection_review", {
@@ -146,7 +206,7 @@ export function usePipeline(command: CommandFn) {
           title: opts.title ?? null,
           category_ids: opts.categoryIds ?? null,
           category_path: opts.categoryPath ?? null,
-          target_shop_ids: [],
+          target_shop_ids: opts.targetShopIds ?? [],
         },
       });
       ElMessage.success("已确认，进入铺货");
@@ -193,6 +253,21 @@ export function usePipeline(command: CommandFn) {
     }
   }
 
+  /** 拉取单个商品的采集明细（点商品标题打开详情抽屉用，按需加载）。 */
+  async function loadProductDetail(
+    productId: string,
+  ): Promise<PipelineProductDetailView | null> {
+    try {
+      return await command<PipelineProductDetailView>(
+        "get_pipeline_product_detail",
+        { productId },
+      );
+    } catch (error) {
+      ElMessage.error(`获取采集明细失败：${error}`);
+      return null;
+    }
+  }
+
   // 轮询清理交由调用方（React 组件 useEffect cleanup）调用 stopPipelinePolling。
 
   return {
@@ -201,7 +276,10 @@ export function usePipeline(command: CommandFn) {
     refreshPipeline,
     startPipelinePolling,
     stopPipelinePolling,
-    retryProduct,
+    recollectProduct,
+    republishProduct,
+    recollectProducts,
+    republishProducts,
     confirmReview,
     confirmWithCategory,
     searchCategories,
@@ -209,5 +287,6 @@ export function usePipeline(command: CommandFn) {
     categorySearching,
     importExcel,
     addPublishTargets,
+    loadProductDetail,
   };
 }

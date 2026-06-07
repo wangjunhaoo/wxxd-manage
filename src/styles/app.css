@@ -519,3 +519,14 @@ a { color: inherit; }
   .stages, .mini-stages { grid-template-columns: 1fr; }
   .form-grid, .form-grid.cols-3, .form-grid.cols-2 { grid-template-columns: 1fr 1fr; }
 }
+
+/* 铺货工作台：商品标题可点击链接（打开采集明细抽屉） */
+.product-title-link { font-weight: 600; color: var(--accent); cursor: pointer; text-decoration: none; }
+.product-title-link:hover { text-decoration: underline; }
+/* 采集明细抽屉：两列描述网格 + 详情长图 */
+.detail-desc { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; }
+.detail-desc-item { display: flex; gap: 8px; padding: 8px 12px; background: var(--surface); font-size: 13px; }
+.detail-desc-label { color: var(--neutral-ink); flex: 0 0 auto; min-width: 52px; }
+.detail-desc-value { color: var(--ink); word-break: break-all; }
+.detail-long-images { display: flex; flex-direction: column; gap: 4px; }
+.detail-long-img { width: 100%; border-radius: var(--r-sm); display: block; }

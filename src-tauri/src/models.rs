@@ -186,6 +186,23 @@ pub struct CategoryRuleSyncResult {
     pub failed_steps: Vec<String>,
 }
 
+/// 批量预热某店全部生效准入类目「叶子属性详情」(四层类目缓存第④层)的结果。
+#[derive(Debug, Serialize)]
+pub struct CategoryDetailPrewarmResult {
+    pub task_id: String,
+    pub shop_id: String,
+    /// 该店生效准入类目总数
+    pub total: i64,
+    /// 本次成功拉取并缓存详情的数量
+    pub synced: i64,
+    /// 已有缓存、本次跳过的数量
+    pub skipped: i64,
+    /// 拉取失败的数量
+    pub failed_count: i64,
+    /// 拉取失败的 cat_id 列表，便于前端提示与重试
+    pub failed_cats: Vec<i64>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct AgentSkillView {
     pub name: String,
@@ -1720,4 +1737,35 @@ pub struct PipelineShopTargetView {
     pub wechat_product_id: Option<String>,
     pub audit_summary: Option<String>,
     pub updated_at: String,
+}
+
+/// 流水线商品采集明细视图（点商品标题打开详情抽屉）。数据源
+/// pipeline_products.collected_data（采集原始 ExternalProductInput），含主图/详情图/
+/// SKU（规格·成本价·库存）/供应商等；前端按需拉取，不进列表以保持列表轻量。
+#[derive(Debug, Serialize)]
+pub struct PipelineProductDetailView {
+    pub id: String,
+    pub external_product_id: Option<String>,
+    pub title: String,
+    pub source_url: String,
+    pub category_path: String,
+    pub images: Vec<String>,
+    pub detail_images: Vec<String>,
+    pub supplier_name: Option<String>,
+    pub brand_hint: Option<String>,
+    pub category_hint: Option<String>,
+    pub weight_gram: Option<i64>,
+    /// 淘宝商品参数（产地/面料/适用年龄/安全等级等键值对），来自采集 metadata.taobao_item_params
+    pub item_params: serde_json::Value,
+    pub skus: Vec<PipelineProductDetailSku>,
+}
+
+/// 采集明细中的单个 SKU（规格/成本价/库存）。
+#[derive(Debug, Serialize)]
+pub struct PipelineProductDetailSku {
+    pub external_sku_id: String,
+    /// 规格键值对（如 {"尺码":"...","身高":"..."}），前端拼成可读文本展示
+    pub specs: serde_json::Value,
+    pub cost_price: f64,
+    pub stock: i64,
 }

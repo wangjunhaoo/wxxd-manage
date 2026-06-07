@@ -635,6 +635,34 @@ pub fn confirm_collection_review(
         request.category_ids,
         request.category_path,
     )?;
+    // 确认抽屉补选了目标店（没店的「只采集」商品在确认时一并选店）：先按选定店建 target，
+    // 让下面按 target_count>0 分支激活铺货，实现「补选店→选类目→确认即铺货」一步到位。
+    // 铺货阶段卡 need_confirm 的商品（已有店）前端传空 target_shop_ids，不进此分支。
+    if !request.target_shop_ids.is_empty() {
+        let existing: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pipeline_shop_targets WHERE product_id = ?1",
+            [product_id.as_str()],
+            |row| row.get(0),
+        )?;
+        if existing == 0 {
+            let target_shops =
+                resolve_target_shops_for_scope(&conn, &[], &request.target_shop_ids)?;
+            if target_shops.len() != request.target_shop_ids.len() {
+                return Err(AppError::Validation(
+                    "目标微信小店不存在或已被删除，请刷新店铺列表后重试".to_string(),
+                ));
+            }
+            for shop in &target_shops {
+                let target_id = format!("tgt_{}", Uuid::new_v4().simple());
+                conn.execute(
+                    "INSERT OR IGNORE INTO pipeline_shop_targets
+                     (id, product_id, shop_id, shop_name, stage, status, retry_count, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, 'precheck', 'pending', 0, ?5, ?5)",
+                    params![target_id, product_id, shop.id, shop.name, now],
+                )?;
+            }
+        }
+    }
     let target_count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM pipeline_shop_targets WHERE product_id = ?1",
         [product_id.as_str()],
@@ -654,7 +682,7 @@ pub fn confirm_collection_review(
             "UPDATE pipeline_shop_targets
              SET stage = 'precheck', status = 'pending', error_code = NULL,
                  error_summary = NULL, updated_at = ?1
-             WHERE product_id = ?2",
+             WHERE product_id = ?2 AND wechat_product_id IS NULL",
             params![now, product_id],
         )?;
     } else {
@@ -1362,18 +1390,20 @@ async fn review_collection_task(
             category_applied = true;
         }
     }
-    if !category_applied && category_candidates.is_empty() {
-        issues.push(review_issue(
-            "category",
-            "confirm",
-            "未匹配到可用微信类目，需要人工补充类目",
-        ));
-    } else if !category_applied {
-        issues.push(review_issue(
-            "category",
-            "confirm",
-            "类目匹配置信度不足，需要从候选类目中确认",
-        ));
+    if !category_applied {
+        // 没选店（「只采集」）时类目无法落定不算异常：微信类目须按真实目标店确定，此时强行卡
+        // 「待确认」会让用户既搜不了类目（没店）也选不了店而死锁。故没店时降为 info 放行到
+        // 「待铺货」，把类目确认延到选店后的铺货阶段（attr_fill 用真实店补类目，补不出再以
+        // need_confirm 暴露，那时已有店可搜类目）；有店则保持 confirm 拦人工确认。
+        let no_shop = effective_target_shop_ids.is_empty();
+        let severity = if no_shop { "info" } else { "confirm" };
+        let message = match (category_candidates.is_empty(), no_shop) {
+            (true, true) => "未匹配到微信类目，待选店铺货时再按目标店确定",
+            (true, false) => "未匹配到可用微信类目，需要人工补充类目",
+            (false, true) => "类目候选置信度不足，待选店铺货时再确认",
+            (false, false) => "类目匹配置信度不足，需要从候选类目中确认",
+        };
+        issues.push(review_issue("category", severity, message));
     }
 
     // ---- 微信类目属性预检 & 补齐 ----
@@ -1628,7 +1658,7 @@ fn persist_collection_review_result(
                 "UPDATE pipeline_shop_targets
                  SET stage = 'precheck', status = 'pending', error_code = NULL,
                      error_summary = NULL, updated_at = ?1
-                 WHERE product_id = ?2",
+                 WHERE product_id = ?2 AND wechat_product_id IS NULL",
                 params![now, task_id],
             )?;
         } else {

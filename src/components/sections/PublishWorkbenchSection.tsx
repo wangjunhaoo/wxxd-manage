@@ -4,9 +4,13 @@
    ============================================================================ */
 import { useEffect, useRef, useState } from "react";
 import { useApp } from "../../runtime/AppContext";
-import { ElMessage } from "../../runtime/feedback";
+import { ElMessage, ElMessageBox } from "../../runtime/feedback";
 import { usePipeline } from "../../composables/usePipeline";
-import type { PipelineProductView } from "../../types/app";
+import type {
+  PipelineProductView,
+  PipelineProductDetailView,
+  PipelineProductDetailSku,
+} from "../../types/app";
 import { PageHead, Button, Chip, Pill, Field, Empty, Modal, Drawer, Dropdown } from "../primitives";
 
 /** 状态枚举：标签 + Pill 色调（兜底显示原值，色调用 info）。 */
@@ -39,6 +43,46 @@ function canAddTargets(status: string): boolean {
   );
 }
 
+/** 可重新采集：已采集过且非进行中/非全上架的稳定态（待铺货/待确认/失败）。 */
+function canRecollect(row: PipelineProductView): boolean {
+  return (
+    row.status === "collected" ||
+    row.status === "need_confirm" ||
+    row.status === "error"
+  );
+}
+
+/** 可重新铺货：有店铺货失败且非「待确认」。need_confirm 的失败店要走「确认」补类目，
+ *  直接重推没解决会再次失败形成无效循环，故只对真失败开放。 */
+function canRepublish(row: PipelineProductView): boolean {
+  return row.failed_shops > 0 && !row.can_confirm;
+}
+
+/** 是否可勾选：补货/重采/重铺任一可执行（顶部据勾选分组显示对应批量按钮）。 */
+function isRowSelectable(row: PipelineProductView): boolean {
+  return canAddTargets(row.status) || canRecollect(row) || canRepublish(row);
+}
+
+/** 把 SKU 规格对象拼成可读文本（尺码: xxx / 身高: yyy），无规格回退 external_sku_id。 */
+function skuSpecText(sku: PipelineProductDetailSku): string {
+  if (sku.specs && typeof sku.specs === "object") {
+    const parts = Object.entries(sku.specs).map(
+      ([key, value]) => `${key}: ${String(value)}`,
+    );
+    if (parts.length > 0) return parts.join(" / ");
+  }
+  return sku.external_sku_id || "—";
+}
+
+/** 淘宝类目路径（形如「童装/婴儿装>T恤」）取最末一级作微信类目搜索词。 */
+function lastCategorySegment(path: string): string {
+  const parts = path
+    .split(/[>/]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return parts[parts.length - 1] ?? "";
+}
+
 function progressPercent(row: PipelineProductView): number {
   if (row.total_shops <= 0) return 0;
   return Math.round((row.listed_shops / row.total_shops) * 100);
@@ -58,6 +102,28 @@ export default function PublishWorkbenchSection() {
   }, []);
 
   const products = pipe.pipelineProducts.value;
+
+  // ---- 商品详情抽屉：点商品标题按需拉取采集明细 ----
+  const [detailDrawerVisible, setDetailDrawerVisible] = useState(false);
+  const [detailProduct, setDetailProduct] =
+    useState<PipelineProductDetailView | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailImagesExpanded, setDetailImagesExpanded] = useState(false);
+
+  const openDetailDrawer = async (row: PipelineProductView) => {
+    setDetailDrawerVisible(true);
+    setDetailProduct(null);
+    setDetailImagesExpanded(false);
+    setDetailLoading(true);
+    setDetailProduct(await pipe.loadProductDetail(row.id));
+    setDetailLoading(false);
+  };
+
+  // 淘宝商品参数（taobao_item_params）键值对，供详情抽屉展示
+  const itemParamEntries: [string, unknown][] =
+    detailProduct?.item_params && typeof detailProduct.item_params === "object"
+      ? Object.entries(detailProduct.item_params)
+      : [];
 
   // ---- 概览过滤 ----
   const [statusFilter, setStatusFilter] = useState<string>("all");
@@ -108,7 +174,7 @@ export default function PublishWorkbenchSection() {
       if (prev.size === 0) return prev;
       const next = new Set<string>();
       for (const p of products) {
-        if (prev.has(p.id) && canAddTargets(p.status)) next.add(p.id);
+        if (prev.has(p.id) && isRowSelectable(p)) next.add(p.id);
       }
       return next;
     });
@@ -122,6 +188,47 @@ export default function PublishWorkbenchSection() {
       else next.delete(id);
       return next;
     });
+
+  // 勾选集按可执行动作分组，顶部据此显示对应批量按钮（同一批勾选可含不同状态商品）
+  const selectedAddable = selectedRows.filter((r) => canAddTargets(r.status));
+  const selectedRecollectable = selectedRows.filter((r) => canRecollect(r));
+  const selectedRepublishable = selectedRows.filter((r) => canRepublish(r));
+
+  /** 单个重新采集（破坏性，二次确认）。 */
+  const onRecollect = async (productId: string) => {
+    try {
+      await ElMessageBox.confirm(
+        "重新采集会清空已采集/审查结果并重走流水线，已上架的店保持不动。确认重新采集？",
+        "重新采集",
+        { type: "warning", confirmButtonText: "重新采集", cancelButtonText: "取消" },
+      );
+    } catch {
+      return; // 用户取消
+    }
+    await pipe.recollectProduct(productId);
+  };
+
+  /** 批量重新铺货：重推所有勾选中铺货失败的店。 */
+  const onBatchRepublish = async () => {
+    await pipe.republishProducts(selectedRepublishable.map((r) => r.id));
+    setSelectedIds(new Set());
+  };
+
+  /** 批量重新采集（破坏性，二次确认）。 */
+  const onBatchRecollect = async () => {
+    const ids = selectedRecollectable.map((r) => r.id);
+    try {
+      await ElMessageBox.confirm(
+        `确认对 ${ids.length} 个商品重新采集？将清空已采集/审查结果重走流水线，已上架的店保持不动。`,
+        "批量重新采集",
+        { type: "warning", confirmButtonText: "重新采集", cancelButtonText: "取消" },
+      );
+    } catch {
+      return;
+    }
+    await pipe.recollectProducts(ids);
+    setSelectedIds(new Set());
+  };
 
   // ---- 导入弹窗 ----
   const [importDialogVisible, setImportDialogVisible] = useState(false);
@@ -185,22 +292,44 @@ export default function PublishWorkbenchSection() {
   const [confirmTitle, setConfirmTitle] = useState("");
   const [confirmCategoryKeyword, setConfirmCategoryKeyword] = useState("");
   const [confirmCategoryKey, setConfirmCategoryKey] = useState("");
+  const [confirmPickedShopId, setConfirmPickedShopId] = useState("");
   const [confirming, setConfirming] = useState(false);
 
-  const confirmShopId = confirmProduct?.shops[0]?.shop_id ?? "";
+  // 没有目标店的商品（只采集没选店）需在确认抽屉里补选店后才能确认
+  const needShopPicker = (confirmProduct?.shops.length ?? 0) === 0;
+  // 类目搜索/校验所用的店：已有店用第一个 target 店，没店则用抽屉里补选的店（单选）
+  const confirmShopId = confirmProduct?.shops[0]?.shop_id ?? confirmPickedShopId;
 
   const openConfirmDrawer = (product: PipelineProductView) => {
     setConfirmProduct(product);
     setConfirmTitle(product.title);
-    setConfirmCategoryKeyword("");
+    // 预填类目候选：用淘宝原始类目末级作搜索词，少打字
+    const keyword = lastCategorySegment(product.category_path);
+    setConfirmCategoryKeyword(keyword);
     setConfirmCategoryKey("");
+    setConfirmPickedShopId("");
     pipe.categoryOptions.value = [];
     setConfirmDrawerVisible(true);
+    // 已有目标店的商品立即按预填词搜一次类目候选；没店的等补选店后由下方 effect 触发
+    const shopId = product.shops[0]?.shop_id ?? "";
+    if (shopId && keyword) void pipe.searchCategories(shopId, keyword);
   };
+
+  // 没店商品在抽屉里补选店后，自动按预填词搜该店类目候选（换店亦重搜）
+  useEffect(() => {
+    if (!confirmDrawerVisible || !needShopPicker || !confirmShopId) return;
+    setConfirmCategoryKey("");
+    if (confirmCategoryKeyword) {
+      void pipe.searchCategories(confirmShopId, confirmCategoryKeyword);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [confirmShopId]);
 
   const doSearchCategories = async () => {
     if (!confirmShopId) {
-      ElMessage.warning("该商品没有目标店铺");
+      ElMessage.warning(
+        needShopPicker ? "请先在上方选择目标小店" : "该商品没有目标店铺",
+      );
       return;
     }
     await pipe.searchCategories(confirmShopId, confirmCategoryKeyword);
@@ -208,14 +337,25 @@ export default function PublishWorkbenchSection() {
 
   const onConfirm = async () => {
     if (!confirmProduct) return;
+    // 没店的商品确认时必须补选店（类目须按真实目标店确定）
+    if (needShopPicker && !confirmPickedShopId) {
+      ElMessage.warning("请先选择要铺货到的微信小店");
+      return;
+    }
     const selected = pipe.categoryOptions.value.find(
       (o) => o.category_ids.join("/") === confirmCategoryKey,
     );
+    // 没店商品的 reviewed_data 还没类目，必须在此选定叶子类目，否则后端校验会拦截
+    if (needShopPicker && !selected) {
+      ElMessage.warning("请搜索并选择一个微信叶子类目");
+      return;
+    }
     setConfirming(true);
     const ok = await pipe.confirmWithCategory(confirmProduct.id, {
       title: confirmTitle.trim() || undefined,
       categoryIds: selected?.category_ids,
       categoryPath: selected?.category_path,
+      targetShopIds: needShopPicker ? [confirmPickedShopId] : undefined,
     });
     setConfirming(false);
     if (ok) setConfirmDrawerVisible(false);
@@ -243,12 +383,22 @@ export default function PublishWorkbenchSection() {
               <Button variant="accent" icon="upload" onClick={openImport}>
                 导入铺货表
               </Button>
-              {selectedRows.length > 0 && (
+              {selectedAddable.length > 0 && (
                 <Button
                   variant="graphite"
-                  onClick={() => openShopPickerDrawer(selectedRows.map((r) => r.id))}
+                  onClick={() => openShopPickerDrawer(selectedAddable.map((r) => r.id))}
                 >
-                  批量铺货到…（已选 {selectedRows.length}）
+                  批量铺货到…（{selectedAddable.length}）
+                </Button>
+              )}
+              {selectedRepublishable.length > 0 && (
+                <Button onClick={onBatchRepublish}>
+                  批量重新铺货（{selectedRepublishable.length}）
+                </Button>
+              )}
+              {selectedRecollectable.length > 0 && (
+                <Button onClick={onBatchRecollect}>
+                  批量重新采集（{selectedRecollectable.length}）
                 </Button>
               )}
               <Dropdown
@@ -317,13 +467,15 @@ export default function PublishWorkbenchSection() {
                     <ProductRow
                       key={row.id}
                       row={row}
-                      selectable={canAddTargets(row.status)}
+                      selectable={isRowSelectable(row)}
                       checked={selectedIds.has(row.id)}
                       onToggleRow={(c) => toggleRow(row.id, c)}
                       expanded={expandedId === row.id}
                       onToggleExpand={() => toggleExpand(row.id)}
+                      onOpenDetail={() => openDetailDrawer(row)}
                       onConfirm={() => openConfirmDrawer(row)}
-                      onRetry={() => pipe.retryProduct(row.id)}
+                      onRepublish={() => pipe.republishProduct(row.id)}
+                      onRecollect={() => onRecollect(row.id)}
                       onAddTargets={() => openShopPickerDrawer([row.id])}
                     />
                   ))}
@@ -572,8 +724,36 @@ export default function PublishWorkbenchSection() {
               />
             </div>
 
+            {needShopPicker && (
+              <div className="stack" style={{ gap: 6 }}>
+                <strong>目标小店（必选 · 单店）</strong>
+                <select
+                  className="sel"
+                  style={{ width: "100%" }}
+                  value={confirmPickedShopId}
+                  onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
+                    setConfirmPickedShopId(e.target.value)
+                  }
+                >
+                  <option value="" disabled>
+                    该商品当时只采集没选店，请选择要铺货到的微信小店
+                  </option>
+                  {ctx.shops.value.map((shop) => (
+                    <option key={shop.id} value={shop.id}>
+                      {shop.name} ({shop.group_name})
+                    </option>
+                  ))}
+                </select>
+                <p className="hint">
+                  类目按所选店确定，故此处单选；确认后直接建店铺货。要一次铺到多个店，请用列表的「选店铺货」。
+                </p>
+              </div>
+            )}
+
             <div className="stack" style={{ gap: 6 }}>
-              <strong>微信类目（不选则沿用 AI 已选）</strong>
+              <strong>
+                微信类目{needShopPicker ? "（必选）" : "（不选则沿用 AI 已选）"}
+              </strong>
               <div style={{ display: "flex", gap: 8 }}>
                 <input
                   className="inp"
@@ -630,6 +810,118 @@ export default function PublishWorkbenchSection() {
           </div>
         )}
       </Drawer>
+
+      {/* 抽屉：采集明细（点商品标题打开，按需拉取 collected_data） */}
+      <Drawer
+        open={detailDrawerVisible}
+        title="采集明细"
+        wide
+        onClose={() => setDetailDrawerVisible(false)}
+      >
+        {detailLoading && <p className="hint">加载中…</p>}
+        {!detailLoading && !detailProduct && <Empty>暂无采集明细</Empty>}
+        {detailProduct && (
+          <div className="stack" style={{ gap: 12 }}>
+            {detailProduct.images.length > 0 && (
+              <div className="thumb-strip">
+                {detailProduct.images.map((img, i) => (
+                  <img
+                    key={i}
+                    src={img}
+                    className="thumb"
+                    style={{ cursor: "pointer" }}
+                    onClick={() => window.open(img, "_blank")}
+                  />
+                ))}
+              </div>
+            )}
+
+            <div className="stack" style={{ gap: 4 }}>
+              <strong style={{ fontSize: 15 }}>{detailProduct.title}</strong>
+              <a
+                href={detailProduct.source_url}
+                target="_blank"
+                rel="noreferrer"
+                className="link-src mono"
+              >
+                {detailProduct.source_url}
+              </a>
+            </div>
+
+            <div className="detail-desc">
+              <DetailItem label="供应商" value={detailProduct.supplier_name || "—"} />
+              <DetailItem label="品牌" value={detailProduct.brand_hint || "—"} />
+              <DetailItem
+                label="重量"
+                value={detailProduct.weight_gram ? `${detailProduct.weight_gram}g` : "—"}
+              />
+              <DetailItem label="SKU 数" value={String(detailProduct.skus.length)} />
+              <DetailItem
+                label="类目"
+                value={
+                  detailProduct.category_path || detailProduct.category_hint || "—"
+                }
+                span={2}
+              />
+            </div>
+
+            {itemParamEntries.length > 0 && (
+              <>
+                <div className="subtext" style={{ fontWeight: 600 }}>
+                  商品参数（{itemParamEntries.length}）
+                </div>
+                <div className="detail-desc">
+                  {itemParamEntries.map(([key, value]) => (
+                    <DetailItem key={key} label={key} value={String(value)} />
+                  ))}
+                </div>
+              </>
+            )}
+
+            <div className="subtext" style={{ fontWeight: 600 }}>
+              SKU（{detailProduct.skus.length}）
+            </div>
+            <div className="tbl-wrap">
+              <table className="tbl">
+                <thead>
+                  <tr>
+                    <th>规格</th>
+                    <th style={{ width: 90, textAlign: "right" }}>成本价</th>
+                    <th style={{ width: 70, textAlign: "right" }}>库存</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {detailProduct.skus.map((sku, i) => (
+                    <tr key={i}>
+                      <td>{skuSpecText(sku)}</td>
+                      <td style={{ textAlign: "right" }}>¥{sku.cost_price}</td>
+                      <td style={{ textAlign: "right" }}>{sku.stock}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {detailProduct.detail_images.length > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setDetailImagesExpanded((v) => !v)}
+              >
+                {detailImagesExpanded ? "收起" : "查看"}详情图（
+                {detailProduct.detail_images.length}）
+              </Button>
+            )}
+            {detailImagesExpanded && (
+              <div className="detail-long-images">
+                {detailProduct.detail_images.map((img, i) => (
+                  <img key={i} src={img} loading="lazy" className="detail-long-img" />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </Drawer>
     </div>
   );
 }
@@ -642,8 +934,10 @@ function ProductRow({
   onToggleRow,
   expanded,
   onToggleExpand,
+  onOpenDetail,
   onConfirm,
-  onRetry,
+  onRepublish,
+  onRecollect,
   onAddTargets,
 }: {
   row: PipelineProductView;
@@ -652,11 +946,17 @@ function ProductRow({
   onToggleRow: (checked: boolean) => void;
   expanded: boolean;
   onToggleExpand: () => void;
+  onOpenDetail: () => void;
   onConfirm: () => void;
-  onRetry: () => void;
+  onRepublish: () => void;
+  onRecollect: () => void;
   onAddTargets: () => void;
 }) {
-  const hasAnyAction = row.can_confirm || row.can_retry || canAddTargets(row.status);
+  const hasAnyAction =
+    row.can_confirm ||
+    canRepublish(row) ||
+    canAddTargets(row.status) ||
+    canRecollect(row);
   return (
     <>
       <tr>
@@ -678,7 +978,9 @@ function ProductRow({
         </td>
         <td>
           <div className="cell-main">
-            <strong>{row.title}</strong>
+            <a className="product-title-link" onClick={onOpenDetail}>
+              {row.title}
+            </a>
             <a
               href={row.source_url}
               target="_blank"
@@ -727,14 +1029,19 @@ function ProductRow({
                   确认
                 </Button>
               )}
-              {row.can_retry && (
-                <Button size="sm" onClick={onRetry}>
-                  重试
+              {canRepublish(row) && (
+                <Button size="sm" onClick={onRepublish}>
+                  重新铺货
                 </Button>
               )}
               {canAddTargets(row.status) && (
                 <Button size="sm" variant="graphite" onClick={onAddTargets}>
                   选店铺货
+                </Button>
+              )}
+              {canRecollect(row) && (
+                <Button size="sm" onClick={onRecollect}>
+                  重新采集
                 </Button>
               )}
             </div>
@@ -808,6 +1115,27 @@ function ShopMultiSelect({
           </label>
         ))}
       </div>
+    </div>
+  );
+}
+
+/** 详情描述项：label + value，两列网格中的一格（span=2 占满整行）。 */
+function DetailItem({
+  label,
+  value,
+  span,
+}: {
+  label: string;
+  value: string;
+  span?: number;
+}) {
+  return (
+    <div
+      className="detail-desc-item"
+      style={span === 2 ? { gridColumn: "1 / -1" } : undefined}
+    >
+      <span className="detail-desc-label">{label}</span>
+      <span className="detail-desc-value">{value}</span>
     </div>
   );
 }

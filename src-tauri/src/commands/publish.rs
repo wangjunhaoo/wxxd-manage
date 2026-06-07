@@ -474,34 +474,24 @@ pub async fn run_publish_ai_attribute_suggestions_once(
             load_cached_category_detail_payload(&conn, &item.shop_id, cat_id)?
         };
         let Some(raw_detail) = raw_detail else {
-            if inferred_category.is_some() {
-                let conn = open_connection(&app)?;
-                persist_generated_add_product_payload(&conn, &item, &draft)?;
-                let summary = "已补齐微信类目，等待执行微信类目预检";
-                advance_target(&conn, &item.item_id, target_stage::CATEGORY_PRECHECK)?;
-                insert_task_log(
-                    &conn,
-                    &item.job_id,
-                    Some(&item.item_id),
-                    "info",
-                    summary,
-                    Some(&serde_json::json!({ "cat_id": cat_id })),
-                )?;
-                recompute_pipeline_product(&conn, &item.job_id)?;
-                auto_filled_items += 1;
-                continue;
-            }
-            // 类目详情未缓存且无新推断类目：标记阻塞并退避，避免 target 停留在 running 空转重试
-            failed_items += 1;
-            {
-                let conn = open_connection(&app)?;
-                block_target(
-                    &conn,
-                    &item.item_id,
-                    "MISSING_WECHAT_LEAF_CATEGORY_ID",
-                    "类目/属性补齐失败：缺少微信类目详情缓存，请先同步该店类目后重试",
-                )?;
-            }
+            // 类目详情未在本地缓存：attr_fill 是离线补属性阶段，用裸 load_cached 取不到详情时
+            // 无法在此补齐，必须无条件推进到 category_precheck —— 该阶段用
+            // ensure_category_detail_payload_for_publish 在线拉取类目详情并缓存，再补齐属性。
+            // 此处不再 block：预构造 payload 路径(类目已写死、本轮无新推断 inferred_category=None)
+            // 曾在此永久死锁，且 attr_fill 自身不会在线拉详情、无法自愈。
+            let conn = open_connection(&app)?;
+            persist_generated_add_product_payload(&conn, &item, &draft)?;
+            advance_target(&conn, &item.item_id, target_stage::CATEGORY_PRECHECK)?;
+            insert_task_log(
+                &conn,
+                &item.job_id,
+                Some(&item.item_id),
+                "info",
+                "类目详情待在线同步，转入微信类目预检拉取详情并补齐属性",
+                Some(&serde_json::json!({ "cat_id": cat_id })),
+            )?;
+            recompute_pipeline_product(&conn, &item.job_id)?;
+            auto_filled_items += 1;
             continue;
         };
         let requirement_check = {

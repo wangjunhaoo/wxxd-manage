@@ -15,6 +15,7 @@ import type {
   FreightTemplateView,
   CategoryCatalogListResult,
   CategoryCatalogSyncResult,
+  CategoryDetailPrewarmResult,
   CategoryRuleSyncResult,
   PublishJobCreated,
   TaskRunView,
@@ -1346,6 +1347,47 @@ export function useWxXdApp() {
     }
   }
 
+  async function prewarmShopCategoryDetails(
+    shopId: string,
+    options?: { silent?: boolean },
+  ) {
+    try {
+      const result = await command<CategoryDetailPrewarmResult>(
+        "prewarm_shop_category_details",
+        {
+          shopId,
+        },
+      );
+      const summary = `类目详情预热完成：成功 ${result.synced}，已缓存 ${result.skipped}，失败 ${result.failed_count}（共 ${result.total} 个准入类目）`;
+      if (result.failed_count > 0) {
+        ElMessage.warning(
+          `${summary}；失败 cat_id：${result.failed_cats.join("、")}，可稍后再次预热重试`,
+        );
+      } else if (!options?.silent || result.synced > 0) {
+        ElMessage.success(summary);
+      }
+      return result;
+    } catch (error) {
+      // 预热失败不阻断主流程（类目权限同步可能已成功），仅提示，可手动重试
+      ElMessage.warning(`类目详情预热未完成：${String(error)}`);
+      return null;
+    }
+  }
+
+  async function prewarmSelectedShopCategoryDetails() {
+    const shop = selectedCategoryShop.value;
+    if (!shop) {
+      ElMessage.warning("请先选择店铺");
+      return;
+    }
+    if (!shop.has_secret && isTauriRuntime) {
+      ElMessage.warning("这个店铺还没有保存 app_secret");
+      return;
+    }
+    await prewarmShopCategoryDetails(shop.id);
+    await Promise.all([refreshCategoryCatalog(), refreshAll()]);
+  }
+
   async function syncSelectedShopCategoryCatalog() {
     const shop = selectedCategoryShop.value;
     if (!shop) {
@@ -1372,6 +1414,8 @@ export function useWxXdApp() {
           `类目同步完成：店铺类目节点 ${result.synced_categories}，生效权限 ${result.synced_category_relations}，运费模板 ${result.synced_freight_templates}`,
         );
       }
+      // 类目权限同步后顺带预热全部准入类目的属性详情(第④层)，让后续铺货 attr_fill 离线命中、不再卡「缺少类目详情」
+      await prewarmShopCategoryDetails(shop.id, { silent: true });
       await Promise.all([refreshCategoryCatalog(), refreshAll()]);
     } catch (error) {
       ElMessage.error(String(error));
@@ -3727,6 +3771,7 @@ export function useWxXdApp() {
     syncAftersaleRejectReasons,
     syncAiProviderForm,
     syncDeliveryCompanies,
+    prewarmSelectedShopCategoryDetails,
     syncSelectedCategoryRules,
     syncSelectedShopCategoryCatalog,
     syncShopBasicInfo,
