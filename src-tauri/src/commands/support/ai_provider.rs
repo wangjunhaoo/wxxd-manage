@@ -349,52 +349,123 @@ pub(in crate::commands) async fn request_pi_agent_json(
     });
     let request_json = serde_json::to_vec(&request_body)
         .map_err(|error| AppError::Validation(format!("AI agent 请求无法序列化：{error}")))?;
-    let mut command = tokio::process::Command::new(resolve_agent_node_binary(app));
-    command
-        .arg(&script_path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    command.kill_on_drop(true);
-    let mut child = command
-        .spawn()
-        .map_err(|error| AppError::Validation(format!("启动 pi-coding-agent 失败：{error}")))?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| AppError::Validation("pi-coding-agent stdin 不可用".to_string()))?;
-    tokio::spawn(async move {
-        let _ = stdin.write_all(&request_json).await;
-        let _ = stdin.shutdown().await;
-    });
-    let timeout = ai_agent_timeout_duration();
-    let output = tokio::time::timeout(timeout, child.wait_with_output())
-        .await
-        .map_err(|_| AppError::Validation(format!("pi-coding-agent {} 执行超时", skill_name)))?
-        .map_err(|error| AppError::Validation(format!("等待 pi-coding-agent 失败：{error}")))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if !output.status.success() {
+
+    // 限流冷却：命中过 429 后短时间内直接快速失败，不再 spawn 子进程去捅 provider，
+    // 避免 driver 每 8s tick 反复打爆配额(配合审查侧「限流保持 collecting」形成温和退避)。
+    if ai_provider_in_cooldown() {
         return Err(AppError::Validation(format!(
-            "pi-coding-agent {} 调用失败：{}",
-            skill_name,
-            summarize_agent_stderr(&stderr)
-        )));
-    }
-    if stdout.is_empty() {
-        return Err(AppError::Validation(format!(
-            "pi-coding-agent {} 未返回输出",
+            "pi-coding-agent {} 跳过：AI provider 限流冷却中，稍后自动重试",
             skill_name
         )));
     }
-    parse_agent_stdout_json(&stdout).map_err(|error| {
-        AppError::Validation(format!(
-            "pi-coding-agent {} 返回非 JSON：{}；{}",
-            skill_name,
-            error,
-            truncate_for_summary(&stdout, 240)
-        ))
-    })
+
+    let node_binary = resolve_agent_node_binary(app);
+    let timeout = ai_agent_timeout_duration();
+    let max_attempts = ai_provider_max_attempts();
+    let mut attempt = 0u32;
+    loop {
+        let mut command = tokio::process::Command::new(&node_binary);
+        command
+            .arg(&script_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        command.kill_on_drop(true);
+        let mut child = command
+            .spawn()
+            .map_err(|error| AppError::Validation(format!("启动 pi-coding-agent 失败：{error}")))?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| AppError::Validation("pi-coding-agent stdin 不可用".to_string()))?;
+        let request_body_bytes = request_json.clone();
+        tokio::spawn(async move {
+            let _ = stdin.write_all(&request_body_bytes).await;
+            let _ = stdin.shutdown().await;
+        });
+        let output = tokio::time::timeout(timeout, child.wait_with_output())
+            .await
+            .map_err(|_| AppError::Validation(format!("pi-coding-agent {} 执行超时", skill_name)))?
+            .map_err(|error| AppError::Validation(format!("等待 pi-coding-agent 失败：{error}")))?;
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if !output.status.success() {
+            let detail = summarize_agent_stderr(&stderr);
+            // 仅对「限流类快速失败」做有限退避重试(429 通常子进程快速非 0 退出，
+            // 重试总耗时远小于 tick 超时)；其它失败立即返回，不浪费时间。
+            if is_ai_provider_rate_limited(&detail) {
+                attempt += 1;
+                if attempt < max_attempts {
+                    let backoff_ms = 1000u64 * u64::from(attempt); // 1s, 2s
+                    tokio::time::sleep(StdDuration::from_millis(backoff_ms)).await;
+                    continue;
+                }
+                // 重试用尽仍限流：进入冷却期，让后续调用快速失败、温和退避不再硬扛。
+                set_ai_provider_cooldown();
+            }
+            return Err(AppError::Validation(format!(
+                "pi-coding-agent {} 调用失败：{}",
+                skill_name, detail
+            )));
+        }
+        if stdout.is_empty() {
+            return Err(AppError::Validation(format!(
+                "pi-coding-agent {} 未返回输出",
+                skill_name
+            )));
+        }
+        return parse_agent_stdout_json(&stdout).map_err(|error| {
+            AppError::Validation(format!(
+                "pi-coding-agent {} 返回非 JSON：{}；{}",
+                skill_name,
+                error,
+                truncate_for_summary(&stdout, 240)
+            ))
+        });
+    }
+}
+
+fn ai_provider_max_attempts() -> u32 {
+    std::env::var("WX_XD_AI_RETRY_ATTEMPTS")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(2)
+        .clamp(1, 3)
+}
+
+/// 是否命中 AI provider 限流(429/Too many requests/限流)。与审查侧 is_ai_rate_limit_error 同义，
+/// 这里独立一份纯函数，避免跨模块耦合。
+fn is_ai_provider_rate_limited(summary: &str) -> bool {
+    summary.contains("429")
+        || summary.contains("Too many requests")
+        || summary.contains("too many requests")
+        || summary.contains("limitation")
+        || summary.contains("限流")
+}
+
+fn ai_provider_cooldown_cell() -> &'static std::sync::Mutex<Option<std::time::Instant>> {
+    static CELL: std::sync::OnceLock<std::sync::Mutex<Option<std::time::Instant>>> =
+        std::sync::OnceLock::new();
+    CELL.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+fn ai_provider_in_cooldown() -> bool {
+    ai_provider_cooldown_cell()
+        .lock()
+        .ok()
+        .and_then(|guard| *guard)
+        .is_some_and(|until| std::time::Instant::now() < until)
+}
+
+fn set_ai_provider_cooldown() {
+    let seconds = std::env::var("WX_XD_AI_COOLDOWN_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(60)
+        .clamp(5, 600);
+    if let Ok(mut guard) = ai_provider_cooldown_cell().lock() {
+        *guard = Some(std::time::Instant::now() + StdDuration::from_secs(seconds));
+    }
 }
 
 fn ai_agent_timeout_duration() -> StdDuration {

@@ -1,5 +1,5 @@
-import { ref } from "vue";
-import { ElMessage } from "element-plus";
+import { ref } from "../runtime/reactive";
+import { ElMessage } from "../runtime/feedback";
 import type {
   ShopProductListResult,
   SyncShopProductsResult,

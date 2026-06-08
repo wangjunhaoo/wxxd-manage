@@ -1,7 +1,7 @@
-import { computed, ref, type Ref } from "vue";
+import { computed, ref, type Ref } from "../../runtime/reactive";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { ElMessage, ElMessageBox } from "element-plus";
+import { ElMessage, ElMessageBox } from "../../runtime/feedback";
 import type {
   CategoryCacheView,
   CategoryCatalogListResult,

@@ -1,5 +1,5 @@
-import { onUnmounted, ref } from "vue";
-import { ElMessage } from "element-plus";
+import { ref } from "../runtime/reactive";
+import { ElMessage } from "../runtime/feedback";
 import type {
   CategoryCacheView,
   CategoryCatalogListResult,
@@ -268,7 +268,7 @@ export function usePipeline(command: CommandFn) {
     }
   }
 
-  onUnmounted(() => stopPipelinePolling());
+  // 轮询清理交由调用方（React 组件 useEffect cleanup）调用 stopPipelinePolling。
 
   return {
     pipelineProducts,

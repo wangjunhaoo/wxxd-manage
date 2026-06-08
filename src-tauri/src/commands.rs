@@ -159,8 +159,11 @@ const AI_PROVIDER_CONTEXT_WINDOW_SETTING: &str = "ai_provider.context_window";
 const AI_PROVIDER_MAX_TOKENS_SETTING: &str = "ai_provider.max_tokens";
 const IMAGE_DOWNLOAD_TIMEOUT_SECONDS: u64 = 15;
 const IMAGE_DOWNLOAD_MAX_BYTES: u64 = 20 * 1024 * 1024;
-const WECHAT_IMAGE_MAX_BYTES: usize = 10 * 1024 * 1024;
-const WECHAT_IMAGE_TARGET_BYTES: usize = 9_500_000;
+// 微信 shop/ec/basics/img/upload 单图体积上限：实测约 2MB。此前误设为 10MB，导致 2~10MB 的
+// 淘宝原图被当作合规直传、被微信回 45002 content size out of limit。超过 MAX 的图会走
+// encode_jpeg_under_limit 压缩转 JPEG；TARGET 留 buffer，确保压缩结果稳定低于硬限制。
+const WECHAT_IMAGE_MAX_BYTES: usize = 2 * 1024 * 1024;
+const WECHAT_IMAGE_TARGET_BYTES: usize = 1_800_000;
 const IMAGE_USER_AGENT: &str = "wx-xd-image-preflight/0.1";
 const IMAGE_ACCEPT_HEADER: &str = "image/avif,image/webp,image/apng,image/*,*/*;q=0.8";
 

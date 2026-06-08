@@ -4,7 +4,7 @@
 
 当前首版实现重点是把项目骨架和最小铺货闭环跑通：
 
-- `Tauri v2 + Vue 3 + TypeScript + Element Plus + Rust + SQLite`
+- `Tauri v2 + React 18 + TypeScript + Vite + Rust + SQLite`（前端 UI 为「Soft」设计方向，自研零依赖响应式 store，见 `src/runtime/`）
 - 本地 SQLite 初始化、WAL、基础表结构和默认店铺组
 - 店铺组创建、店铺录入、`app_secret` 加密保存和稳定版 token 验证入口
 - 微信统一 client 骨架、加密 token 缓存和脱敏 API 调用日志

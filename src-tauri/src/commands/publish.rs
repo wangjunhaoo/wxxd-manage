@@ -1454,6 +1454,9 @@ pub async fn run_publish_category_prechecks_once(
     let skipped_items = 0i64;
     let mut after_sale_address_cache = BTreeMap::new();
     let mut freight_template_cache = BTreeMap::new();
+    // 类目预检阶段 AI 兜底补属性所需配置：弥补 attr_fill 阶段本地无类目详情时
+    // 不调 AI 直接推进的时序错配（此阶段 raw_detail 已在线拉取就绪，是真正能调 AI 的时机）。
+    let ai_config = load_optional_ai_provider_config(&app)?;
 
     for item in ready_items {
         job_ids.insert(item.job_id.clone());
@@ -1640,8 +1643,95 @@ pub async fn run_publish_category_prechecks_once(
                     check_category_requirements_from_detail(&raw_detail, &draft.payload);
             }
         }
+        // 审查阶段建议仍补不齐 → 就地调 AI 兜底补齐（核心修复）。
+        // 此处 raw_detail 已在线拉取就绪，是真正能按真实必填项调 AI 的时机；
+        // 补齐后写回 payload + target.raw_payload，仍缺再 block 转人工确认。
+        if requirement_check.has_missing_attrs() {
+            if let Some(ai_config) = ai_config.as_ref() {
+                let mut plan = build_attribute_fill_plan(
+                    &item,
+                    &product,
+                    &draft.payload,
+                    &raw_detail,
+                    &requirement_check,
+                );
+                let requires_ai = plan
+                    .suggestions
+                    .iter()
+                    .any(|suggestion| !suggestion.applied && suggestion.source == "needs_ai");
+                if requires_ai {
+                    // 同 attr_fill：AI provider 偶发 hang，120s 超时兜底，不挂死整轮 tick。
+                    let ai_call = tokio::time::timeout(
+                        std::time::Duration::from_secs(120),
+                        fill_attribute_plan_with_ai(&app, ai_config, &mut plan),
+                    )
+                    .await;
+                    match ai_call {
+                        Ok(Ok(filled)) if plan.can_auto_apply() => {
+                            apply_attribute_fill_plan_to_payload(&mut draft.payload, &plan)?;
+                            let conn = open_connection(&app)?;
+                            persist_filled_add_product_payload(&conn, &item, &draft.payload, &plan)?;
+                            insert_task_log(
+                                &conn,
+                                &item.job_id,
+                                Some(&item.item_id),
+                                "info",
+                                &format!("类目预检阶段 AI 兜底补齐 {filled} 个必填属性并写回发品参数"),
+                                Some(&serde_json::json!({
+                                    "source": "category_precheck_ai_fill",
+                                    "filled_count": filled
+                                })),
+                            )?;
+                            requirement_check =
+                                check_category_requirements_from_detail(&raw_detail, &draft.payload);
+                        }
+                        Ok(Ok(_)) => {
+                            // AI 有产出但不足以自动应用（仍有未决项），留待下方 block 转人工。
+                            insert_task_log_for_app(
+                                &app,
+                                &item.job_id,
+                                Some(&item.item_id),
+                                "warn",
+                                "类目预检阶段 AI 兜底未能补齐全部必填属性，转人工确认",
+                                None,
+                            )?;
+                        }
+                        Ok(Err(error)) => {
+                            insert_task_log_for_app(
+                                &app,
+                                &item.job_id,
+                                Some(&item.item_id),
+                                "warn",
+                                &format!("类目预检阶段 AI 兜底补齐失败：{error}"),
+                                None,
+                            )?;
+                        }
+                        Err(_) => {
+                            insert_task_log_for_app(
+                                &app,
+                                &item.job_id,
+                                Some(&item.item_id),
+                                "warn",
+                                "类目预检阶段 AI 兜底补齐超时(120s)",
+                                None,
+                            )?;
+                        }
+                    }
+                }
+            }
+        }
         if requirement_check.has_missing_attrs() {
             let summary = requirement_check.failure_summary();
+            // 补一条 block 日志：原先 mark_failed 不写 task_log，导致 category_precheck
+            // 判缺在执行时间线里完全不可见（本次排查曾因此走弯路）。
+            insert_task_log_for_app(
+                &app,
+                &item.job_id,
+                Some(&item.item_id),
+                "warn",
+                &format!("微信类目必填属性仍缺，转人工确认：{summary}"),
+                None,
+            )?;
             mark_publish_item_failed_for_app(&app, &item, "CATEGORY_ATTRS_NEED_AI_FILL", &summary)?;
             failed_items += 1;
             continue;
@@ -2190,6 +2280,8 @@ pub async fn run_publish_submits_once(
                     None,
                     Some(&format!("addproduct ok, product_id={}", result.product_id)),
                 )?;
+                // 方案A：addproduct 仅创建草稿(status=0)，必须推进到 listing 阶段调 listingproduct
+                // 上架以触发微信审核，不能直接进 audit——否则审核轮询永远等不到审核态而死锁。
                 conn.execute(
                     "UPDATE pipeline_shop_targets
                      SET stage = ?1,
@@ -2200,7 +2292,7 @@ pub async fn run_publish_submits_once(
                          updated_at = ?4
                      WHERE id = ?5",
                     params![
-                        target_stage::AUDIT,
+                        target_stage::LISTING,
                         target_status::PENDING,
                         result.product_id,
                         now_shanghai(),
@@ -2236,7 +2328,7 @@ pub async fn run_publish_submits_once(
                     &item.job_id,
                     Some(&item.item_id),
                     "info",
-                    "微信 addproduct 已提交，等待审核状态同步",
+                    "微信 addproduct 已创建草稿，等待 listing 上架",
                     Some(&serde_json::json!({
                         "wechat_product_id": result.product_id
                     })),
@@ -2404,14 +2496,12 @@ pub async fn run_publish_status_sync_once(
                     resolution.wechat_edit_status,
                 )?;
                 {
-                    // 方案Y：审核结果决定 target 推进——已上架→完成；审核通过→进上架阶段；
-                    // 拒绝→阻塞等人工；审核中→保持 audit 阶段待下轮 tick 重查（不推进）。
+                    // 方案A：listing 上架已在前置阶段提交，audit 阶段仅轮询微信审核/上架结果——
+                    // 已上架(status=5)或审核通过(status=4)→收尾 done；终态失败→阻塞等人工；
+                    // 审核中(2)/草稿态(0/1)→保持 audit 待下轮 tick 重查（不推进）。
                     let conn = open_connection(&app)?;
                     match resolution.status {
-                        "success" => finish_target(&conn, &item.item_id)?,
-                        "audit_passed" => {
-                            advance_target(&conn, &item.item_id, target_stage::LISTING)?
-                        }
+                        "success" | "audit_passed" => finish_target(&conn, &item.item_id)?,
                         "failed" => block_target(
                             &conn,
                             &item.item_id,
@@ -2579,22 +2669,23 @@ pub async fn run_publish_listing_once(
                 )?;
                 drop(conn);
                 {
-                    // 方案Y：listingproduct 成功即上架完成，target 收尾到 done。
+                    // 方案A：listingproduct 仅提交上架请求，商品随后进入微信审核(status=2)，
+                    // 推进到 audit 阶段轮询 getproduct，确认审核通过/已上架(status=4/5)才收尾 done。
                     let conn = open_connection(&app)?;
-                    finish_target(&conn, &item.item_id)?;
+                    advance_target(&conn, &item.item_id, target_stage::AUDIT)?;
                 }
                 set_shop_product_item_state(
                     &app,
                     &item,
-                    "listed",
-                    "微信 listingproduct 成功，商品已上架",
+                    "submitted",
+                    "微信 listingproduct 已提交，等待审核确认",
                 )?;
                 insert_task_log_for_app(
                     &app,
                     &item.job_id,
                     Some(&item.item_id),
                     "info",
-                    "微信 listingproduct 已提交，等待 getproduct 确认已上架",
+                    "微信 listingproduct 已提交，进入审核轮询，等待 getproduct 确认已上架",
                     Some(&serde_json::json!({
                         "wechat_product_id": item.wechat_product_id
                     })),

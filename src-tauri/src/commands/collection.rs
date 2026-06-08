@@ -60,6 +60,11 @@ pub fn import_excel_for_collection(
     };
 
     let mut imported_count = 0i64;
+    // 导入去重：同一淘宝链接只建一个商品。批内用 seen 去重，跨批查库去重(避免与历史/已上架商品
+    // 重复采集铺货后在 precheck 撞 DUPLICATE_EXTERNAL_PRODUCT_IN_SHOP)。跳过数用通知告知用户，
+    // 返回值仍是去重后的真实导入数，杜绝「静默丢数据」误解。
+    let mut skipped_count = 0i64;
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
     if let Some(Ok(range)) = excel.worksheet_range_at(0) {
         for row in range.rows() {
@@ -91,6 +96,24 @@ pub fn import_excel_for_collection(
                 )));
             }
 
+            // 去重：同一淘宝链接(批内重复 / 库内已存在)只建一个商品，避免重复铺货撞 DUPLICATE。
+            if !seen.insert(source_url.clone()) {
+                skipped_count += 1;
+                continue;
+            }
+            let already_exists = conn
+                .query_row(
+                    "SELECT 1 FROM pipeline_products WHERE source_url = ?1 LIMIT 1",
+                    [&source_url],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+            if already_exists {
+                skipped_count += 1;
+                continue;
+            }
+
             let product_id = format!("prod_{}", Uuid::new_v4().simple());
             conn.execute(
                 "INSERT INTO pipeline_products
@@ -109,6 +132,22 @@ pub fn import_excel_for_collection(
             }
             imported_count += 1;
         }
+    }
+
+    if skipped_count > 0 {
+        // 通知告知用户有重复链接被跳过(返回值是去重后的真实导入数，避免「导入了全部行」的误解)。
+        let _ = upsert_notification(
+            &conn,
+            "info",
+            "import_dedup",
+            "import_excel",
+            None,
+            "已跳过重复淘宝链接",
+            &format!(
+                "本次导入跳过 {skipped_count} 条重复淘宝链接(表内重复或库内已存在)，实际导入 {imported_count} 个商品。"
+            ),
+            None,
+        );
     }
 
     if imported_count > 0 {
@@ -485,8 +524,14 @@ pub async fn run_collection_review_once(
                 }
             }
             Err(error) => {
-                if let Err(persist_error) =
-                    persist_collection_review_failure(&app, &task_id, &error.to_string())
+                let summary = error.to_string();
+                if is_ai_rate_limit_error(&summary) || summary.contains("超时") {
+                    // 限流/AI 超时属瞬时故障：不落 status='error' 终态(否则审查 loader 不再捞、卡死)。
+                    // 商品 status 在审查全程一直是 'collecting'，此处不持久化失败即天然保持可重审；
+                    // 配合 ai_provider 的限流冷却，driver 下个 tick 不会立刻再打爆 provider。
+                    eprintln!("审查遇限流/超时，保持待重审 task_id={task_id}：{summary}");
+                } else if let Err(persist_error) =
+                    persist_collection_review_failure(&app, &task_id, &summary)
                 {
                     eprintln!("持久化审查失败 task_id={task_id}：{persist_error}");
                 }
@@ -1452,10 +1497,28 @@ async fn review_collection_task(
                     if requires_ai {
                         match ai_config {
                             Some(config) => {
-                                run_collection_attribute_ai(
+                                if let Err(error) = run_collection_attribute_ai(
                                     app, config, &task.id, shop_id, &mut plan,
                                 )
-                                .await?;
+                                .await
+                                {
+                                    let summary = error.to_string();
+                                    if is_ai_rate_limit_error(&summary) {
+                                        // 限流不传播 Err(否则整轮审查落 status='error'，同样不会被
+                                        // driver 重审=同根死锁)；记 warning 让 persist 走「保持
+                                        // collecting 自动重审」，缺的必填属性留待铺货阶段补齐。
+                                        if ai_warning.is_none() {
+                                            ai_warning = Some(summary);
+                                        }
+                                        issues.push(review_issue(
+                                            "attr",
+                                            "info",
+                                            "AI 限流，必填属性将在铺货阶段补齐",
+                                        ));
+                                    } else {
+                                        return Err(error);
+                                    }
+                                }
                             }
                             None => {
                                 issues.push(review_issue(
@@ -1508,7 +1571,19 @@ async fn review_collection_task(
                 let item = collection_review_pending_publish_item(task, shop_id, &product)?;
                 let mut plan = build_basic_attribute_fill_plan(&item, &product, &missing);
                 if let Some(config) = ai_config {
-                    run_collection_attribute_ai(app, config, &task.id, shop_id, &mut plan).await?;
+                    if let Err(error) =
+                        run_collection_attribute_ai(app, config, &task.id, shop_id, &mut plan).await
+                    {
+                        let summary = error.to_string();
+                        if is_ai_rate_limit_error(&summary) {
+                            // 同上：限流不传播，保持可重审。
+                            if ai_warning.is_none() {
+                                ai_warning = Some(summary);
+                            }
+                        } else {
+                            return Err(error);
+                        }
+                    }
                 }
                 promote_collection_ai_attribute_suggestions(&mut plan);
                 apply_basic_attribute_suggestions(&product, &plan, &mut attr_suggestions);
@@ -1679,27 +1754,58 @@ fn persist_collection_review_result(
         // 把它提升为 precheck 并聚合成 publishing，彻底堵死「补店与审查并发」的孤儿窗口。
         recompute_pipeline_product(&conn, task_id)?;
     } else {
-        // needs_review / blocked：停在待确认，等人工处理
-        let error_code = if review.status == "blocked" {
-            "REVIEW_BLOCKED"
+        // needs_review / blocked：默认停在待确认，等人工处理。
+        // 但若是 AI provider 限流(429/超时)导致的降级——AI 没调通、退回本地匹配——
+        // 这并非「真的需要人工」，而是瞬时故障。此时只要本地仍有类目候选，就保持 collecting
+        // 让 driver 下个 tick 自动重审，避免限流被误当成 need_confirm 终态卡死(审查 loader 只捞
+        // status='collecting')。判定锚点严格绑定：needs_review + ai.warning 命中限流 + 有类目候选；
+        // blocked(图片违禁等真问题)、无候选(本地确实定不了)一律照常落终态等人工。
+        let ai_warning = review
+            .result_json
+            .pointer("/ai/warning")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let has_category_candidates = review
+            .result_json
+            .pointer("/category/candidates")
+            .and_then(Value::as_array)
+            .is_some_and(|candidates| !candidates.is_empty());
+        let ai_unavailable = review.status == "needs_review"
+            && is_ai_rate_limit_error(ai_warning)
+            && has_category_candidates;
+        if ai_unavailable {
+            // 保持 collecting 让 driver 自动重审；不写 reviewed_data，保留原 collected_data 供重审复用。
+            conn.execute(
+                "UPDATE pipeline_products
+                 SET status = 'collecting', stage = 'review', attention = 'none',
+                     error_code = NULL, error_reason = NULL,
+                     progress_text = 'AI 限流，等待自动重审',
+                     review_result_json = ?1, updated_at = ?2
+                 WHERE id = ?3",
+                params![review_result_json, now, task_id],
+            )?;
         } else {
-            "REVIEW_NEEDS_CONFIRM"
-        };
-        conn.execute(
-            "UPDATE pipeline_products
-             SET status = 'need_confirm', stage = 'review', attention = 'need_confirm',
-                 error_code = ?1, error_reason = ?2, progress_text = NULL,
-                 reviewed_data = ?3, review_result_json = ?4, updated_at = ?5
-             WHERE id = ?6",
-            params![
-                error_code,
-                review.summary,
-                reviewed_data,
-                review_result_json,
-                now,
-                task_id
-            ],
-        )?;
+            let error_code = if review.status == "blocked" {
+                "REVIEW_BLOCKED"
+            } else {
+                "REVIEW_NEEDS_CONFIRM"
+            };
+            conn.execute(
+                "UPDATE pipeline_products
+                 SET status = 'need_confirm', stage = 'review', attention = 'need_confirm',
+                     error_code = ?1, error_reason = ?2, progress_text = NULL,
+                     reviewed_data = ?3, review_result_json = ?4, updated_at = ?5
+                 WHERE id = ?6",
+                params![
+                    error_code,
+                    review.summary,
+                    reviewed_data,
+                    review_result_json,
+                    now,
+                    task_id
+                ],
+            )?;
+        }
     }
     Ok(())
 }
@@ -3675,15 +3781,31 @@ fn update_task_status(
             )?;
         }
         "success" => {
-            // 采集成功 → 进入审查阶段，等审查 handler 处理
+            // 采集成功 → 进入审查阶段，等审查 handler 处理。
+            // 同时把采集结果中的 external_product_id（淘宝商品唯一链接）回填到列：
+            // 该列此前恒为 NULL，铺货 loader 用 COALESCE(...,'') 会把所有商品归一成空串，
+            // 导致第一个商品铺成功后，同店后续商品在 precheck 全部撞空串去重键 → 误判 DUPLICATE。
+            // 回填真实唯一值后去重才正确；解析不到则存 NULL（空值不参与去重，见 precheck 防御）。
+            let external_id = collected_data
+                .as_deref()
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+                .and_then(|value| {
+                    value
+                        .get("external_product_id")
+                        .and_then(|field| field.as_str())
+                        .map(str::trim)
+                        .filter(|text| !text.is_empty())
+                        .map(str::to_string)
+                });
             conn.execute(
                 "UPDATE pipeline_products
                  SET status = 'collecting', stage = 'review', attention = 'none',
-                     collected_data = ?1, reviewed_data = NULL, review_result_json = NULL,
+                     collected_data = ?1, external_product_id = ?2,
+                     reviewed_data = NULL, review_result_json = NULL,
                      error_code = NULL, error_reason = NULL, progress_text = '等待审查',
-                     updated_at = ?2
-                 WHERE id = ?3",
-                params![collected_data, now, task_id],
+                     updated_at = ?3
+                 WHERE id = ?4",
+                params![collected_data, external_id, now, task_id],
             )?;
         }
         _ => {

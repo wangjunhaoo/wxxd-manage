@@ -3,7 +3,9 @@ use super::*;
 const ADD_PRODUCT_MIN_HEAD_IMAGES: usize = 3;
 const ADD_PRODUCT_MAX_HEAD_IMAGES: usize = 9;
 const ADD_PRODUCT_MIN_DETAIL_IMAGES: usize = 1;
-const ADD_PRODUCT_MAX_DETAIL_IMAGES: usize = 50;
+// 微信详情图：addproduct 接口允许最多 50 张，但草稿箱「发布」上架时实测只放行 20 张
+// （接口层与发布层限制不一致）。按可发布上限取 20，提交时即截断，避免后续发布被卡。
+const ADD_PRODUCT_MAX_DETAIL_IMAGES: usize = 20;
 const ADD_PRODUCT_MAX_SKUS: usize = 500;
 
 pub(in crate::commands) fn precheck_publish_item(
@@ -23,18 +25,22 @@ pub(in crate::commands) fn precheck_publish_item(
             "店铺缺少 app_secret，无法调用微信接口".to_string(),
         )));
     }
-    let existing_product = conn
-        .query_row(
-            "SELECT id FROM shop_products WHERE shop_id = ?1 AND external_product_id = ?2",
-            params![item.shop_id.as_str(), item.external_product_id.as_str()],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?;
-    if existing_product.is_some() {
-        return Ok(Some((
-            "DUPLICATE_EXTERNAL_PRODUCT_IN_SHOP",
-            "同一个 external_product_id 已经铺过该店铺".to_string(),
-        )));
+    // external_product_id 为空时跳过查重：空值不是有效去重键，
+    // 否则同店多个无外部 id 的商品会互相误判重复（历史空串撞库 bug）。
+    if !item.external_product_id.trim().is_empty() {
+        let existing_product = conn
+            .query_row(
+                "SELECT id FROM shop_products WHERE shop_id = ?1 AND external_product_id = ?2",
+                params![item.shop_id.as_str(), item.external_product_id.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if existing_product.is_some() {
+            return Ok(Some((
+                "DUPLICATE_EXTERNAL_PRODUCT_IN_SHOP",
+                "同一个 external_product_id 已经铺过该店铺".to_string(),
+            )));
+        }
     }
     if product.images.len() < ADD_PRODUCT_MIN_HEAD_IMAGES {
         return Ok(Some((
@@ -133,6 +139,9 @@ pub(in crate::commands) fn prepare_add_product_payload_for_publish(
 pub(in crate::commands) fn add_product_payload_error_code(error: &str) -> &'static str {
     if error.contains("after_sale_info.after_sale_address_id") {
         "MISSING_AFTER_SALE_ADDRESS"
+    } else if error.contains("超过 40 字符") {
+        // SKU 规格值超 40 字符通常是采集错位(多个候选值挤一格)，AI 补不了，专用码避免误导成「可 AI 补齐」。
+        "SKU_SPEC_VALUE_MALFORMED"
     } else {
         "WECHAT_PAYLOAD_NEEDS_AI_FILL"
     }
@@ -254,6 +263,7 @@ pub(in crate::commands) fn publish_failure_notification_severity(error_code: &st
     match error_code {
         "CATEGORY_NEEDS_AI_FILL"
         | "WECHAT_PAYLOAD_NEEDS_AI_FILL"
+        | "SKU_SPEC_VALUE_MALFORMED"
         | "CATEGORY_ATTRS_NEED_AI_FILL"
         | "SHOP_NOT_ACTIVE"
         | "SHOP_SECRET_MISSING"
@@ -831,6 +841,49 @@ pub(in crate::commands) fn product_metadata_object(
     }
 }
 
+/// 微信 add_product 对 SKU 编码的字段上限(官方文档 + 真机错误码 6600096 实测)：
+/// - `sku_code`：≤100 UTF8 字节，且小店后台不做唯一性约束、本地链路不消费——超长可安全截断；
+/// - `out_sku_id`：≤128 字符，是「微信订单原样回传 → order_items → 采购寻源」的映射键，须尽量保持完整。
+const WECHAT_SKU_CODE_MAX_BYTES: usize = 100;
+const WECHAT_OUT_SKU_ID_MAX_CHARS: usize = 128;
+
+/// 把字符串按 UTF8 字节安全截断到 ≤ max_bytes（不切断半个多字节字符）。
+/// 超长时保留前缀（尺码/颜色等语义在前、营销文案在后，正好砍掉无用尾巴）再拼 8 位哈希后缀，
+/// 既限长又保证「仅尾部不同的多 SKU」截断后仍互不相同。
+fn truncate_sku_code_bytes(raw: &str, max_bytes: usize) -> String {
+    if raw.len() <= max_bytes {
+        return raw.to_string();
+    }
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    raw.hash(&mut hasher);
+    let suffix = format!("{:08x}", (hasher.finish() & 0xffff_ffff) as u32);
+    let suffix_budget = suffix.len() + 1; // '-' + 8 位 hex
+    let head_budget = max_bytes.saturating_sub(suffix_budget);
+    let mut cut = head_budget.min(raw.len());
+    while cut > 0 && !raw.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}-{}", &raw[..cut], suffix)
+}
+
+/// out_sku_id 限 128 字符（非字节）。本批最长约 41 字符不会触发，仅作极端长度防御，
+/// 触发时同样保留前缀 + 哈希后缀保唯一。
+fn truncate_out_sku_id(raw: &str) -> String {
+    if raw.chars().count() <= WECHAT_OUT_SKU_ID_MAX_CHARS {
+        return raw.to_string();
+    }
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    raw.hash(&mut hasher);
+    let suffix = format!("{:08x}", (hasher.finish() & 0xffff_ffff) as u32);
+    let head: String = raw
+        .chars()
+        .take(WECHAT_OUT_SKU_ID_MAX_CHARS - (suffix.len() + 1))
+        .collect();
+    format!("{}-{}", head, suffix)
+}
+
 pub(in crate::commands) fn apply_add_product_defaults(
     payload: &mut serde_json::Map<String, Value>,
     product: &ExternalProductInput,
@@ -844,6 +897,28 @@ pub(in crate::commands) fn apply_add_product_defaults(
     payload
         .entry("spu_code".to_string())
         .or_insert_with(|| Value::String(product.external_product_id.clone()));
+
+    // 兜底：固化的 metadata.wechat_add_product_payload 可能含历史超长 sku_code（淘宝规格串带
+    // 营销文案 → UTF8 >100 字节 → 6600096 整批 SKU 被拒）。此处是「新建 / 固化」两条路径进 submit
+    // 前的统一必经点，统一把超长 sku_code 截断到 ≤100 字节、out_sku_id 限 128 字符，存量重跑即纠正。
+    if let Some(Value::Array(skus)) = payload.get_mut("skus") {
+        for sku in skus.iter_mut() {
+            if let Some(obj) = sku.as_object_mut() {
+                if let Some(code) = obj.get("sku_code").and_then(Value::as_str) {
+                    if code.len() > WECHAT_SKU_CODE_MAX_BYTES {
+                        let fixed = truncate_sku_code_bytes(code, WECHAT_SKU_CODE_MAX_BYTES);
+                        obj.insert("sku_code".to_string(), Value::String(fixed));
+                    }
+                }
+                if let Some(out_id) = obj.get("out_sku_id").and_then(Value::as_str) {
+                    if out_id.chars().count() > WECHAT_OUT_SKU_ID_MAX_CHARS {
+                        let fixed = truncate_out_sku_id(out_id);
+                        obj.insert("out_sku_id".to_string(), Value::String(fixed));
+                    }
+                }
+            }
+        }
+    }
 }
 
 pub(in crate::commands) fn insert_add_product_categories(
@@ -1001,13 +1076,18 @@ pub(in crate::commands) fn build_add_product_skus(
         }
 
         let mut sku_payload = serde_json::Map::new();
+        // out_sku_id 是采购对账映射键(微信原样回传)，限 128 字符内保持完整；
+        // sku_code 限 100 UTF8 字节、微信不做唯一约束、本地不消费，超长安全截断避免 6600096。
         sku_payload.insert(
             "out_sku_id".to_string(),
-            Value::String(sku.external_sku_id.clone()),
+            Value::String(truncate_out_sku_id(&sku.external_sku_id)),
         );
         sku_payload.insert(
             "sku_code".to_string(),
-            Value::String(sku.external_sku_id.clone()),
+            Value::String(truncate_sku_code_bytes(
+                &sku.external_sku_id,
+                WECHAT_SKU_CODE_MAX_BYTES,
+            )),
         );
         sku_payload.insert(
             "sale_price".to_string(),
@@ -1445,7 +1525,7 @@ pub(in crate::commands) fn validate_desc_images_range(
         {
             Ok(())
         }
-        Some(Value::Array(_)) => Err("微信发品详情图需为 1 到 50 张".to_string()),
+        Some(Value::Array(_)) => Err("微信发品详情图需为 1 到 20 张".to_string()),
         Some(_) => Err("desc_info.imgs 必须是数组".to_string()),
         None => Ok(()),
     }
@@ -1494,6 +1574,59 @@ mod tests {
         .as_object()
         .cloned()
         .expect("测试 payload 必须是对象")
+    }
+
+    #[test]
+    fn truncate_sku_code_keeps_short_value() {
+        let short = "尺码=L;颜色分类=绿色"; // 远小于 100 字节
+        assert_eq!(truncate_sku_code_bytes(short, WECHAT_SKU_CODE_MAX_BYTES), short);
+    }
+
+    #[test]
+    fn truncate_sku_code_limits_oversize_to_100_bytes_on_boundary() {
+        // 真机超长样本：颜色含营销文案，UTF8 = 108 字节 > 100
+        let long = "尺码=00:05/00:30;身高=120cm;颜色分类=绿色（升级款）【面料更舒适，90%用户选择】";
+        assert!(long.len() > WECHAT_SKU_CODE_MAX_BYTES);
+        let fixed = truncate_sku_code_bytes(long, WECHAT_SKU_CODE_MAX_BYTES);
+        assert!(fixed.len() <= WECHAT_SKU_CODE_MAX_BYTES, "截断后={}字节", fixed.len());
+        // 不得切断半个 UTF8 字符
+        assert!(std::str::from_utf8(fixed.as_bytes()).is_ok());
+        // 保留了可读前缀语义
+        assert!(fixed.starts_with("尺码="));
+    }
+
+    #[test]
+    fn truncate_sku_code_keeps_tail_different_skus_unique() {
+        let a = "尺码=00:05;身高=120cm;颜色分类=绿色（升级款）【面料更舒适，90%用户选择，A 款专属编号】";
+        let b = "尺码=00:05;身高=120cm;颜色分类=绿色（升级款）【面料更舒适，90%用户选择，B 款专属编号】";
+        assert!(a.len() > WECHAT_SKU_CODE_MAX_BYTES && b.len() > WECHAT_SKU_CODE_MAX_BYTES);
+        let fa = truncate_sku_code_bytes(a, WECHAT_SKU_CODE_MAX_BYTES);
+        let fb = truncate_sku_code_bytes(b, WECHAT_SKU_CODE_MAX_BYTES);
+        assert_ne!(fa, fb, "仅尾部不同的 SKU 截断后必须仍唯一");
+    }
+
+    #[test]
+    fn apply_defaults_fixes_persisted_oversize_sku_code() {
+        let long = "尺码=00:05/00:30;身高=120cm;颜色分类=绿色（升级款）【面料更舒适，90%用户选择】";
+        let mut payload = serde_json::json!({
+            "skus": [ { "out_sku_id": long, "sku_code": long, "sale_price": 100, "stock_num": 1 } ]
+        })
+        .as_object()
+        .cloned()
+        .unwrap();
+        let product: ExternalProductInput = serde_json::from_value(serde_json::json!({
+            "external_product_id": "https://item.taobao.com/item.htm?id=1",
+            "title": "测试",
+            "source_url": "https://item.taobao.com/item.htm?id=1",
+            "skus": []
+        }))
+        .unwrap();
+        apply_add_product_defaults(&mut payload, &product);
+        let sku = payload["skus"][0].as_object().unwrap();
+        let code = sku["sku_code"].as_str().unwrap();
+        assert!(code.len() <= WECHAT_SKU_CODE_MAX_BYTES);
+        // out_sku_id 仅 ~约 41 字符 < 128，应保持完整不动(采购映射键)
+        assert_eq!(sku["out_sku_id"].as_str().unwrap(), long);
     }
 
     #[test]
@@ -1554,10 +1687,10 @@ mod tests {
         let mut payload = base_payload(0);
         payload.insert(
             "desc_info".to_string(),
-            serde_json::json!({ "imgs": (0..51).map(|index| format!("d{index}")).collect::<Vec<_>>() }),
+            serde_json::json!({ "imgs": (0..21).map(|index| format!("d{index}")).collect::<Vec<_>>() }),
         );
         let error = validate_add_product_base_payload_without_after_sale(&payload)
-            .expect_err("详情图超过 50 张应被拦截");
+            .expect_err("详情图超过 20 张应被拦截");
         assert!(error.contains("详情图"));
 
         let mut payload = base_payload(0);
