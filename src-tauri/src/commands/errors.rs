@@ -80,6 +80,7 @@ pub enum ErrorCode {
     CategoryAttrsNeedAiFill,
     CategoryNeedsAiFill,
     WechatPayloadNeedsAiFill,
+    SkuSpecValueMalformed,
     MissingAfterSaleAddress,
     AmbiguousAfterSaleAddress,
     MissingFreightTemplate,
@@ -129,6 +130,7 @@ impl ErrorCode {
         ErrorCode::CategoryAttrsNeedAiFill,
         ErrorCode::CategoryNeedsAiFill,
         ErrorCode::WechatPayloadNeedsAiFill,
+        ErrorCode::SkuSpecValueMalformed,
         ErrorCode::MissingAfterSaleAddress,
         ErrorCode::AmbiguousAfterSaleAddress,
         ErrorCode::MissingFreightTemplate,
@@ -176,6 +178,7 @@ impl ErrorCode {
             ErrorCode::CategoryAttrsNeedAiFill => "CATEGORY_ATTRS_NEED_AI_FILL",
             ErrorCode::CategoryNeedsAiFill => "CATEGORY_NEEDS_AI_FILL",
             ErrorCode::WechatPayloadNeedsAiFill => "WECHAT_PAYLOAD_NEEDS_AI_FILL",
+            ErrorCode::SkuSpecValueMalformed => "SKU_SPEC_VALUE_MALFORMED",
             ErrorCode::MissingAfterSaleAddress => "MISSING_AFTER_SALE_ADDRESS",
             ErrorCode::AmbiguousAfterSaleAddress => "AMBIGUOUS_AFTER_SALE_ADDRESS",
             ErrorCode::MissingFreightTemplate => "MISSING_FREIGHT_TEMPLATE",
@@ -319,6 +322,13 @@ impl ErrorCode {
                 false,
                 "发品资料缺少必填属性",
                 "请补全商品必填属性",
+            ),
+            ErrorCode::SkuSpecValueMalformed => (
+                Recoverable,
+                NeedConfirm,
+                false,
+                "SKU 规格值异常（疑似采集错位，如多个尺码挤在一格）",
+                "请重新采集，或在商品编辑中把该规格拆成多个 SKU",
             ),
             ErrorCode::MissingAfterSaleAddress => (
                 Recoverable,
@@ -511,10 +521,22 @@ const UNKNOWN_CLASSIFICATION: ErrorClassification = ErrorClassification {
 
 /// 归一化任意错误码字符串：已知码精确判定，未知码兜底为异常。
 pub fn classify_error_code(code: &str) -> ErrorClassification {
-    match ErrorCode::parse(code) {
-        Some(c) => c.classify(),
-        None => UNKNOWN_CLASSIFICATION,
+    if let Some(c) = ErrorCode::parse(code) {
+        return c.classify();
     }
+    // 微信动态状态码(WECHAT_PRODUCT_STATUS_3/8/13/... 由 product_status.rs 按真实 status 拼接、
+    // 不在固定枚举里)统一兜底归类，避免落 UNKNOWN_CLASSIFICATION 在前端显示「出现未归类的错误」。
+    // retriable 保持 false：审核驳回须人工改商品后重提，自动重试只会再次驳回并触发微信限频。
+    if code.starts_with("WECHAT_PRODUCT_STATUS_") {
+        return ErrorClassification {
+            category: ErrorCategory::Fatal,
+            attention: Attention::Error,
+            retriable: false,
+            human_reason: "微信审核未通过",
+            suggested_action: "请按微信驳回原因修改商品后重新提交",
+        };
+    }
+    UNKNOWN_CLASSIFICATION
 }
 
 #[cfg(test)]

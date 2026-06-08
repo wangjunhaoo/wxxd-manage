@@ -116,6 +116,38 @@ pub async fn run_publish_pipeline_once(app: AppHandle) -> AppResult<PublishPipel
     Ok(run_publish_pipeline_steps(app, PublishPipelineStepSwitches::all_enabled()).await)
 }
 
+/// 给单个铺货阶段套独立超时预算后执行。
+///
+/// 背景：铺货 7 个阶段串行 await，早期阶段（尤其 asset_upload 的图片下载/上传、submit 的微信 API）
+/// 一旦因网络慢/死链 hang 住，会把排在它后面的 submit/listing/status_sync 全部饿死，直到外层
+/// 180s tick 整体 abort——已就绪可上架的商品因此迟迟卡在 submit。
+///
+/// 本辅助给每个阶段套独立超时：某阶段卡顿只消耗自己的预算，超时则记一条错误并跳过本轮，
+/// 不阻塞后续阶段，下一轮 tick 继续推进。空闲阶段（loader 无数据）瞬间返回、不占预算，
+/// 故预算只在真有积压/卡顿时才生效。返回 Some(结果) 表示阶段正常完成，None 表示出错或超时。
+async fn run_publish_stage_within<T>(
+    result: &mut PublishPipelineRunResult,
+    step: &str,
+    budget_secs: u64,
+    fut: impl std::future::Future<Output = AppResult<T>>,
+) -> Option<T> {
+    match tokio::time::timeout(std::time::Duration::from_secs(budget_secs), fut).await {
+        Ok(Ok(value)) => Some(value),
+        Ok(Err(error)) => {
+            push_publish_pipeline_error(result, step, error);
+            None
+        }
+        Err(_) => {
+            eprintln!("[driver] 铺货阶段「{step}」超时 {budget_secs}s（本轮跳过，下一轮继续，不阻塞后续阶段）");
+            result.errors.push(AutomationStepError {
+                step: step.to_string(),
+                error: format!("阶段超时 {budget_secs}s，已跳过本轮（不阻塞后续阶段，下一轮继续推进）"),
+            });
+            None
+        }
+    }
+}
+
 async fn run_publish_pipeline_steps(
     app: AppHandle,
     switches: PublishPipelineStepSwitches,
@@ -152,8 +184,16 @@ async fn run_publish_pipeline_steps(
     }
 
     if switches.attribute_fill {
-        match run_publish_ai_attribute_suggestions_once(app.clone(), Some(20)).await {
-            Ok(ai_result) => match run_publish_attribute_fill_once(app.clone(), Some(50)) {
+        // AI 补属性走子进程，给 40s 预算；超时/出错则本轮跳过，不阻塞后续阶段。
+        if let Some(ai_result) = run_publish_stage_within(
+            &mut result,
+            "publish.fill_required_attributes.ai",
+            40,
+            run_publish_ai_attribute_suggestions_once(app.clone(), Some(20)),
+        )
+        .await
+        {
+            match run_publish_attribute_fill_once(app.clone(), Some(50)) {
                 Ok(rule_result) => {
                     let step_result = merge_attribute_fill_results(ai_result, rule_result);
                     result
@@ -166,12 +206,7 @@ async fn run_publish_pipeline_steps(
                     "publish.fill_required_attributes",
                     error,
                 ),
-            },
-            Err(error) => push_publish_pipeline_error(
-                &mut result,
-                "publish.fill_required_attributes.ai",
-                error,
-            ),
+            }
         }
     } else {
         result
@@ -180,16 +215,18 @@ async fn run_publish_pipeline_steps(
     }
 
     if switches.category_precheck {
-        match run_publish_category_prechecks_once(app.clone(), Some(20)).await {
-            Ok(step_result) => {
-                result
-                    .executed_steps
-                    .push("publish.category_precheck".to_string());
-                result.publish_category_precheck = Some(step_result);
-            }
-            Err(error) => {
-                push_publish_pipeline_error(&mut result, "publish.category_precheck", error)
-            }
+        if let Some(step_result) = run_publish_stage_within(
+            &mut result,
+            "publish.category_precheck",
+            25,
+            run_publish_category_prechecks_once(app.clone(), Some(20)),
+        )
+        .await
+        {
+            result
+                .executed_steps
+                .push("publish.category_precheck".to_string());
+            result.publish_category_precheck = Some(step_result);
         }
     } else {
         result
@@ -198,14 +235,20 @@ async fn run_publish_pipeline_steps(
     }
 
     if switches.asset_upload {
-        match run_publish_asset_uploads_once(app.clone(), Some(10)).await {
-            Ok(step_result) => {
-                result
-                    .executed_steps
-                    .push("publish.upload_assets".to_string());
-                result.publish_asset_upload = Some(step_result);
-            }
-            Err(error) => push_publish_pipeline_error(&mut result, "publish.upload_assets", error),
+        // 图片下载/上传是最易 hang 的阶段（淘宝源图慢/死链 + 微信上传），给 40s 预算硬限；
+        // 超时只跳过本轮、卡顿项留在 running 下轮重试，绝不再拖垮后面的 submit/listing。
+        if let Some(step_result) = run_publish_stage_within(
+            &mut result,
+            "publish.upload_assets",
+            40,
+            run_publish_asset_uploads_once(app.clone(), Some(10)),
+        )
+        .await
+        {
+            result
+                .executed_steps
+                .push("publish.upload_assets".to_string());
+            result.publish_asset_upload = Some(step_result);
         }
     } else {
         result
@@ -214,16 +257,18 @@ async fn run_publish_pipeline_steps(
     }
 
     if switches.submit {
-        match run_publish_submits_once(app.clone(), Some(10)).await {
-            Ok(step_result) => {
-                result
-                    .executed_steps
-                    .push("publish.submit_products".to_string());
-                result.publish_submit = Some(step_result);
-            }
-            Err(error) => {
-                push_publish_pipeline_error(&mut result, "publish.submit_products", error)
-            }
+        if let Some(step_result) = run_publish_stage_within(
+            &mut result,
+            "publish.submit_products",
+            35,
+            run_publish_submits_once(app.clone(), Some(10)),
+        )
+        .await
+        {
+            result
+                .executed_steps
+                .push("publish.submit_products".to_string());
+            result.publish_submit = Some(step_result);
         }
     } else {
         result
@@ -231,36 +276,45 @@ async fn run_publish_pipeline_steps(
             .push("publish.submit_products".to_string());
     }
 
-    if switches.status_sync {
-        match run_publish_status_sync_once(app.clone(), Some(20)).await {
-            Ok(step_result) => {
-                result
-                    .executed_steps
-                    .push("publish.sync_status".to_string());
-                result.publish_status_sync = Some(step_result);
-            }
-            Err(error) => push_publish_pipeline_error(&mut result, "publish.sync_status", error),
-        }
-    } else {
-        result.skipped_steps.push("publish.sync_status".to_string());
-    }
-
+    // 方案A 正确顺序：submit(add 草稿) → listing(listingproduct 提交上架触发审核)
+    // → status_sync(audit 轮询审核/上架结果)。listing 必须排在 status_sync 之前，
+    // 否则商品停在草稿态(status=0)、审核轮询永远等不到结果而死锁。
     if switches.listing {
-        match run_publish_listing_once(app.clone(), Some(10)).await {
-            Ok(step_result) => {
-                result
-                    .executed_steps
-                    .push("publish.listing_products".to_string());
-                result.publish_listing = Some(step_result);
-            }
-            Err(error) => {
-                push_publish_pipeline_error(&mut result, "publish.listing_products", error)
-            }
+        if let Some(step_result) = run_publish_stage_within(
+            &mut result,
+            "publish.listing_products",
+            20,
+            run_publish_listing_once(app.clone(), Some(10)),
+        )
+        .await
+        {
+            result
+                .executed_steps
+                .push("publish.listing_products".to_string());
+            result.publish_listing = Some(step_result);
         }
     } else {
         result
             .skipped_steps
             .push("publish.listing_products".to_string());
+    }
+
+    if switches.status_sync {
+        if let Some(step_result) = run_publish_stage_within(
+            &mut result,
+            "publish.sync_status",
+            20,
+            run_publish_status_sync_once(app.clone(), Some(20)),
+        )
+        .await
+        {
+            result
+                .executed_steps
+                .push("publish.sync_status".to_string());
+            result.publish_status_sync = Some(step_result);
+        }
+    } else {
+        result.skipped_steps.push("publish.sync_status".to_string());
     }
 
     result
@@ -301,33 +355,43 @@ pub fn start_pipeline_driver(app: AppHandle) {
 }
 
 async fn drive_pipeline_once(app: &AppHandle) {
+    // 阶段顺序刻意把「铺货」排在「审查」之前：审查走 AI 子进程（每个商品约 20~30s），
+    // 一旦 collecting 积压，单跳审查就会吃满 180s tick 预算，把无需 AI 的铺货链
+    // （submit→audit→listing，纯微信 API 调用）彻底饿死，导致已就绪商品迟迟无法上架。
+    // 故：先采集 → 退避扫描 → 优先铺货（自动赢家链）→ 最后用剩余预算做审查（limit 收紧）。
+
     // 1. 采集：拉起 stage=collect 的商品（trigger 内部防重入，不会重复拉起）
     trigger_collection_worker(app.clone());
-    // 2. 审查：处理 stage=review 的商品，高置信自动通过并激活各店 target 进入铺货
-    eprintln!("[driver] tick: 审查阶段");
-    if let Err(error) = run_collection_review_once(
-        app.clone(),
-        CollectionReviewRunRequest {
-            task_ids: Vec::new(),
-            target_shop_ids: Vec::new(),
-            limit: Some(20),
-        },
-    )
-    .await
-    {
-        eprintln!("流水线 driver 审查阶段出错：{error}");
-    }
-    // 3. 退避扫描：把到期的可自动重试 blocked target 置回 pending，让 loader 能重新捞取
+
+    // 2. 退避扫描：把到期的可自动重试 blocked target 置回 pending，让 loader 能重新捞取
     //    (reactivate 内部用 requeue_target 清退避时间并 recompute 受影响商品级状态)
     if let Ok(conn) = open_connection(app) {
         if let Err(error) = reactivate_retriable_blocked_targets(&conn) {
             eprintln!("流水线 driver 退避扫描出错：{error}");
         }
     }
-    // 4. 铺货：7 个阶段顺序推进一批（precheck→属性→类目预检→传图→提交→审核同步→上架）
+
+    // 3. 铺货（优先）：7 个阶段顺序推进一批（precheck→属性→类目预检→传图→提交→审核同步→上架）
     eprintln!("[driver] tick: 铺货阶段");
     let _ =
         run_publish_pipeline_steps(app.clone(), PublishPipelineStepSwitches::all_enabled()).await;
+
+    // 4. 审查（次之）：处理 stage=review 的商品，高置信自动通过并激活各店 target 进入铺货。
+    //    limit 从 20 收紧到 8——单跳审查 ≤8 个 AI 调用可在预算内完成，避免 180s 超时把铺货挤掉；
+    //    积压会在后续 tick 持续消化（8s 一跳），不影响最终收敛，只是分摊到多跳。
+    eprintln!("[driver] tick: 审查阶段");
+    if let Err(error) = run_collection_review_once(
+        app.clone(),
+        CollectionReviewRunRequest {
+            task_ids: Vec::new(),
+            target_shop_ids: Vec::new(),
+            limit: Some(8),
+        },
+    )
+    .await
+    {
+        eprintln!("流水线 driver 审查阶段出错：{error}");
+    }
     eprintln!("[driver] tick: 本轮完成");
 }
 

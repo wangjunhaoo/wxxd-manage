@@ -88,10 +88,21 @@ pub(in crate::commands) fn sanitize_payload_attrs_with_category_detail(
 ) -> AppResult<CategoryAttrSanitizeReport> {
     let product_specs = category_attr_specs_by_key(raw_detail, "product_attr_list");
     let sale_specs = category_attr_specs_by_key(raw_detail, "sale_attr_list");
+    // 必填名单：sanitize 删除非法/空值前，只对「必填」属性兜底合法值(非必填仍按原逻辑删除)，
+    // 避免删空必填项后被 check_category_requirements 判缺 → CATEGORY_ATTRS_NEED_AI_FILL 卡 submit。
+    let product_required = required_category_attrs(raw_detail, "product_attr_list");
+    let sale_required = required_category_attrs(raw_detail, "sale_attr_list");
     let mut report = CategoryAttrSanitizeReport::default();
 
     if let Some(attrs) = payload.get_mut("attrs").and_then(Value::as_array_mut) {
-        sanitize_payload_attr_array(product, attrs, &product_specs, "商品", &mut report)?;
+        sanitize_payload_attr_array(
+            product,
+            attrs,
+            &product_specs,
+            &product_required,
+            "商品",
+            &mut report,
+        )?;
     }
 
     if let Some(skus) = payload.get_mut("skus").and_then(Value::as_array_mut) {
@@ -101,6 +112,7 @@ pub(in crate::commands) fn sanitize_payload_attrs_with_category_detail(
                     product,
                     attrs,
                     &sale_specs,
+                    &sale_required,
                     &format!("第{}个 SKU", index + 1),
                     &mut report,
                 )?;
@@ -300,6 +312,32 @@ fn category_required_attr_fallback(attr_key: &str) -> CategoryRequiredAttr {
     }
 }
 
+/// 兜底默认值：metadata 预设 / 唯一选项 / 本地规则都无法确定属性值时，从类目可选值里挑一个
+/// 合法兜底值，让必填属性也能 applied 自动上架，不再卡 need_confirm 等人工。
+/// 选值优先级：含「其他/其它/通用」等通配语义的选项 > 第一个可选值 > 允许自定义时填「其他」。
+/// 设计取舍：用户明确选择「自动填充优先上架，填错可事后在商品里改」。填的是类目合法值，
+/// 能过 addproduct 校验；至于微信内容审核是否认可，由审核阶段反馈，不在补齐阶段阻断。
+fn category_fallback_attr_value(spec: &CategoryRequiredAttr) -> Option<String> {
+    if let Some(generic) = spec.options.iter().find(|option| {
+        ["其他", "其它", "通用", "其余", "均码", "其他材质"]
+            .iter()
+            .any(|word| option.contains(word))
+    }) {
+        return Some(generic.clone());
+    }
+    if let Some(first) = spec.options.first() {
+        return Some(first.clone());
+    }
+    // 空 options 的自由文本必填属性(颜色/面料材质等 type=string 且 append_allowed=false)：
+    // 下游 apply/sanitize 的 spec_allows_free_text 都放行任意值，唯独此生成函数过去太保守只在
+    // append_allowed=true 时兜底、否则返回 None → 走 needs_ai 被 block。与下游对齐：只要允许自由文本
+    // 就兜底「其他」(类目合法值)，不再卡 need_confirm。
+    if spec_allows_free_text(spec) {
+        return Some("其他".to_string());
+    }
+    None
+}
+
 pub(in crate::commands) fn collect_required_category_attr_specs(
     value: &Value,
     list_key: &str,
@@ -475,6 +513,7 @@ fn sanitize_payload_attr_array(
     product: &ExternalProductInput,
     attrs: &mut Vec<Value>,
     specs: &BTreeMap<String, CategoryRequiredAttr>,
+    required_keys: &BTreeSet<String>,
     label: &str,
     report: &mut CategoryAttrSanitizeReport,
 ) -> AppResult<()> {
@@ -502,11 +541,34 @@ fn sanitize_payload_attr_array(
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
         else {
+            // 必填项空值：用类目合法值兜底而非删空，避免删后被判缺卡 CATEGORY_ATTRS_NEED_AI_FILL。
+            if required_keys.contains(&attr_key) {
+                if let Some(fallback) = category_fallback_attr_value(spec) {
+                    object.insert("attr_value".to_string(), Value::String(fallback.clone()));
+                    report
+                        .changed_attrs
+                        .push(format!("{attr_key} 空值兜底->{fallback}"));
+                    sanitized.push(attr);
+                    continue;
+                }
+            }
             report.removed_attrs.push(format!("{label}属性 {attr_key}"));
             continue;
         };
         let Some(normalized) = normalize_payload_attr_value_for_spec(product, spec, &raw_value)
         else {
+            // 必填项的值不匹配微信枚举(如 面料材质=聚酯纤维100% 不在 cat6236 枚举)：兜底替换为合法值
+            // 而非删空，否则 submit 阶段 check 判缺 → CATEGORY_ATTRS_NEED_AI_FILL。非必填仍按原逻辑删除。
+            if required_keys.contains(&attr_key) {
+                if let Some(fallback) = category_fallback_attr_value(spec) {
+                    object.insert("attr_value".to_string(), Value::String(fallback.clone()));
+                    report
+                        .changed_attrs
+                        .push(format!("{attr_key} {raw_value}->{fallback}(兜底)"));
+                    sanitized.push(attr);
+                    continue;
+                }
+            }
             report
                 .removed_attrs
                 .push(format!("{label}属性 {attr_key}={raw_value}"));
@@ -618,7 +680,23 @@ pub(in crate::commands) fn build_product_attr_suggestion(
             prompt_json,
         };
     }
-    // 仍未匹配的交给 AI 处理
+    // 兜底：metadata 预设、唯一选项、本地规则都补不出时，用类目可选值兜底填充，
+    // 避免卡在 need_confirm 人工（用户选择「自动填充优先上架，填错可事后修正」）。
+    if let Some(value) = category_fallback_attr_value(spec) {
+        return AttributeFillSuggestion {
+            attr_kind: "product",
+            attr_key: spec.key.clone(),
+            suggested_value: Some(value),
+            sku_values: Vec::new(),
+            // 65 = can_auto_apply 阈值：兜底值是类目合法值，放行自动上架(用户偏好「自动填错再改」)；
+            // 仅 category_fallback_default 这一来源提到 65，needs_ai 来源仍 applied=false 走人工。
+            confidence: 65,
+            source: "category_fallback_default".to_string(),
+            applied: true,
+            prompt_json,
+        };
+    }
+    // 连可选值都没有、又不允许自定义：极少见，仍交 AI
     AttributeFillSuggestion {
         attr_kind: "product",
         attr_key: spec.key.clone(),
@@ -650,23 +728,27 @@ pub(in crate::commands) fn build_sale_attr_suggestion(
         let applied = sku_values
             .iter()
             .all(|value| suggestion_value_allowed_for_spec(&value.value, spec));
-        let summary = sku_values
-            .iter()
-            .map(|value| value.value.clone())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect::<Vec<_>>()
-            .join("/");
-        return AttributeFillSuggestion {
-            attr_kind: "sale",
-            attr_key: spec.key.clone(),
-            suggested_value: Some(format!("按 SKU 映射：{summary}")),
-            sku_values,
-            confidence: 92,
-            source: "sku_attr_exact".to_string(),
-            applied,
-            prompt_json,
-        };
+        if applied {
+            let summary = sku_values
+                .iter()
+                .map(|value| value.value.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join("/");
+            return AttributeFillSuggestion {
+                attr_kind: "sale",
+                attr_key: spec.key.clone(),
+                suggested_value: Some(format!("按 SKU 映射：{summary}")),
+                sku_values,
+                confidence: 92,
+                source: "sku_attr_exact".to_string(),
+                applied: true,
+                prompt_json,
+            };
+        }
+        // 推断出的 SKU 值里有不在类目枚举内的：不在此 return(否则 applied=false 会让销售属性永远
+        // block)，继续往下走单选 / 类目兜底，保证销售属性也能兜底合法值自动上架。
     }
     if spec.options.len() == 1 {
         return AttributeFillSuggestion {
@@ -676,6 +758,22 @@ pub(in crate::commands) fn build_sale_attr_suggestion(
             sku_values: Vec::new(),
             confidence: 90,
             source: "category_single_option".to_string(),
+            applied: true,
+            prompt_json,
+        };
+    }
+    // 兜底：本地规则也补不出销售属性时，用类目可选值兜底——所有 SKU 统一填该值
+    // （apply 阶段 suggested_value 走 ensure_payload_sku_attr_for_all 写入每个 SKU）。
+    if let Some(value) = category_fallback_attr_value(spec) {
+        return AttributeFillSuggestion {
+            attr_kind: "sale",
+            attr_key: spec.key.clone(),
+            suggested_value: Some(value),
+            sku_values: Vec::new(),
+            // 65 = can_auto_apply 阈值：兜底值是类目合法值，放行自动上架(用户偏好「自动填错再改」)；
+            // 仅 category_fallback_default 这一来源提到 65，needs_ai 来源仍 applied=false 走人工。
+            confidence: 65,
+            source: "category_fallback_default".to_string(),
             applied: true,
             prompt_json,
         };
@@ -2952,6 +3050,61 @@ pub(in crate::commands) fn count_named_arrays(value: &Value, key: &str) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fallback_fills_empty_options_free_text_required_attr() {
+        // 颜色/面料材质：空 options + type=string + append_allowed=false 的自由文本必填属性
+        let spec = CategoryRequiredAttr {
+            key: "颜色".to_string(),
+            options: Vec::new(),
+            attr_type: Some("string".to_string()),
+            append_allowed: false,
+            related_options: Vec::new(),
+        };
+        assert_eq!(category_fallback_attr_value(&spec).as_deref(), Some("其他"));
+    }
+
+    #[test]
+    fn fallback_prefers_generic_option_when_enum_present() {
+        let spec = CategoryRequiredAttr {
+            key: "面料材质".to_string(),
+            options: vec!["棉".to_string(), "聚酯纤维".to_string(), "其他".to_string()],
+            attr_type: Some("select_one".to_string()),
+            append_allowed: false,
+            related_options: Vec::new(),
+        };
+        assert_eq!(category_fallback_attr_value(&spec).as_deref(), Some("其他"));
+    }
+
+    #[test]
+    fn sanitize_fills_invalid_required_attr_instead_of_removing() {
+        // cat6236 风格：面料材质 是带枚举(含「其他」)的必填项；payload 里是无法归一到任一枚举的非法值，
+        // 走兜底路径——既不能删空，也匹配不上枚举，应填兜底「其他」。
+        let raw_detail = serde_json::json!({
+            "data": { "attr": {
+                "product_attr_list": [
+                    { "name": "面料材质", "is_required": true, "type": "select_one",
+                      "value": "棉;聚酯纤维;其他" }
+                ],
+                "sale_attr_list": []
+            }}
+        });
+        let mut payload = serde_json::json!({
+            "attrs": [ { "attr_key": "面料材质", "attr_value": "天丝莱赛尔混纺" } ],
+            "skus": []
+        });
+        let product: ExternalProductInput = serde_json::from_value(serde_json::json!({
+            "external_product_id": "x", "title": "t", "source_url": "u", "skus": []
+        }))
+        .unwrap();
+        let report =
+            sanitize_payload_attrs_with_category_detail(&product, &mut payload, &raw_detail).unwrap();
+        let attrs = payload["attrs"].as_array().unwrap();
+        // 必填项不应被删空，而是被兜底为合法值「其他」
+        assert_eq!(attrs.len(), 1);
+        assert_eq!(attrs[0]["attr_value"].as_str(), Some("其他"));
+        assert!(report.removed_attrs.is_empty(), "必填项不应进 removed");
+    }
 
     #[test]
     fn requirement_check_from_detail_reports_missing_product_and_sale_attrs() {

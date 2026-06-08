@@ -1,5 +1,49 @@
 use super::*;
 
+/// 从 getproduct 返回的 audit_info 里尽量解析微信驳回理由文案。不同接口字段不一，多路径兜底；
+/// 解析不到返回 None（调用方降级保留原 summary），绝不 panic。
+fn extract_audit_reject_reason(audit_info: Option<&Value>) -> Option<String> {
+    let info = audit_info?;
+    for key in ["reject_reason", "audit_reason", "reason", "audit_desc", "desc"] {
+        if let Some(text) = info.get(key).and_then(Value::as_str) {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                return Some(truncate_for_summary(trimmed, 200));
+            }
+        }
+    }
+    let mut collected: Vec<String> = Vec::new();
+    let mut push_from = |item: &Value| {
+        if let Some(text) = item
+            .get("reason")
+            .and_then(Value::as_str)
+            .or_else(|| item.as_str())
+        {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                collected.push(trimmed.to_string());
+            }
+        }
+    };
+    if let Some(arr) = info.as_array() {
+        for item in arr {
+            push_from(item);
+        }
+    }
+    for key in ["reasons", "audit_reasons", "reject_reasons"] {
+        if let Some(arr) = info.get(key).and_then(Value::as_array) {
+            for item in arr {
+                push_from(item);
+            }
+        }
+    }
+    if collected.is_empty() {
+        None
+    } else {
+        Some(truncate_for_summary(&collected.join("；"), 200))
+    }
+}
+
 pub(in crate::commands) fn resolve_wechat_product_status(
     info: &ProductGetInfo,
 ) -> ProductAuditResolution {
@@ -37,10 +81,15 @@ pub(in crate::commands) fn resolve_wechat_product_status(
     }
 
     if let Some(code) = wechat_terminal_failure_code(wechat_status, wechat_edit_status) {
+        // 解析微信驳回理由写进 summary，避免运营只看到「状态异常」却不知为何被驳。
+        let summary = match extract_audit_reject_reason(info.audit_info.as_ref()) {
+            Some(reason) => format!("{summary}。微信驳回原因：{reason}"),
+            None => format!("{summary}。需要按微信返回原因处理后重试"),
+        };
         return ProductAuditResolution {
             status: "failed",
             error_code: Some(format!("WECHAT_PRODUCT_STATUS_{code}")),
-            summary: format!("{summary}。需要按微信返回原因处理后重试"),
+            summary,
             wechat_status,
             wechat_edit_status,
         };

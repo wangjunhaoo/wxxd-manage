@@ -6,11 +6,17 @@ use base64::Engine;
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 use std::fs;
+use std::sync::OnceLock;
 use tauri::{AppHandle, Manager};
 
 const SERVICE_NAME: &str = "com.wxxd.desktop";
 const MASTER_KEY_ACCOUNT: &str = "wx-xd-master-key-v1";
 const KEY_VERSION: &str = "v1";
+
+/// 主密钥进程级缓存。主密钥在单次运行内固定不变，缓存后复用，避免每次加解密都同步访问
+/// macOS 钥匙串——钥匙串访问是不可被 tokio 超时打断的同步阻塞调用，一旦弹授权框/锁竞争
+/// 就会卡死调用线程，曾导致后台 driver 在 AI 解密配置时整体 hang（铺货流水线全停摆）。
+static MASTER_KEY_CACHE: OnceLock<[u8; 32]> = OnceLock::new();
 
 #[derive(Debug)]
 pub struct EncryptedText {
@@ -74,6 +80,17 @@ fn decrypt_text(app: &AppHandle, ciphertext: &str, nonce: &str) -> AppResult<Str
 }
 
 fn master_key(app: &AppHandle) -> AppResult<[u8; 32]> {
+    // 命中缓存直接返回，不再触碰钥匙串。
+    if let Some(key) = MASTER_KEY_CACHE.get() {
+        return Ok(*key);
+    }
+    let key = load_master_key_uncached(app)?;
+    // 并发首次加载时可能多个线程同时到达：set 失败说明别的线程已填好，统一以缓存内的值为准。
+    let _ = MASTER_KEY_CACHE.set(key);
+    Ok(*MASTER_KEY_CACHE.get().unwrap_or(&key))
+}
+
+fn load_master_key_uncached(app: &AppHandle) -> AppResult<[u8; 32]> {
     if let Ok(key) = load_keychain_key() {
         return Ok(key);
     }
