@@ -194,6 +194,22 @@ export default function PublishWorkbenchSection() {
   const selectedRecollectable = selectedRows.filter((r) => canRecollect(r));
   const selectedRepublishable = selectedRows.filter((r) => canRepublish(r));
 
+  // 表头全选：作用于当前筛选下的可勾选行（部分选中时半选 indeterminate）。
+  const selectableInView = filteredProducts.filter(isRowSelectable);
+  const allInViewSelected =
+    selectableInView.length > 0 &&
+    selectableInView.every((p) => selectedIds.has(p.id));
+  const someInViewSelected = selectableInView.some((p) => selectedIds.has(p.id));
+  const toggleSelectAll = (checked: boolean) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const p of selectableInView) {
+        if (checked) next.add(p.id);
+        else next.delete(p.id);
+      }
+      return next;
+    });
+
   /** 单个重新采集（破坏性，二次确认）。 */
   const onRecollect = async (productId: string) => {
     try {
@@ -373,7 +389,7 @@ export default function PublishWorkbenchSection() {
 
   return (
     <div className="pad">
-      <div className="wrap-wide">
+      <div className="wrap-wide" style={{ maxWidth: 1600 }}>
         <PageHead
           eyebrow="铺货工作台 · Asia/Shanghai"
           title="商品工作台"
@@ -452,14 +468,30 @@ export default function PublishWorkbenchSection() {
               <table className="tbl">
                 <thead>
                   <tr>
+                    <th style={{ width: 36 }}>
+                      <input
+                        type="checkbox"
+                        className="cbx"
+                        aria-label="全选当前可操作商品"
+                        disabled={selectableInView.length === 0}
+                        checked={allInViewSelected}
+                        ref={(el) => {
+                          if (el)
+                            el.indeterminate =
+                              !allInViewSelected && someInViewSelected;
+                        }}
+                        onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                          toggleSelectAll(e.target.checked)
+                        }
+                      />
+                    </th>
                     <th style={{ width: 36 }} />
-                    <th style={{ width: 36 }} />
-                    <th>商品</th>
-                    <th style={{ width: 120 }}>状态</th>
-                    <th style={{ width: 170 }}>进度</th>
-                    <th style={{ width: 150 }}>目标店</th>
-                    <th style={{ minWidth: 220 }}>异常 / 原因</th>
-                    <th style={{ width: 220 }}>操作</th>
+                    <th style={{ minWidth: 240 }}>商品</th>
+                    <th style={{ width: 100 }}>状态</th>
+                    <th style={{ width: 140 }}>进度</th>
+                    <th style={{ width: 130 }}>目标店</th>
+                    <th style={{ minWidth: 180 }}>异常 / 原因</th>
+                    <th style={{ width: 190 }}>操作</th>
                   </tr>
                 </thead>
                 <tbody>
