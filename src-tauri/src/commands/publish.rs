@@ -88,7 +88,14 @@ fn run_precheck_one_item(conn: &mut Connection, item: &mut PendingPublishItem) -
     };
 
     if let Some(summary) = ensure_wechat_category_metadata(&tx, item, &mut product)? {
-        insert_task_log(&tx, &item.job_id, Some(&item.item_id), "info", &summary, None)?;
+        insert_task_log(
+            &tx,
+            &item.job_id,
+            Some(&item.item_id),
+            "info",
+            &summary,
+            None,
+        )?;
     }
 
     // 注入全局价格策略：把 markup/fixed/floor 写进 product.metadata，使随后由
@@ -1682,9 +1689,10 @@ pub async fn run_publish_category_prechecks_once(
                     .iter()
                     .any(|suggestion| !suggestion.applied && suggestion.source == "needs_ai");
                 if requires_ai {
-                    // 同 attr_fill：AI provider 偶发 hang，120s 超时兜底，不挂死整轮 tick。
+                    // 同 attr_fill：AI provider 偶发 hang，90s 超时兜底（与阶段预算 100s 配平：
+                    // 一次 AI 兜底必须能在预算内完整跑完，否则被外层砍掉下轮重来形成空转）。
                     let ai_call = tokio::time::timeout(
-                        std::time::Duration::from_secs(120),
+                        std::time::Duration::from_secs(90),
                         fill_attribute_plan_with_ai(&app, ai_config, &mut plan),
                     )
                     .await;
@@ -1692,20 +1700,29 @@ pub async fn run_publish_category_prechecks_once(
                         Ok(Ok(filled)) if plan.can_auto_apply() => {
                             apply_attribute_fill_plan_to_payload(&mut draft.payload, &plan)?;
                             let conn = open_connection(&app)?;
-                            persist_filled_add_product_payload(&conn, &item, &draft.payload, &plan)?;
+                            persist_filled_add_product_payload(
+                                &conn,
+                                &item,
+                                &draft.payload,
+                                &plan,
+                            )?;
                             insert_task_log(
                                 &conn,
                                 &item.job_id,
                                 Some(&item.item_id),
                                 "info",
-                                &format!("类目预检阶段 AI 兜底补齐 {filled} 个必填属性并写回发品参数"),
+                                &format!(
+                                    "类目预检阶段 AI 兜底补齐 {filled} 个必填属性并写回发品参数"
+                                ),
                                 Some(&serde_json::json!({
                                     "source": "category_precheck_ai_fill",
                                     "filled_count": filled
                                 })),
                             )?;
-                            requirement_check =
-                                check_category_requirements_from_detail(&raw_detail, &draft.payload);
+                            requirement_check = check_category_requirements_from_detail(
+                                &raw_detail,
+                                &draft.payload,
+                            );
                         }
                         Ok(Ok(_)) => {
                             // AI 有产出但不足以自动应用（仍有未决项），留待下方 block 转人工。
@@ -1734,7 +1751,7 @@ pub async fn run_publish_category_prechecks_once(
                                 &item.job_id,
                                 Some(&item.item_id),
                                 "warn",
-                                "类目预检阶段 AI 兜底补齐超时(120s)",
+                                "类目预检阶段 AI 兜底补齐超时(90s)",
                                 None,
                             )?;
                         }
@@ -1994,17 +2011,43 @@ pub async fn run_publish_asset_uploads_once(
             continue;
         }
 
+        // 图片（头图/详情图/SKU 图）3 并发上传：单商品动辄 20+ 张图，串行是该阶段最大耗时；
+        // 主要时间花在下载淘宝源图，3 并发对微信上传接口（≤3 req/s/店）仍在安全水位。
+        // 主图视频走 4 步分块上传、协议对并发敏感，单独串行处理。
+        // SQLite 侧 WAL + busy_timeout(5s) 保证并发写 pipeline_assets 安全。
+        let (video_assets, image_assets): (Vec<_>, Vec<_>) = assets
+            .into_iter()
+            .partition(|asset| asset.kind == "head_video");
+
         let mut item_failed = false;
-        for asset in assets {
-            // SKU 颜色图（切 SKU 换主图）与主图视频均为可选增强、非发品必需素材；上传失败时降级跳过、
+        let image_outcomes: Vec<(&'static str, AppResult<AssetUploadOutcome>)> = {
+            use futures::stream::{self, StreamExt};
+            // 先收集 future 列表再 buffer_unordered：避免 stream::iter().map(闭包返回 async 块)
+            // 的高阶生命周期推断问题（rustc "FnOnce not general enough"）。
+            let upload_futures: Vec<_> = image_assets
+                .iter()
+                .map(|asset| {
+                    let app = &app;
+                    let client = &client;
+                    let access_token = &access_token;
+                    let item = &item;
+                    async move {
+                        (
+                            asset.kind,
+                            upload_or_reuse_asset(app, client, access_token, item, asset).await,
+                        )
+                    }
+                })
+                .collect();
+            stream::iter(upload_futures)
+                .buffer_unordered(3)
+                .collect()
+                .await
+        };
+        for (kind, outcome) in image_outcomes {
+            // SKU 颜色图（切 SKU 换主图）为可选增强、非发品必需素材；上传失败时降级跳过、
             // 不阻断商品上架。头图/详情图失败才阻断。
-            let is_optional = asset.kind == "sku_image" || asset.kind == "head_video";
-            // 主图视频走独立的 4 步分块上传链路；其余（头图/详情图/SKU 图）走通用图片上传。
-            let outcome = if asset.kind == "head_video" {
-                upload_or_reuse_video_asset(&app, &client, &access_token, &item, &asset).await
-            } else {
-                upload_or_reuse_asset(&app, &client, &access_token, &item, &asset).await
-            };
+            let is_optional = kind == "sku_image";
             match outcome {
                 Ok(AssetUploadOutcome::Uploaded) => uploaded_assets += 1,
                 Ok(AssetUploadOutcome::Reused) => reused_assets += 1,
@@ -2012,15 +2055,28 @@ pub async fn run_publish_asset_uploads_once(
                     if is_optional {
                         continue;
                     }
-                    failed_items += 1;
-                    item_failed = true;
-                    break;
+                    if !item_failed {
+                        failed_items += 1;
+                        item_failed = true;
+                    }
                 }
                 Err(error) => {
                     if is_optional {
                         continue;
                     }
                     return Err(error);
+                }
+            }
+        }
+
+        // 主图视频：可选增强素材，失败降级跳过不阻断上架。
+        if !item_failed {
+            for asset in &video_assets {
+                match upload_or_reuse_video_asset(&app, &client, &access_token, &item, asset).await
+                {
+                    Ok(AssetUploadOutcome::Uploaded) => uploaded_assets += 1,
+                    Ok(AssetUploadOutcome::Reused) => reused_assets += 1,
+                    Ok(AssetUploadOutcome::Failed) | Err(_) => continue,
                 }
             }
         }
@@ -2291,13 +2347,14 @@ pub async fn run_publish_submits_once(
         let outcome = match &call.result {
             WechatCallResult::Success(result) => {
                 let product_id = result.product_id.clone();
-                let (sku_count, diag) = match client.get_product(&access_token, &product_id, 3).await {
-                    Ok(get_call) => extract_draft_sku_count(&get_call),
-                    Err(error) => (
-                        None,
-                        serde_json::json!({ "getproduct_request_error": error.to_string() }),
-                    ),
-                };
+                let (sku_count, diag) =
+                    match client.get_product(&access_token, &product_id, 3).await {
+                        Ok(get_call) => extract_draft_sku_count(&get_call),
+                        Err(error) => (
+                            None,
+                            serde_json::json!({ "getproduct_request_error": error.to_string() }),
+                        ),
+                    };
                 insert_task_log_for_app(
                     &app,
                     &item.job_id,
@@ -2411,17 +2468,28 @@ pub async fn run_publish_submits_once(
                 )?;
                 submitted_items += 1;
             }
-            AddProductOutcome::SkuSwallowed { residual_product_id } => {
+            AddProductOutcome::SkuSwallowed {
+                residual_product_id,
+            } => {
                 // 入库 SKU=0。读当前退避轮数：未达上限则 block_target 标 retriable 错误码
                 // (WECHAT_ADDPRODUCT_SKU_SWALLOWED) 静默退避，driver 隔 1→2→4→8→16 分钟重排重新 submit
                 // （避开微信「同 spu 短时重复 addproduct」持续吞 SKU 的陷阱）；达上限才升级 fatal 真失败发通知。
+                // retry_count 是「同错误码连续失败」计数（block_target 换码重计），
+                // 只有当前错误链确实是吞 SKU 时才算入轮数，避免被早前其他错误链的计数侵蚀。
                 let retry_count: i64 = conn
                     .query_row(
-                        "SELECT retry_count FROM pipeline_shop_targets WHERE id = ?1",
+                        "SELECT retry_count, error_code FROM pipeline_shop_targets WHERE id = ?1",
                         [item.item_id.as_str()],
-                        |row| row.get(0),
+                        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
                     )
                     .optional()?
+                    .map(|(count, code)| {
+                        if code.as_deref() == Some("WECHAT_ADDPRODUCT_SKU_SWALLOWED") {
+                            count
+                        } else {
+                            0
+                        }
+                    })
                     .unwrap_or(0);
                 // 删空草稿成功→清掉 wechat_product_id；删失败→保留被吞草稿 id，让下轮 addproduct 前
                 // 「删旧草稿」逻辑重删、或由清理命令兜底，避免空草稿堆进草稿箱。
@@ -2695,7 +2763,10 @@ pub async fn run_publish_status_sync_once(
                         "failed" => block_target(
                             &conn,
                             &item.item_id,
-                            resolution.error_code.as_deref().unwrap_or("WECHAT_API_ERROR"),
+                            resolution
+                                .error_code
+                                .as_deref()
+                                .unwrap_or("WECHAT_API_ERROR"),
                             &resolution.summary,
                         )?,
                         _ => {}

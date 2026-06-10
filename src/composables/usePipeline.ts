@@ -5,6 +5,8 @@ import type {
   CategoryCatalogListResult,
   PipelineProductDetailView,
   PipelineProductView,
+  PipelineStats,
+  PipelineWorkbenchView,
 } from "../types/app";
 
 /** 类目候选选项（ExceptionDrawer 选类目确认用）。 */
@@ -24,19 +26,66 @@ type CommandFn = <T>(name: string, args?: Record<string, unknown>) => Promise<T>
  */
 export function usePipeline(command: CommandFn) {
   const pipelineProducts = ref<PipelineProductView[]>([]);
+  /** 全表状态统计（服务端聚合，不受列表条数截断影响） */
+  const pipelineStats = ref<PipelineStats>({
+    collecting: 0,
+    collected: 0,
+    need_confirm: 0,
+    publishing: 0,
+    listed: 0,
+    error: 0,
+    archived: 0,
+  });
+  /** 当前视图：active=未归档（默认）/ archived=已归档 */
+  const pipelineView = ref<"active" | "archived">("active");
   const pipelineLoading = ref(false);
   let timer: ReturnType<typeof setInterval> | null = null;
 
   async function refreshPipeline() {
     pipelineLoading.value = true;
     try {
-      pipelineProducts.value = await command<PipelineProductView[]>(
+      const result = await command<PipelineWorkbenchView>(
         "list_pipeline_products",
+        { filter: pipelineView.value },
       );
+      pipelineProducts.value = result.products;
+      pipelineStats.value = result.stats;
     } catch (error) {
       ElMessage.error(`获取流水线商品失败：${error}`);
     } finally {
       pipelineLoading.value = false;
+    }
+  }
+
+  /** 切换 已归档/默认 视图并立即刷新。 */
+  async function switchPipelineView(view: "active" | "archived") {
+    pipelineView.value = view;
+    await refreshPipeline();
+  }
+
+  /** 批量归档已上架商品（从默认视图隐藏；仅 listed 可归档，后端兜底校验）。 */
+  async function archiveProducts(productIds: string[]) {
+    try {
+      const count = await command<number>("archive_pipeline_products", {
+        productIds,
+      });
+      ElMessage.success(`已归档 ${count} 个已上架商品`);
+      await refreshPipeline();
+    } catch (error) {
+      ElMessage.error(`归档失败：${error}`);
+    }
+  }
+
+  /** 批量取消归档（商品回到默认视图）。 */
+  async function unarchiveProducts(productIds: string[]) {
+    try {
+      const count = await command<number>("unarchive_pipeline_products", {
+        productIds,
+      });
+      ElMessage.success(`已恢复 ${count} 个商品`);
+      await refreshPipeline();
+    } catch (error) {
+      ElMessage.error(`恢复失败：${error}`);
     }
   }
 
@@ -272,6 +321,11 @@ export function usePipeline(command: CommandFn) {
 
   return {
     pipelineProducts,
+    pipelineStats,
+    pipelineView,
+    switchPipelineView,
+    archiveProducts,
+    unarchiveProducts,
     pipelineLoading,
     refreshPipeline,
     startPipelinePolling,

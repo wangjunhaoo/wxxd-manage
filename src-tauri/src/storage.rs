@@ -816,6 +816,8 @@ fn migrate(conn: &Connection) -> AppResult<()> {
     ensure_column(conn, "collection_tasks", "reviewed_data", "TEXT")?;
     ensure_column(conn, "collection_tasks", "review_result_json", "TEXT")?;
     ensure_column(conn, "collection_tasks", "reviewed_at", "TEXT")?;
+    // 已上架商品归档时间：非空=已从铺货工作台默认视图隐藏（仅 status=listed 可归档）
+    ensure_column(conn, "pipeline_products", "archived_at", "TEXT")?;
     ensure_column(conn, "publish_job_items", "wechat_status", "INTEGER")?;
     ensure_column(conn, "publish_job_items", "wechat_edit_status", "INTEGER")?;
     ensure_column(conn, "publish_job_items", "last_status_sync_at", "TEXT")?;

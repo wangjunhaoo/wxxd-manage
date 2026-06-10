@@ -20,19 +20,12 @@
 ## 业务与队列
 
 - 系统定位为合规外部供应商代发与运营中台，不实现刷单、虚假动销、绕审核或规避平台规则能力。
-- 本地主控 HTTP API 默认只允许监听 `127.0.0.1`，不得默认暴露到局域网或公网。
-- 外部 HTTP API 必须启用 API Key 鉴权；API Key 只能通过桌面端生成/重置，禁止写入日志、文档样例、测试快照或前端固定常量。
-- 外部 HTTP API 请求审计只能保存方法、路径、状态码、耗时、错误码和脱敏摘要；禁止保存 API Key、完整请求体、完整商品详情或任何密钥。
-- 外部系统创建铺货、改价等任务后只拿 `task_id` 并轮询查询状态；不得在 HTTP 请求里同步等待微信长耗时队列完成。
-- 外部系统或后续 agent/skill 优先复用 `scripts/wx_xd_local_api.py` 调用本地主控 API；新增命令必须保持零依赖、API Key 不打印、请求摘要不包含密钥或收件人敏感信息。
-- 采购相关本地 HTTP API 只允许查询非敏采购任务、回填供应商物流和标记供应商异常；不得暴露收件人姓名、手机号、地址，不得自动向供应商平台下单。
-- 采购相关本地 HTTP API 审计只记录任务 ID、异常类型、是否有物流单号/备注等脱敏摘要；禁止保存完整物流请求体、收件信息或供应商平台登录凭证。
-- 供应商下单 agent/skill 优先复用 `scripts/wx_xd_local_api.py` 或等价本地 HTTP API 协议；不得直接读写 SQLite 或绕过 API Key 鉴权、审计和自动发货开关。
-- 供应商售后协同只能通过 `record_supplier_aftersale_followup` 或等价本地 HTTP API 记录脱敏沟通摘要、索证状态和可选采购任务引用；不得保存收件信息、供应商平台登录凭证、Cookie、完整聊天截图或自动处理平台纠纷。
-- 供应商 agent 安全桥优先使用 `scripts/wx_xd_supplier_agent.py` 和 `docs/supplier-agent-protocol.md`；只允许导出非敏采购字段，并只写回 `shipment`、`issue`、`mapping` 三类结果。
+- 本机 HTTP API（`local_api.rs`，原 `127.0.0.1:17890`）已于铺货重构中整体移除：无外部消费方，全部能力收敛为桌面端 Tauri 命令；如未来需要重新对外暴露接口，必须重新评估鉴权与审计设计，不得直接还原旧实现。
+- 供应商 agent 安全桥使用桌面端入口与 `docs/supplier-agent-protocol.md`；只允许导出非敏采购字段，并只写回 `shipment`、`issue`、`mapping` 三类结果。
 - 桌面端供应商 agent 桥必须复用 `export_supplier_agent_tasks`、`get_supplier_agent_result_template`、`apply_supplier_agent_results`；不得在前端自行解析并绕过后端字段校验。
 - 供应商 agent/skill 的结果文件如包含收件信息、密钥、Cookie、供应商平台凭证或未知字段，必须拒绝处理；不得为了自动化便利放宽字段校验。
-- 订单同步、订单详情同步、采购任务生成和微信发货提交可以通过本地 runner API 单独触发，但仍必须走队列任务、API Key 鉴权、审计日志和自动发货开关；不得把这些步骤合并成无状态的同步 HTTP 请求。
+- 供应商售后协同只能通过 `record_supplier_aftersale_followup` 记录脱敏沟通摘要、索证状态和可选采购任务引用；不得保存收件信息、供应商平台登录凭证、Cookie、完整聊天截图或自动处理平台纠纷。
+- 采购任务处理不得暴露收件人姓名、手机号、地址，不得自动向供应商平台下单。
 - 订单、发货、售后、库存、铺货和动销数据同步必须通过队列任务执行，不能在页面请求里长时间阻塞。
 - AI provider 默认关闭；只支持用户在桌面端显式配置 OpenAI-compatible `base_url/model/API Key` 后启用。
 - AI provider API Key 必须按店铺密钥同等级加密存储，禁止写入前端固定值、日志、文档样例、测试快照、错误堆栈或外部 API 审计。

@@ -35,22 +35,23 @@ pub enum ErrorCategory {
 
 /// 一条错误码的归一化判定结果。全部字段均为 `'static`，可 `Copy`。
 ///
-/// `category`（三类法）由一致性单测校验、保持归一表自洽；`suggested_action`
-/// 是 41 条精心编写的中文「一键动作提示」，设计用于前端异常处理展示（待接线）。
-/// 二者目前仅被单测读取，故在 lib 构建标注 `allow(dead_code)`——它们是新模型
-/// 错误归一的单一事实来源，非废弃代码。
+/// `category`（三类法）由一致性单测校验、保持归一表自洽，目前仅被单测读取，
+/// 故标注 `allow(dead_code)`——它是归一表自洽的单一事实来源，非废弃代码。
 #[derive(Debug, Clone, Copy)]
 pub struct ErrorClassification {
     #[allow(dead_code)]
     pub category: ErrorCategory,
     /// 最终失败时展示给用户的关注级别（Transient 在重试耗尽后按此展示）。
     pub attention: Attention,
-    /// driver 是否应在退避后自动重试。
+    /// driver 是否应在退避后自动重试（无限次，按指数退避节奏）。
     pub retriable: bool,
+    /// 「需人工确认」类错误的有限次自动重试上限：Some(n) 表示虽 retriable=false、
+    /// attention=NeedConfirm，driver 仍可在退避后自动重试 n 轮（如 AI 补属性偶发失败
+    /// 冷却后再试常能通过），超限后保持 blocked 等人工。None 表示不做有限次自动重试。
+    pub auto_retry_limit: Option<i64>,
     /// 给“能处理问题的人”看的中文原因。
     pub human_reason: &'static str,
-    /// 推荐的一键动作提示。
-    #[allow(dead_code)]
+    /// 推荐的一键动作提示，随流水线视图透出给前端异常行展示。
     pub suggested_action: &'static str,
 }
 
@@ -102,6 +103,10 @@ pub enum ErrorCode {
     InvalidProductPayload,
     DuplicateExternalProductInShop,
     MissingWechatProductId,
+    MissingWechatProductPayload,
+    PrecheckUnexpectedError,
+    CategoryDetailCacheMissing,
+    CategoryAttrFillFailed,
     WechatCategoryPrecheckFailed,
     WechatApiError,
     UnknownAgentError,
@@ -150,6 +155,10 @@ impl ErrorCode {
         ErrorCode::InvalidProductPayload,
         ErrorCode::DuplicateExternalProductInShop,
         ErrorCode::MissingWechatProductId,
+        ErrorCode::MissingWechatProductPayload,
+        ErrorCode::PrecheckUnexpectedError,
+        ErrorCode::CategoryDetailCacheMissing,
+        ErrorCode::CategoryAttrFillFailed,
         ErrorCode::WechatCategoryPrecheckFailed,
         ErrorCode::WechatApiError,
         ErrorCode::UnknownAgentError,
@@ -198,6 +207,10 @@ impl ErrorCode {
             ErrorCode::InvalidProductPayload => "INVALID_PRODUCT_PAYLOAD",
             ErrorCode::DuplicateExternalProductInShop => "DUPLICATE_EXTERNAL_PRODUCT_IN_SHOP",
             ErrorCode::MissingWechatProductId => "MISSING_WECHAT_PRODUCT_ID",
+            ErrorCode::MissingWechatProductPayload => "MISSING_WECHAT_PRODUCT_PAYLOAD",
+            ErrorCode::PrecheckUnexpectedError => "PRECHECK_UNEXPECTED_ERROR",
+            ErrorCode::CategoryDetailCacheMissing => "CATEGORY_DETAIL_CACHE_MISSING",
+            ErrorCode::CategoryAttrFillFailed => "CATEGORY_ATTR_FILL_FAILED",
             ErrorCode::WechatCategoryPrecheckFailed => "WECHAT_CATEGORY_PRECHECK_FAILED",
             ErrorCode::WechatApiError => "WECHAT_API_ERROR",
             ErrorCode::UnknownAgentError => "UNKNOWN_AGENT_ERROR",
@@ -210,6 +223,19 @@ impl ErrorCode {
     /// 把错误码字符串解析为枚举；未知字符串返回 `None`。
     pub fn parse(code: &str) -> Option<ErrorCode> {
         ErrorCode::ALL.iter().copied().find(|c| c.as_str() == code)
+    }
+
+    /// 「需人工确认」类错误的有限次自动重试上限（详见 [`ErrorClassification::auto_retry_limit`]）。
+    /// 纯技术性缺属性类错误先让 driver 自动重试（回退到 category_precheck 的在线详情 AI 兜底），
+    /// 超限才转人工，减少无谓的人工点击。
+    fn auto_retry_limit(self) -> Option<i64> {
+        match self {
+            // AI 补属性偶发失败/限流：冷却后再试常能通过，给 3 次机会
+            ErrorCode::CategoryAttrsNeedAiFill | ErrorCode::WechatPayloadNeedsAiFill => Some(3),
+            // 类目推断对 AI 限流敏感，给 2 次机会；仍失败大概率真歧义，转人工
+            ErrorCode::CategoryNeedsAiFill => Some(2),
+            _ => None,
+        }
     }
 
     /// 该错误码的归一化判定。
@@ -290,9 +316,7 @@ impl ErrorCode {
             ErrorCode::WechatFreightTemplateSyncFailed => {
                 (Transient, Error, true, "同步运费模板失败", "稍后自动重试")
             }
-            ErrorCode::SyncFailed => {
-                (Transient, Error, true, "同步微信状态失败", "稍后自动重试")
-            }
+            ErrorCode::SyncFailed => (Transient, Error, true, "同步微信状态失败", "稍后自动重试"),
 
             // —— 可补救 —— 等人工补齐后即可继续。
             ErrorCode::MissingWechatLeafCategoryId => (
@@ -330,26 +354,29 @@ impl ErrorCode {
                 "SKU 规格值异常（疑似采集错位，如多个尺码挤在一格）",
                 "请重新采集，或在商品编辑中把该规格拆成多个 SKU",
             ),
+            // —— 店铺配置缺失三码：retriable=true 自愈。runner 每次都会在线拉取微信
+            //    地址/运费模板列表，用户在微信后台补配后 ≤30 分钟（退避封顶）自动恢复推进，
+            //    零人工点击；attention 保持 NeedConfirm 提示用户该去补配置。
             ErrorCode::MissingAfterSaleAddress => (
                 Recoverable,
                 NeedConfirm,
-                false,
+                true,
                 "店铺缺少可用售后地址",
-                "请在店铺设置中添加售后退货地址",
+                "请在店铺设置中添加售后退货地址，配好后系统自动继续",
             ),
             ErrorCode::AmbiguousAfterSaleAddress => (
                 Recoverable,
                 NeedConfirm,
-                false,
+                true,
                 "存在多个售后地址，无法自动选择",
-                "请选择一个售后退货地址",
+                "请设置默认退货地址，设好后系统自动继续",
             ),
             ErrorCode::MissingFreightTemplate => (
                 Recoverable,
                 NeedConfirm,
-                false,
+                true,
                 "店铺缺少可用运费模板",
-                "请在店铺设置中配置运费模板",
+                "请在店铺设置中配置运费模板，配好后系统自动继续",
             ),
             ErrorCode::InsufficientHeadImages => (
                 Recoverable,
@@ -416,9 +443,7 @@ impl ErrorCode {
                 "店铺未启用或未通过验证",
                 "请先在店铺设置中完成验证并启用",
             ),
-            ErrorCode::ShopNotFound => {
-                (Fatal, Error, false, "目标店铺不存在", "请检查店铺配置")
-            }
+            ErrorCode::ShopNotFound => (Fatal, Error, false, "目标店铺不存在", "请检查店铺配置"),
             ErrorCode::ProviderNotConfigured => (
                 Fatal,
                 Error,
@@ -460,6 +485,36 @@ impl ErrorCode {
                 false,
                 "缺少微信商品 ID，无法继续",
                 "请重新提交该商品",
+            ),
+            ErrorCode::MissingWechatProductPayload => (
+                Fatal,
+                Error,
+                false,
+                "发品资料缺失，无法提交",
+                "请点击「重新铺货」重建发品资料",
+            ),
+            ErrorCode::PrecheckUnexpectedError => (
+                Fatal,
+                Error,
+                false,
+                "发品前校验出现意外错误",
+                "请点击「重新铺货」重试；持续失败请查看任务日志",
+            ),
+            // 类目详情缓存缺失是系统自身缓存问题：Transient 自动重试，
+            // AI 补属性 runner 的缓存缺失分支会推进到 category_precheck 在线拉取详情自愈。
+            ErrorCode::CategoryDetailCacheMissing => (
+                Transient,
+                Error,
+                true,
+                "类目详情缓存缺失，等待自动拉取",
+                "无需操作，系统将自动拉取类目详情后继续",
+            ),
+            ErrorCode::CategoryAttrFillFailed => (
+                Fatal,
+                Error,
+                false,
+                "AI 补属性失败",
+                "请点击「重新铺货」重试，或在确认面板手动补全属性",
             ),
             ErrorCode::WechatCategoryPrecheckFailed => (
                 Fatal,
@@ -504,6 +559,7 @@ impl ErrorCode {
             category,
             attention,
             retriable,
+            auto_retry_limit: self.auto_retry_limit(),
             human_reason,
             suggested_action,
         }
@@ -515,6 +571,7 @@ const UNKNOWN_CLASSIFICATION: ErrorClassification = ErrorClassification {
     category: ErrorCategory::Fatal,
     attention: Attention::Error,
     retriable: false,
+    auto_retry_limit: None,
     human_reason: "出现未归类的错误",
     suggested_action: "请查看详情中的错误信息",
 };
@@ -532,8 +589,9 @@ pub fn classify_error_code(code: &str) -> ErrorClassification {
             category: ErrorCategory::Fatal,
             attention: Attention::Error,
             retriable: false,
+            auto_retry_limit: None,
             human_reason: "微信审核未通过",
-            suggested_action: "请按微信驳回原因修改商品后重新提交",
+            suggested_action: "请按微信驳回原因修改商品后点「重新铺货」重新提交",
         };
     }
     // 微信 addproduct 偶发吞 SKU（errcode=0 但草稿 skus=[]）：submit 阶段已自动「getproduct 校验
@@ -547,6 +605,7 @@ pub fn classify_error_code(code: &str) -> ErrorClassification {
             category: ErrorCategory::Transient,
             attention: Attention::Error,
             retriable: true,
+            auto_retry_limit: None,
             human_reason: "微信偶发吞 SKU，正在自动退避重排重试",
             suggested_action: "无需操作，系统将隔开时间自动重新提交",
         };
@@ -556,8 +615,54 @@ pub fn classify_error_code(code: &str) -> ErrorClassification {
             category: ErrorCategory::Fatal,
             attention: Attention::Error,
             retriable: false,
+            auto_retry_limit: None,
             human_reason: "微信偶发吞 SKU，自动退避重排多轮仍未入库",
-            suggested_action: "微信 addproduct 接口偶发故障，请稍后重新提交该商品",
+            suggested_action: "微信 addproduct 接口偶发故障，请点「重新铺货」择机重新提交",
+        };
+    }
+    // 店铺发品配额受限（未缴足保证金的店铺上架上限 100 个）：addproduct 报 10020110、
+    // listingproduct 报内层 6600133。比吞 SKU 更上层的硬天花板，非代码能解，给出明确指引。
+    if code == "WECHAT_ADDPRODUCT_10020110" || code == "WECHAT_LISTINGPRODUCT_6600133" {
+        return ErrorClassification {
+            category: ErrorCategory::Fatal,
+            attention: Attention::Error,
+            retriable: false,
+            auto_retry_limit: None,
+            human_reason: "店铺发品配额受限（未缴足保证金限 100 个上架）",
+            suggested_action: "请缴纳店铺保证金解除配额，或先下架闲置商品再重试",
+        };
+    }
+    // 微信接口动态错误码前缀兜底（WECHAT_ADDPRODUCT_{errcode} 等由 runner 按真实 errcode
+    // 拼接，无法穷举）：归为 Fatal 不自动重试（真实 errcode 各异，盲目重试不安全），
+    // 人话文案点明是哪个接口报错，详细 errmsg 经 error_summary 透出。
+    if code.starts_with("WECHAT_ADDPRODUCT_") {
+        return ErrorClassification {
+            category: ErrorCategory::Fatal,
+            attention: Attention::Error,
+            retriable: false,
+            auto_retry_limit: None,
+            human_reason: "微信发品接口返回错误",
+            suggested_action: "请查看店铺详情中的微信报错信息，处理后点「重新铺货」",
+        };
+    }
+    if code.starts_with("WECHAT_LISTINGPRODUCT_") {
+        return ErrorClassification {
+            category: ErrorCategory::Fatal,
+            attention: Attention::Error,
+            retriable: false,
+            auto_retry_limit: None,
+            human_reason: "微信上架接口返回错误",
+            suggested_action: "请查看店铺详情中的微信报错信息，处理后点「重新铺货」",
+        };
+    }
+    if code.starts_with("WECHAT_CATEGORY_PRECHECK_") {
+        return ErrorClassification {
+            category: ErrorCategory::Fatal,
+            attention: Attention::Error,
+            retriable: false,
+            auto_retry_limit: None,
+            human_reason: "微信类目预检返回错误",
+            suggested_action: "请检查类目资质或更换类目后点「重新铺货」",
         };
     }
     UNKNOWN_CLASSIFICATION
@@ -580,7 +685,11 @@ mod tests {
     fn no_duplicate_code_strings() {
         let mut seen = std::collections::HashSet::new();
         for code in ErrorCode::ALL {
-            assert!(seen.insert(code.as_str()), "错误码字符串重复: {}", code.as_str());
+            assert!(
+                seen.insert(code.as_str()),
+                "错误码字符串重复: {}",
+                code.as_str()
+            );
         }
     }
 
@@ -596,19 +705,102 @@ mod tests {
             );
             match c.category {
                 ErrorCategory::Recoverable => {
+                    // 可补救项一律提示用户关注（NeedConfirm）；retriable 允许为 true
+                    //（店铺配置缺失类：用户补配后自动自愈）。
                     assert_eq!(c.attention, Attention::NeedConfirm, "{}", code.as_str());
-                    assert!(!c.retriable, "{} 可补救项不应自动重试", code.as_str());
                 }
                 ErrorCategory::Fatal => {
                     assert_eq!(c.attention, Attention::Error, "{}", code.as_str());
                     assert!(!c.retriable, "{} 需修项不应自动重试", code.as_str());
+                    assert!(
+                        c.auto_retry_limit.is_none(),
+                        "{} 需修项不应有限次自动重试",
+                        code.as_str()
+                    );
                 }
                 ErrorCategory::Transient => {
                     assert_eq!(c.attention, Attention::Error, "{}", code.as_str());
                     assert!(c.retriable, "{} 瞬时项应可自动重试", code.as_str());
                 }
             }
+            // auto_retry_limit 只该出现在 retriable=false 的可补救项上（有限次兜底重试）
+            if c.auto_retry_limit.is_some() {
+                assert!(
+                    !c.retriable && c.category == ErrorCategory::Recoverable,
+                    "{} auto_retry_limit 仅用于不自动重试的可补救项",
+                    code.as_str()
+                );
+            }
         }
+    }
+
+    #[test]
+    fn auto_retry_policy_table() {
+        // 纯技术性缺属性类：有限次自动重试（回退 category_precheck AI 兜底），超限转人工
+        assert_eq!(
+            classify_error_code("CATEGORY_ATTRS_NEED_AI_FILL").auto_retry_limit,
+            Some(3)
+        );
+        assert_eq!(
+            classify_error_code("WECHAT_PAYLOAD_NEEDS_AI_FILL").auto_retry_limit,
+            Some(3)
+        );
+        assert_eq!(
+            classify_error_code("CATEGORY_NEEDS_AI_FILL").auto_retry_limit,
+            Some(2)
+        );
+        // 店铺配置缺失类：retriable 自愈（用户补配后 ≤30 分钟自动恢复）
+        for code in [
+            "MISSING_FREIGHT_TEMPLATE",
+            "MISSING_AFTER_SALE_ADDRESS",
+            "AMBIGUOUS_AFTER_SALE_ADDRESS",
+        ] {
+            let c = classify_error_code(code);
+            assert!(c.retriable, "{code} 应自动自愈重试");
+            assert_eq!(c.attention, Attention::NeedConfirm, "{code} 仍应提示用户");
+        }
+        // 缺图类/类目歧义/审查类：保持纯人工
+        for code in [
+            "INSUFFICIENT_HEAD_IMAGES",
+            "INSUFFICIENT_DETAIL_IMAGES",
+            "MISSING_WECHAT_LEAF_CATEGORY_ID",
+            "REVIEW_NEEDS_CONFIRM",
+        ] {
+            let c = classify_error_code(code);
+            assert!(!c.retriable, "{code} 不应自动重试");
+            assert_eq!(c.auto_retry_limit, None, "{code} 不应有限次重试");
+        }
+    }
+
+    #[test]
+    fn dynamic_wechat_codes_classified() {
+        // 配额受限精确码
+        let quota = classify_error_code("WECHAT_ADDPRODUCT_10020110");
+        assert!(quota.human_reason.contains("配额"));
+        assert!(!quota.retriable);
+        let quota2 = classify_error_code("WECHAT_LISTINGPRODUCT_6600133");
+        assert!(quota2.human_reason.contains("配额"));
+        // 动态 errcode 前缀兜底（不再落「未归类」）
+        let add = classify_error_code("WECHAT_ADDPRODUCT_47001");
+        assert_eq!(add.human_reason, "微信发品接口返回错误");
+        let listing = classify_error_code("WECHAT_LISTINGPRODUCT_12345");
+        assert_eq!(listing.human_reason, "微信上架接口返回错误");
+        let precheck = classify_error_code("WECHAT_CATEGORY_PRECHECK_999");
+        assert_eq!(precheck.human_reason, "微信类目预检返回错误");
+        // 本地动态码已入枚举
+        assert!(classify_error_code("CATEGORY_DETAIL_CACHE_MISSING").retriable);
+        assert_eq!(
+            classify_error_code("PRECHECK_UNEXPECTED_ERROR").category,
+            ErrorCategory::Fatal
+        );
+        assert_eq!(
+            classify_error_code("MISSING_WECHAT_PRODUCT_PAYLOAD").category,
+            ErrorCategory::Fatal
+        );
+        assert_eq!(
+            classify_error_code("CATEGORY_ATTR_FILL_FAILED").category,
+            ErrorCategory::Fatal
+        );
     }
 
     #[test]

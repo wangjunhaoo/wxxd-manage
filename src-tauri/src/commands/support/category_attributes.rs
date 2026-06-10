@@ -3002,7 +3002,9 @@ pub(in crate::commands) fn extract_freight_template_detail(raw_payload: &Value) 
 }
 
 /// 从已缓存的运费模板 raw_payload 中解析模板名称（freight_template.name，缺失或空串返回 None）。
-pub(in crate::commands) fn freight_template_name_from_payload(raw_payload: &Value) -> Option<String> {
+pub(in crate::commands) fn freight_template_name_from_payload(
+    raw_payload: &Value,
+) -> Option<String> {
     raw_payload
         .get("name")
         .and_then(Value::as_str)
@@ -3058,8 +3060,12 @@ mod tests {
             }
         });
         // 同步时取出的 freight_template 对象即为存入 raw_payload 的内容
-        let stored = extract_freight_template_detail(&response).expect("应取出 freight_template 对象");
-        assert_eq!(stored.get("template_id").and_then(Value::as_str), Some("1012494298004"));
+        let stored =
+            extract_freight_template_detail(&response).expect("应取出 freight_template 对象");
+        assert_eq!(
+            stored.get("template_id").and_then(Value::as_str),
+            Some("1012494298004")
+        );
         // load 时再从存储对象的顶层 name 解析出模板名称（两跳契约）
         assert_eq!(
             freight_template_name_from_payload(&stored).as_deref(),
@@ -3127,7 +3133,8 @@ mod tests {
         }))
         .unwrap();
         let report =
-            sanitize_payload_attrs_with_category_detail(&product, &mut payload, &raw_detail).unwrap();
+            sanitize_payload_attrs_with_category_detail(&product, &mut payload, &raw_detail)
+                .unwrap();
         let attrs = payload["attrs"].as_array().unwrap();
         // 必填项不应被删空，而是被兜底为合法值「其他」
         assert_eq!(attrs.len(), 1);

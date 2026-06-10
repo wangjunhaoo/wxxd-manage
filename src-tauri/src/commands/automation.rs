@@ -106,7 +106,9 @@ async fn run_publish_stage_within<T>(
             eprintln!("[driver] 铺货阶段「{step}」超时 {budget_secs}s（本轮跳过，下一轮继续，不阻塞后续阶段）");
             result.errors.push(AutomationStepError {
                 step: step.to_string(),
-                error: format!("阶段超时 {budget_secs}s，已跳过本轮（不阻塞后续阶段，下一轮继续推进）"),
+                error: format!(
+                    "阶段超时 {budget_secs}s，已跳过本轮（不阻塞后续阶段，下一轮继续推进）"
+                ),
             });
             None
         }
@@ -160,11 +162,13 @@ async fn run_publish_pipeline_steps(app: AppHandle) -> PublishPipelineRunResult 
         }
     }
 
+    // 类目预检内含 AI 兜底补属性（90s/项超时）：预算必须容得下至少一次完整 AI 调用，
+    // 否则一个 AI 兜底项就吃光预算被外层砍掉、下一轮重来形成空转。limit 收紧到 10 配平。
     if let Some(step_result) = run_publish_stage_within(
         &mut result,
         "publish.category_precheck",
-        25,
-        run_publish_category_prechecks_once(app.clone(), Some(20)),
+        100,
+        run_publish_category_prechecks_once(app.clone(), Some(10)),
     )
     .await
     {
@@ -176,11 +180,12 @@ async fn run_publish_pipeline_steps(app: AppHandle) -> PublishPipelineRunResult 
 
     // 图片下载/上传是最易 hang 的阶段（淘宝源图慢/死链 + 微信上传），给 40s 预算硬限；
     // 超时只跳过本轮、卡顿项留在 running 下轮重试，绝不再拖垮后面的 submit/listing。
+    // limit 6 配合单商品图片 3 并发上传，批次稳定在预算内完成。
     if let Some(step_result) = run_publish_stage_within(
         &mut result,
         "publish.upload_assets",
         40,
-        run_publish_asset_uploads_once(app.clone(), Some(10)),
+        run_publish_asset_uploads_once(app.clone(), Some(6)),
     )
     .await
     {
@@ -258,13 +263,15 @@ pub fn start_pipeline_driver(app: AppHandle) {
             let handle = tauri::async_runtime::spawn(async move {
                 drive_pipeline_once(&app_tick).await;
             });
-            match tokio::time::timeout(std::time::Duration::from_secs(180), handle).await {
+            // 240s = 铺货各阶段预算合计（precheck/属性40/类目预检100/传图40/提交35/上架20/审核20
+            // 中实际并发到的子集）+ 审查 spawn 余量；空闲阶段瞬回不占预算，只在真积压时生效。
+            match tokio::time::timeout(std::time::Duration::from_secs(240), handle).await {
                 Ok(Ok(())) => {}
                 Ok(Err(join_err)) => {
                     eprintln!("⚠️ driver tick 异常退出（已隔离，继续下一轮）：{join_err}");
                 }
                 Err(_) => {
-                    eprintln!("⚠️ driver tick 超时 180s（已跳过本轮，继续下一轮）");
+                    eprintln!("⚠️ driver tick 超时 240s（已跳过本轮，继续下一轮）");
                 }
             }
             tokio::time::sleep(std::time::Duration::from_secs(8)).await;

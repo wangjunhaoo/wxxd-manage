@@ -58,9 +58,19 @@ function canRepublish(row: PipelineProductView): boolean {
   return row.failed_shops > 0 && !row.can_confirm;
 }
 
-/** 是否可勾选：补货/重采/重铺任一可执行（顶部据勾选分组显示对应批量按钮）。 */
+/** 可归档：已全部上架的稳定态商品（归档后从默认视图隐藏，减少表格噪音）。 */
+function canArchive(row: PipelineProductView): boolean {
+  return row.status === "listed";
+}
+
+/** 是否可勾选：补货/重采/重铺/归档任一可执行（顶部据勾选分组显示对应批量按钮）。 */
 function isRowSelectable(row: PipelineProductView): boolean {
-  return canAddTargets(row.status) || canRecollect(row) || canRepublish(row);
+  return (
+    canAddTargets(row.status) ||
+    canRecollect(row) ||
+    canRepublish(row) ||
+    canArchive(row)
+  );
 }
 
 /** 把 SKU 规格对象拼成可读文本（尺码: xxx / 身高: yyy），无规格回退 external_sku_id。 */
@@ -128,32 +138,39 @@ export default function PublishWorkbenchSection() {
   // ---- 概览过滤 ----
   const [statusFilter, setStatusFilter] = useState<string>("all");
 
-  const stats: Record<string, number> = {
-    all: products.length,
-    collecting: 0,
-    collected: 0,
-    need_confirm: 0,
-    publishing: 0,
-    listed: 0,
-    error: 0,
-  };
-  for (const p of products) {
-    if (p.status === "pending_collect" || p.status === "collecting") stats.collecting += 1;
-    else if (stats[p.status] !== undefined) stats[p.status] += 1;
-  }
+  // 全表统计来自服务端聚合（不受列表 300 条截断影响）；归档是独立的服务端视图
+  const stats = pipe.pipelineStats.value;
+  const archivedView = pipe.pipelineView.value === "archived";
+  const statsAll =
+    stats.collecting +
+    stats.collected +
+    stats.need_confirm +
+    stats.publishing +
+    stats.listed +
+    stats.error;
 
   const overviewItems: { key: string; label: string; value: number }[] = [
-    { key: "all", label: "全部", value: stats.all },
+    { key: "all", label: "全部", value: statsAll },
     { key: "collecting", label: "采集中", value: stats.collecting },
     { key: "collected", label: "待铺货", value: stats.collected },
     { key: "need_confirm", label: "待确认", value: stats.need_confirm },
     { key: "publishing", label: "铺货中", value: stats.publishing },
     { key: "listed", label: "已上架", value: stats.listed },
     { key: "error", label: "异常", value: stats.error },
+    { key: "archived", label: "已归档", value: stats.archived },
   ];
 
+  // 点「已归档」切到归档服务端视图，其余 key 都在默认（未归档）视图内做客户端状态过滤
+  const onPickOverview = (key: string) => {
+    setStatusFilter(key);
+    const targetView = key === "archived" ? "archived" : "active";
+    if (pipe.pipelineView.value !== targetView) {
+      void pipe.switchPipelineView(targetView);
+    }
+  };
+
   const filteredProducts: PipelineProductView[] =
-    statusFilter === "all"
+    statusFilter === "all" || statusFilter === "archived"
       ? products
       : statusFilter === "collecting"
         ? products.filter(
@@ -193,6 +210,7 @@ export default function PublishWorkbenchSection() {
   const selectedAddable = selectedRows.filter((r) => canAddTargets(r.status));
   const selectedRecollectable = selectedRows.filter((r) => canRecollect(r));
   const selectedRepublishable = selectedRows.filter((r) => canRepublish(r));
+  const selectedArchivable = selectedRows.filter((r) => canArchive(r));
 
   // 表头全选：作用于当前筛选下的可勾选行（部分选中时半选 indeterminate）。
   const selectableInView = filteredProducts.filter(isRowSelectable);
@@ -227,6 +245,16 @@ export default function PublishWorkbenchSection() {
   /** 批量重新铺货：重推所有勾选中铺货失败的店。 */
   const onBatchRepublish = async () => {
     await pipe.republishProducts(selectedRepublishable.map((r) => r.id));
+    setSelectedIds(new Set());
+  };
+
+  /** 批量归档已上架商品（默认视图）/ 批量恢复（归档视图）。 */
+  const onBatchArchive = async () => {
+    await pipe.archiveProducts(selectedArchivable.map((r) => r.id));
+    setSelectedIds(new Set());
+  };
+  const onBatchUnarchive = async () => {
+    await pipe.unarchiveProducts(selectedRows.map((r) => r.id));
     setSelectedIds(new Set());
   };
 
@@ -417,6 +445,16 @@ export default function PublishWorkbenchSection() {
                   批量重新采集（{selectedRecollectable.length}）
                 </Button>
               )}
+              {!archivedView && selectedArchivable.length > 0 && (
+                <Button onClick={onBatchArchive}>
+                  归档（{selectedArchivable.length}）
+                </Button>
+              )}
+              {archivedView && selectedRows.length > 0 && (
+                <Button onClick={onBatchUnarchive}>
+                  恢复（{selectedRows.length}）
+                </Button>
+              )}
               <Dropdown
                 label="淘宝采集"
                 items={[
@@ -444,7 +482,7 @@ export default function PublishWorkbenchSection() {
           }
         />
 
-        {/* 概览过滤 chips */}
+        {/* 概览过滤 chips（「已归档」切服务端归档视图，其余在默认视图内过滤） */}
         <div className="chips" style={{ marginBottom: 16 }}>
           {overviewItems.map((item) => (
             <Chip
@@ -452,7 +490,7 @@ export default function PublishWorkbenchSection() {
               label={item.label}
               count={item.value}
               active={statusFilter === item.key}
-              onClick={() => setStatusFilter(item.key)}
+              onClick={() => onPickOverview(item.key)}
             />
           ))}
         </div>
@@ -1048,7 +1086,12 @@ function ProductRow({
         </td>
         <td>
           {row.error_reason ? (
-            <span className="danger-text">{row.error_reason}</span>
+            <div>
+              <span className="danger-text">{row.error_reason}</span>
+              {row.suggested_action && (
+                <div className="subtext">建议：{row.suggested_action}</div>
+              )}
+            </div>
           ) : (
             <span className="text-muted">—</span>
           )}
@@ -1087,19 +1130,29 @@ function ProductRow({
           <td colSpan={8}>
             <div className="subtbl" style={{ padding: "8px 16px" }}>
               {row.shops.map((t) => (
-                <div
-                  key={t.id}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 10,
-                    marginBottom: 8,
-                  }}
-                >
-                  <strong>{t.shop_name}</strong>
-                  <Pill tone={t.error_code ? "danger" : "info"}>{t.status_text}</Pill>
-                  {t.error_reason && (
-                    <span className="text-muted">{t.error_reason}</span>
+                <div key={t.id} style={{ marginBottom: 8 }}>
+                  <div
+                    style={{ display: "flex", alignItems: "center", gap: 10 }}
+                  >
+                    <strong>{t.shop_name}</strong>
+                    <Pill tone={t.error_code ? "danger" : "info"}>
+                      {t.status_text}
+                    </Pill>
+                    {t.error_reason && (
+                      <span className="text-muted">{t.error_reason}</span>
+                    )}
+                    {t.suggested_action && (
+                      <span className="subtext">建议：{t.suggested_action}</span>
+                    )}
+                  </div>
+                  {/* 微信接口原始报错（error_summary）：排查「为什么被拒」的第一手信息 */}
+                  {t.error_detail && (
+                    <div
+                      className="subtext"
+                      style={{ marginTop: 2, paddingLeft: 2 }}
+                    >
+                      详情：{t.error_detail}
+                    </div>
                   )}
                 </div>
               ))}

@@ -126,6 +126,8 @@ pub fn run() {
             commands::mark_taobao_access_limited,
             commands::test_taobao_collect,
             commands::list_pipeline_products,
+            commands::archive_pipeline_products,
+            commands::unarchive_pipeline_products,
             commands::retry_pipeline_product,
             commands::recollect_pipeline_product,
             commands::get_pipeline_product_detail,

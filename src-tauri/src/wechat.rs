@@ -9,10 +9,8 @@ const API_QUOTA_URL: &str = "https://api.weixin.qq.com/cgi-bin/openapi/quota/get
 const IMAGE_UPLOAD_URL: &str = "https://api.weixin.qq.com/shop/ec/basics/img/upload";
 const VIDEO_INIT_UPLOAD_URL: &str = "https://api.weixin.qq.com/shop/ec/basics/video/initupload";
 const VIDEO_UPLOAD_PART_URL: &str = "https://api.weixin.qq.com/shop/ec/basics/video/uploadpart";
-const VIDEO_FINISH_UPLOAD_URL: &str =
-    "https://api.weixin.qq.com/shop/ec/basics/video/finishupload";
-const VIDEO_GET_PLAY_INFO_URL: &str =
-    "https://api.weixin.qq.com/shop/ec/basics/video/getplayinfo";
+const VIDEO_FINISH_UPLOAD_URL: &str = "https://api.weixin.qq.com/shop/ec/basics/video/finishupload";
+const VIDEO_GET_PLAY_INFO_URL: &str = "https://api.weixin.qq.com/shop/ec/basics/video/getplayinfo";
 const PRODUCT_ADD_URL: &str = "https://api.weixin.qq.com/channels/ec/product/add";
 const PRODUCT_UPDATE_URL: &str = "https://api.weixin.qq.com/channels/ec/product/update";
 const PRODUCT_GET_URL: &str = "https://api.weixin.qq.com/channels/ec/product/get";
@@ -1240,9 +1238,7 @@ impl WechatShopClient {
                 .await?
             {
                 WechatCallResult::Success(part_sha) => finish_parts.push((partnum, part_sha)),
-                WechatCallResult::ApiError(error) => {
-                    return Ok(WechatCallResult::ApiError(error))
-                }
+                WechatCallResult::ApiError(error) => return Ok(WechatCallResult::ApiError(error)),
             }
         }
 
@@ -2360,8 +2356,7 @@ impl WechatShopClient {
 
         let result = if response.errcode == 0 {
             let data = response.data.unwrap_or(serde_json::Value::Null);
-            let normal =
-                wechat_json_value_to_i64(data.get("normal_stock_num")).unwrap_or_default();
+            let normal = wechat_json_value_to_i64(data.get("normal_stock_num")).unwrap_or_default();
             let total = wechat_json_value_to_i64(data.get("total_stock_num")).unwrap_or(normal);
             WechatCallResult::Success(StockInfo {
                 normal_stock_num: normal,

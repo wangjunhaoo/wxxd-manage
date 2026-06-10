@@ -313,9 +313,9 @@ pub(in crate::commands) async fn sync_freight_template_ids(
                             match detail_call.result {
                                 WechatCallResult::Success(detail) => {
                                     extract_freight_template_detail(&detail.raw_payload)
-                                        .unwrap_or_else(|| {
-                                            serde_json::json!({ "template_id": template_id })
-                                        })
+                                        .unwrap_or_else(
+                                            || serde_json::json!({ "template_id": template_id }),
+                                        )
                                 }
                                 WechatCallResult::ApiError(error) => {
                                     insert_api_call_log(

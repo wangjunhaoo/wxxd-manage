@@ -9,10 +9,7 @@
 - 店铺组创建、店铺录入、`app_secret` 加密保存和稳定版 token 验证入口
 - 微信统一 client 骨架、加密 token 缓存和脱敏 API 调用日志
 - 店铺基础信息同步入口和 API 额度快照查询入口
-- 本地主控 HTTP API：默认监听 `127.0.0.1:17890`，支持外部系统查店铺组、创建铺货/改价任务、查询任务、触发 runner，以及查询采购任务、回填供应商物流、标记供应商异常、查询售后/纠纷、记录售后责任、记录纠纷本地跟进、记录/更新/导出本地凭证、记录供应商售后协同、受控提交售后同意/拒绝和记录利润调整
-- 桌面端生成/重置本地 HTTP API Key，后端只保存摘要，不保存明文 Key
-- 外部 HTTP API 审计：记录方法、路径、状态码、耗时和脱敏请求/响应摘要
-- 外部铺货任务创建命令：`create_external_publish_job`
+- 铺货任务创建：采集链路内部经 `create_external_publish_job` 按目标店展开流水线记录
 - 铺货任务查询命令：`get_publish_job`
 - 任务中心命令：`list_task_runs`、`run_publish_pipeline_once`
 - 铺货任务本地 runner：对外只暴露一键铺货推进，内部自动处理店铺校验、类目、属性、素材、提交、审核同步和上架确认
@@ -29,12 +26,10 @@
 - 售后同步和异常处理台：拉取售后列表/详情、同步官方拒绝原因、脱敏保存详情、展示处理状态/失败原因、关联订单、回写退款调整项，并支持人工责任归因、供应商赔付回款和人工触发同意/拒绝
 - 纠纷/保障单同步：调用微信 `searchguaranteeorder/getguaranteeorder`，脱敏缓存纠纷详情，在售后异常页展示举证状态、赔付金额、过期时间和关联订单，并支持记录本地跟进状态、责任方、备注和供应商赔付回款
 - 本地凭证资料包：售后异常页可为售后单/纠纷单记录凭证标题、说明、本地文件路径和来源链接，并标记草稿、已整理、已使用或已归档；列表展示每单本地凭证数量，可按单查看凭证，并支持按筛选或按单据导出 `md/json/jsonl` 元数据清单，只整理本地资料，不读取文件内容、不上传微信、不提交平台处理
-- 供应商售后协同：售后异常页和本地主控 API 可按售后单/纠纷单记录脱敏沟通摘要、索证状态、供应商名称和可选采购任务引用；不登录供应商平台、不保存收件信息、不自动处理纠纷，赔付入账仍走利润调整链路
+- 供应商售后协同：售后异常页可按售后单/纠纷单记录脱敏沟通摘要、索证状态、供应商名称和可选采购任务引用；不登录供应商平台、不保存收件信息、不自动处理纠纷，赔付入账仍走利润调整链路
 - 通知中心：统一展示铺货失败、采购缺映射、同单多物流、发货失败、售后待处理和同步失败，可筛选未读/级别并定位业务页面
 - 采购异常处理：支持人工标记供应商缺货、涨价、取消、质量风险或其他异常，只通知人工处理，不自动换供应商或取消订单
-- 采购任务本地 HTTP API：面向后续供应商下单 agent/skill 暴露非敏采购任务、物流回填和异常标记入口，审计摘要不记录收件人敏感信息或完整请求体
-- 本地 API 调用器：[scripts/wx_xd_local_api.py](/Users/wangjunhao/Code/project/wx-xd/scripts/wx_xd_local_api.py)，支持店铺组查询、铺货/改价任务创建与查询、队列 runner 触发、采购任务处理、售后列表/责任归因/受控动作/本地凭证记录、状态更新和资料包导出、供应商售后协同、纠纷单同步/本地跟进、订单利润/调整、库存风险和动销分析，供外部系统或后续 agent/skill 复用
-- 供应商 agent 安全桥：桌面端“采购任务”页和 [scripts/wx_xd_supplier_agent.py](/Users/wangjunhao/Code/project/wx-xd/scripts/wx_xd_supplier_agent.py) 都支持按 [docs/supplier-agent-protocol.md](/Users/wangjunhao/Code/project/wx-xd/docs/supplier-agent-protocol.md) 导出含货源链接的非敏采购清单、校验外部结果并回填物流/异常/映射
+- 供应商 agent 安全桥：桌面端“采购任务”页支持按 [docs/supplier-agent-protocol.md](docs/supplier-agent-protocol.md) 导出含货源链接的非敏采购清单、校验外部结果并回填物流/异常/映射
 - 订单利润核算：按订单汇总成交额、采购成本、采购运费、退款、售后赔付、供应商赔付回款、其他成本和毛利状态
 - 库存风控：基于外部商品 SKU 库存、采购占用、供应商异常和已铺店铺数生成低库存、断货和库存压力提醒
 - 商品动销分析：基于真实订单、采购成本、售后关联、铺货覆盖和库存风险生成继续铺货、调价、补货或观察建议
@@ -75,59 +70,6 @@ npm run dev -- --host 127.0.0.1
 
 ```bash
 npm run tauri dev
-```
-
-调用本地主控 API：
-
-```bash
-export WX_XD_API_KEY="桌面端生成的 API Key"
-python scripts/wx_xd_local_api.py shop-groups
-python scripts/wx_xd_local_api.py publish-create --json-file publish_payload.json
-python scripts/wx_xd_local_api.py publish-get publish-task-id
-python scripts/wx_xd_local_api.py price-create --json-file price_payload.json
-python scripts/wx_xd_local_api.py price-get price-task-id
-python scripts/wx_xd_local_api.py runner order-sync
-python scripts/wx_xd_local_api.py runner order-detail-sync
-python scripts/wx_xd_local_api.py runner purchase-task-generation
-python scripts/wx_xd_local_api.py runner delivery-submit
-python scripts/wx_xd_local_api.py runner publish-pipeline
-python scripts/wx_xd_local_api.py runner price-precheck
-python scripts/wx_xd_local_api.py runner price-submit
-python scripts/wx_xd_local_api.py runner price-confirm
-python scripts/wx_xd_local_api.py runner aftersale-sync
-python scripts/wx_xd_local_api.py runner operations
-python scripts/wx_xd_local_api.py delivery-settings
-python scripts/wx_xd_local_api.py delivery-auto-send --enabled
-python scripts/wx_xd_local_api.py delivery-companies --shop-id shop-id
-python scripts/wx_xd_local_api.py delivery-companies-sync shop-id
-python scripts/wx_xd_local_api.py delivery-shipments --status send_failed --limit 100
-python scripts/wx_xd_local_api.py delivery-record --order-id order-id --delivery-id SF --waybill-id SF1234567890 --deliver-type 1
-python scripts/wx_xd_local_api.py delivery-retry shipment-id
-python scripts/wx_xd_local_api.py purchase-tasks --status pending_purchase --limit 100
-python scripts/wx_xd_local_api.py purchase-mapping purchase-task-id --external-product-id demo-1688-10001 --external-sku-id black-m --supplier-name "supplier" --supplier-product-id "10001"
-python scripts/wx_xd_local_api.py purchase-shipment purchase-task-id --delivery-id SF --waybill-id SF1234567890 --deliver-type 1 --estimated-cost 18.8
-python scripts/wx_xd_local_api.py purchase-issue purchase-task-id --issue-type out_of_stock --note "supplier reported no stock"
-python scripts/wx_xd_supplier_agent.py export --status pending_purchase --limit 100 --format jsonl
-python scripts/wx_xd_supplier_agent.py template
-python scripts/wx_xd_supplier_agent.py apply --json-file supplier-results.jsonl --dry-run
-python scripts/wx_xd_supplier_agent.py apply --json-file supplier-results.jsonl --continue-on-error --result-out artifacts/supplier-agent/apply-result.json
-python scripts/wx_xd_local_api.py aftersale-reject-reasons-sync shop-id
-python scripts/wx_xd_local_api.py aftersale-reject-reasons --shop-id shop-id --reject-scene 1
-python scripts/wx_xd_local_api.py aftersales --status active --limit 100
-python scripts/wx_xd_local_api.py aftersale-responsibility aftersale-id --party supplier --supplier-compensation-cents 1200 --note "supplier confirmed compensation"
-python scripts/wx_xd_local_api.py aftersale-evidence-record --target-type guarantee --target-id guarantee-id --evidence-type supplier_proof --title "supplier proof" --content-text "metadata only"
-python scripts/wx_xd_local_api.py aftersale-evidence --target-type guarantee --status draft
-python scripts/wx_xd_local_api.py aftersale-evidence-status evidence-id --status ready
-python scripts/wx_xd_local_api.py aftersale-evidence-export --target-type guarantee --status ready --format md
-python scripts/wx_xd_local_api.py aftersale-accept aftersale-id --accept-type 2 --note "manual approval"
-python scripts/wx_xd_local_api.py aftersale-reject aftersale-id --reject-reason-type 1 --reject-reason "evidence mismatch"
-python scripts/wx_xd_local_api.py guarantee-sync
-python scripts/wx_xd_local_api.py guarantee-orders --status active --limit 100
-python scripts/wx_xd_local_api.py order-profits --status pending_cost --limit 100
-python scripts/wx_xd_local_api.py order-profit-adjustment order-id --kind other_cost --amount-cents 300 --note "manual cost adjustment"
-python scripts/wx_xd_local_api.py inventory-risks --status low_stock --limit 100
-python scripts/wx_xd_local_api.py product-sales --status scale_candidate --limit 100
-python scripts/wx_xd_local_api.py inventory-scan
 ```
 
 构建检查：

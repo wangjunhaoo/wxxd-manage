@@ -1175,6 +1175,23 @@ export type CollectionTaskView = {
   updated_at: string;
 };
 
+// 铺货工作台全表状态统计（服务端聚合，不受列表条数截断影响）
+export type PipelineStats = {
+  collecting: number;
+  collected: number;
+  need_confirm: number;
+  publishing: number;
+  listed: number;
+  error: number;
+  archived: number;
+};
+
+// 铺货工作台数据包（后端 list_pipeline_products 返回）
+export type PipelineWorkbenchView = {
+  stats: PipelineStats;
+  products: PipelineProductView[];
+};
+
 // 统一流水线商品视图（后端 list_pipeline_products 返回，字段 snake_case）
 export type PipelineShopTargetView = {
   id: string;
@@ -1183,6 +1200,10 @@ export type PipelineShopTargetView = {
   status_text: string;
   error_code: string | null;
   error_reason: string | null;
+  /** 中文「一键动作提示」：出错时告诉用户该做什么 */
+  suggested_action: string | null;
+  /** 原始错误详情（含微信接口真实报错），排查问题用 */
+  error_detail: string | null;
   can_retry: boolean;
   wechat_product_id: string | null;
   audit_summary: string | null;
@@ -1207,6 +1228,8 @@ export type PipelineProductView = {
   progress_text: string | null;
   error_code: string | null;
   error_reason: string | null;
+  /** 中文「一键动作提示」：针对最严重错误，告诉用户该做什么 */
+  suggested_action: string | null;
   total_shops: number;
   listed_shops: number;
   failed_shops: number;

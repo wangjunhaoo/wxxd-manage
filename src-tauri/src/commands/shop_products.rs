@@ -229,11 +229,9 @@ fn upsert_product(
 fn shop_name_of(app: &AppHandle, shop_id: &str) -> AppResult<String> {
     let conn = open_connection(app)?;
     Ok(conn
-        .query_row(
-            "SELECT name FROM shops WHERE id = ?1",
-            [shop_id],
-            |row| row.get::<_, String>(0),
-        )
+        .query_row("SELECT name FROM shops WHERE id = ?1", [shop_id], |row| {
+            row.get::<_, String>(0)
+        })
         .optional()?
         .unwrap_or_else(|| shop_id.to_string()))
 }
@@ -247,7 +245,9 @@ async fn refresh_product_cache(
     shop_name: &str,
     wechat_product_id: &str,
 ) -> AppResult<()> {
-    let call = client.get_product(access_token, wechat_product_id, 3).await?;
+    let call = client
+        .get_product(access_token, wechat_product_id, 3)
+        .await?;
     match call.result {
         WechatCallResult::Success(info) => {
             let batch_ts = now_shanghai();
@@ -699,7 +699,9 @@ pub async fn listing_shop_product(
 ) -> AppResult<()> {
     let client = WechatShopClient::default();
     let access_token = ensure_access_token(&app, &shop_id, &client).await?;
-    let call = client.listing_product(&access_token, &wechat_product_id).await?;
+    let call = client
+        .listing_product(&access_token, &wechat_product_id)
+        .await?;
     {
         let conn = open_connection(&app)?;
         match &call.result {
@@ -976,9 +978,7 @@ pub async fn refresh_shop_stock(app: AppHandle, shop_id: String) -> AppResult<i6
 
     let mut updated: i64 = 0;
     for chunk in product_ids.chunks(50) {
-        let call = client
-            .batch_get_stock(&access_token, chunk, None)
-            .await?;
+        let call = client.batch_get_stock(&access_token, chunk, None).await?;
         match call.result {
             WechatCallResult::Success(info) => {
                 let conn = open_connection(&app)?;
@@ -994,8 +994,7 @@ pub async fn refresh_shop_stock(app: AppHandle, shop_id: String) -> AppResult<i6
                                 Some(value) => value,
                                 None => continue,
                             };
-                            let stock =
-                                json_i64(sku.get("normal_stock_num")).unwrap_or_default();
+                            let stock = json_i64(sku.get("normal_stock_num")).unwrap_or_default();
                             updated += conn.execute(
                                 "UPDATE wechat_shop_product_skus SET stock_num = ?1, synced_at = ?2
                                  WHERE shop_id = ?3 AND wechat_product_id = ?4 AND sku_id = ?5",

@@ -507,7 +507,13 @@ pub async fn run_collection_review_once(
                 // 并可能累积 agent 子进程；120s 内未返回按失败处理，走退避重试而非永久挂起。
                 let review_result = match tokio::time::timeout(
                     std::time::Duration::from_secs(120),
-                    review_collection_task(&app, &task, config.as_ref(), &shop_ids, &ai_rate_limited),
+                    review_collection_task(
+                        &app,
+                        &task,
+                        config.as_ref(),
+                        &shop_ids,
+                        &ai_rate_limited,
+                    ),
                 )
                 .await
                 {

@@ -380,7 +380,9 @@ async fn download_asset_bytes(
 
 /// 下载淘宝主图视频到内存，供微信 4 步分块上传。淘宝 cloud.video.taobao.com 有防盗链（裸请求返回
 /// 490「非法访问」），必须带浏览器 UA + Referer 并跟随 302 重定向。校验体积 ≤500MB（微信 162 场景上限）。
-pub(in crate::commands) async fn prepare_video_for_upload(source_url: &str) -> Result<Vec<u8>, String> {
+pub(in crate::commands) async fn prepare_video_for_upload(
+    source_url: &str,
+) -> Result<Vec<u8>, String> {
     download_asset_bytes(source_url, &VIDEO_DOWNLOAD_POLICY).await
 }
 

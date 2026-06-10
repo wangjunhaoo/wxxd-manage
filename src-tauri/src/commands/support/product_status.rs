@@ -4,7 +4,13 @@ use super::*;
 /// 解析不到返回 None（调用方降级保留原 summary），绝不 panic。
 fn extract_audit_reject_reason(audit_info: Option<&Value>) -> Option<String> {
     let info = audit_info?;
-    for key in ["reject_reason", "audit_reason", "reason", "audit_desc", "desc"] {
+    for key in [
+        "reject_reason",
+        "audit_reason",
+        "reason",
+        "audit_desc",
+        "desc",
+    ] {
         if let Some(text) = info.get(key).and_then(Value::as_str) {
             let trimmed = text.trim();
             if !trimmed.is_empty() {

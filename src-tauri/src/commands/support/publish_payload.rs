@@ -1729,7 +1729,10 @@ mod tests {
     #[test]
     fn truncate_sku_code_keeps_short_value() {
         let short = "尺码=L;颜色分类=绿色"; // 远小于 100 字节
-        assert_eq!(truncate_sku_code_bytes(short, WECHAT_SKU_CODE_MAX_BYTES), short);
+        assert_eq!(
+            truncate_sku_code_bytes(short, WECHAT_SKU_CODE_MAX_BYTES),
+            short
+        );
     }
 
     #[test]
@@ -1738,7 +1741,11 @@ mod tests {
         let long = "尺码=00:05/00:30;身高=120cm;颜色分类=绿色（升级款）【面料更舒适，90%用户选择】";
         assert!(long.len() > WECHAT_SKU_CODE_MAX_BYTES);
         let fixed = truncate_sku_code_bytes(long, WECHAT_SKU_CODE_MAX_BYTES);
-        assert!(fixed.len() <= WECHAT_SKU_CODE_MAX_BYTES, "截断后={}字节", fixed.len());
+        assert!(
+            fixed.len() <= WECHAT_SKU_CODE_MAX_BYTES,
+            "截断后={}字节",
+            fixed.len()
+        );
         // 不得切断半个 UTF8 字符
         assert!(std::str::from_utf8(fixed.as_bytes()).is_ok());
         // 保留了可读前缀语义
@@ -2131,7 +2138,11 @@ mod tests {
             .iter()
             .find(|a| a.kind == "head_video")
             .expect("应有 head_video 素材");
-        assert_eq!(video.source_url.as_str(), video_url, "视频素材应保留淘宝原始 URL");
+        assert_eq!(
+            video.source_url.as_str(),
+            video_url,
+            "视频素材应保留淘宝原始 URL"
+        );
 
         // 无 main_video 的商品不产生 head_video 素材
         let no_video: ExternalProductInput = serde_json::from_value(serde_json::json!({
@@ -2201,8 +2212,7 @@ mod tests {
         );
 
         // 含 head_video 素材：payload.head_videos[0].video_url 应为微信播放 URL
-        let wechat_video_url =
-            "https://173.wxapp.tc.qq.com/play/abc.f0.mp4?dis_k=k&dis_t=1";
+        let wechat_video_url = "https://173.wxapp.tc.qq.com/play/abc.f0.mp4?dis_k=k&dis_t=1";
         assets.push(PreparedAsset {
             kind: "head_video".to_string(),
             sort_order: 0,

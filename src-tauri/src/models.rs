@@ -1701,6 +1701,8 @@ pub struct PipelineProductView {
     pub progress_text: Option<String>,
     pub error_code: Option<String>,
     pub error_reason: Option<String>,
+    /// 针对最严重错误的中文「一键动作提示」（来自 classify_error_code），异常行展示
+    pub suggested_action: Option<String>,
     pub total_shops: i64,
     pub listed_shops: i64,
     pub failed_shops: i64,
@@ -1713,6 +1715,29 @@ pub struct PipelineProductView {
     pub shops: Vec<PipelineShopTargetView>,
 }
 
+/// 铺货工作台全表状态统计（服务端聚合，不受列表 LIMIT 截断影响）。
+#[derive(Debug, Serialize)]
+pub struct PipelineStats {
+    /// 采集/审查中（pending_collect + collecting）
+    pub collecting: i64,
+    /// 待选店铺货
+    pub collected: i64,
+    pub need_confirm: i64,
+    pub publishing: i64,
+    /// 已上架（未归档）
+    pub listed: i64,
+    pub error: i64,
+    /// 已归档（独立视图）
+    pub archived: i64,
+}
+
+/// 铺货工作台数据包：全表统计 + 当前视图商品列表。
+#[derive(Debug, Serialize)]
+pub struct PipelineWorkbenchView {
+    pub stats: PipelineStats,
+    pub products: Vec<PipelineProductView>,
+}
+
 /// 流水线商品在单个目标店的推进视图（主行展开）。
 #[derive(Debug, Serialize)]
 pub struct PipelineShopTargetView {
@@ -1723,6 +1748,10 @@ pub struct PipelineShopTargetView {
     pub status_text: String,
     pub error_code: Option<String>,
     pub error_reason: Option<String>,
+    /// 中文「一键动作提示」（来自 classify_error_code）
+    pub suggested_action: Option<String>,
+    /// 原始错误详情（target.error_summary，含微信接口真实报错信息），排查问题用
+    pub error_detail: Option<String>,
     pub can_retry: bool,
     pub wechat_product_id: Option<String>,
     pub audit_summary: Option<String>,

@@ -346,10 +346,17 @@ pub(in crate::commands) fn load_product_submit_items(
     Ok(items)
 }
 
+/// audit 阶段状态轮询的最小间隔（秒）。微信审核以分钟计，driver 8s 一跳若每跳都
+/// getproduct 纯属空烧 API 配额；新提交项（last_status_sync_at 为 NULL）立即查首轮，
+/// 之后每 ≥60s 查一次，上架确认最多晚 60s，换来 getproduct 调用量降约 85%。
+const STATUS_SYNC_MIN_INTERVAL_SECS: i64 = 60;
+
 pub(in crate::commands) fn load_product_status_sync_items(
     conn: &Connection,
     limit: i64,
 ) -> AppResult<Vec<StatusSyncItem>> {
+    let stale_before =
+        format_shanghai(Utc::now() - Duration::seconds(STATUS_SYNC_MIN_INTERVAL_SECS));
     let mut stmt = conn.prepare(
         "SELECT
            t.id,
@@ -363,11 +370,12 @@ pub(in crate::commands) fn load_product_status_sync_items(
            AND t.status IN ('pending', 'running')
            AND t.wechat_product_id IS NOT NULL
            AND t.wechat_product_id != ''
+           AND (t.last_status_sync_at IS NULL OR t.last_status_sync_at <= ?2)
          ORDER BY t.last_status_sync_at IS NOT NULL ASC, t.created_at ASC
          LIMIT ?1",
     )?;
     let items = stmt
-        .query_map([limit], |row| {
+        .query_map(params![limit, stale_before], |row| {
             Ok(StatusSyncItem {
                 item_id: row.get(0)?,
                 job_id: row.get(1)?,
