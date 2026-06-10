@@ -360,6 +360,46 @@ pub async fn open_taobao_login(app: AppHandle) -> AppResult<()> {
     Ok(())
 }
 
+// 手动拉起可见 CloakBrowser（共享采集 profile）：人工处理验证码/风控或浏览预热。
+// 窗口保持到用户自行关闭，本命令阻塞至浏览器进程退出后返回。
+#[tauri::command]
+pub async fn open_cloak_browser(app: AppHandle) -> AppResult<()> {
+    let app_data_dir = app.path().app_data_dir()?;
+    let profile_dir = app_data_dir.join("taobao_profile");
+    let profile_dir_str = profile_dir.to_string_lossy().to_string();
+
+    let script_path = resolve_collector_script(&app);
+
+    let mut command = python_command(&app);
+    let output = command
+        .arg(&script_path)
+        .arg("open-browser")
+        .arg("--profile-dir")
+        .arg(&profile_dir_str)
+        .output()
+        .await
+        .map_err(|e| AppError::Validation(format!("无法拉起采集浏览器: {}", e)))?;
+
+    if !output.status.success() {
+        let stdout_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&stdout_str) {
+            if let Some(err_msg) = v.get("error").and_then(|value| value.as_str()) {
+                return Err(AppError::Validation(err_msg.to_string()));
+            }
+        }
+
+        let stderr_str = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let detail = if stderr_str.is_empty() {
+            "采集浏览器进程异常退出。".to_string()
+        } else {
+            format!("采集浏览器进程异常退出: {}", stderr_str)
+        };
+        return Err(AppError::Validation(detail));
+    }
+
+    Ok(())
+}
+
 fn collection_task_select_sql(where_clause: &str) -> String {
     format!(
         "SELECT id, title, source_url, category_path, target_shop_ids, status, error_summary, collected_data,

@@ -607,6 +607,7 @@ export function useWxXdApp() {
     testCollectVisible,
     toggleCurrentCollectionPageSelection,
     triggerTaobaoLogin,
+    openCloakBrowser,
     uploadCollectionImage,
     confirmSelectedCollectionReview,
   } = useCollectionWorkflow({
@@ -3721,6 +3722,7 @@ export function useWxXdApp() {
     testCollectVisible,
     toggleCurrentCollectionPageSelection,
     triggerTaobaoLogin,
+    openCloakBrowser,
     unreadNotificationCount,
     updateAftersaleEvidenceStatus,
     uploadCollectionImage,

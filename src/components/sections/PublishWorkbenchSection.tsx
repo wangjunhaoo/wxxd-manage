@@ -572,6 +572,10 @@ export default function PublishWorkbenchSection() {
                     onClick: () => ctx.triggerTaobaoLogin(),
                   },
                   { label: "检测登录状态", onClick: () => ctx.checkTaobaoLoginState() },
+                  {
+                    label: "打开采集浏览器（手动验证/浏览）",
+                    onClick: () => ctx.openCloakBrowser(),
+                  },
                 ]}
               />
               <Button

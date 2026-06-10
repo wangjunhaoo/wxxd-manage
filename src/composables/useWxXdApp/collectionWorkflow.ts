@@ -954,6 +954,25 @@ export function useCollectionWorkflow({
       collectionLoggingIn.value = false;
     }
   }
+  /** 手动拉起采集浏览器（CloakBrowser，共享采集登录态），人工处理验证码/风控或浏览。 */
+  const cloakBrowserOpening = ref(false);
+  async function openCloakBrowser() {
+    // 防重复拉起：同一 profile 并发启动两个持久化上下文会互相抢锁崩溃
+    if (cloakBrowserOpening.value) {
+      ElMessage.info("采集浏览器已在运行中，请先关闭已打开的窗口");
+      return;
+    }
+    cloakBrowserOpening.value = true;
+    try {
+      ElMessage.info("正在拉起采集浏览器（与自动采集共享登录态），请稍候...");
+      await command("open_cloak_browser");
+      ElMessage.success("采集浏览器已关闭");
+    } catch (err: any) {
+      ElMessage.error(`打开采集浏览器失败：${err}`);
+    } finally {
+      cloakBrowserOpening.value = false;
+    }
+  }
   async function retryCollection(taskId: string) {
     try {
       await command("retry_collection_task", { taskId });
@@ -1241,6 +1260,8 @@ export function useCollectionWorkflow({
     testCollectVisible,
     toggleCurrentCollectionPageSelection,
     triggerTaobaoLogin,
+    openCloakBrowser,
+    cloakBrowserOpening,
     uploadCollectionImage,
   };
 }

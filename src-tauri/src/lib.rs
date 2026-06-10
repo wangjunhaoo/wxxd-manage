@@ -108,6 +108,7 @@ pub fn run() {
             commands::run_publish_pipeline_once,
             commands::import_excel_for_collection,
             commands::open_taobao_login,
+            commands::open_cloak_browser,
             commands::get_collection_tasks,
             commands::run_collection_review_once,
             commands::confirm_collection_review,

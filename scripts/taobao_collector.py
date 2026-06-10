@@ -3154,6 +3154,52 @@ def run_login(profile_dir):
         close_browser_context(ctx)
 
 
+def run_open_browser(profile_dir):
+    """手动拉起可见 CloakBrowser（共享采集 profile），供人工处理验证码/风控或浏览预热。
+
+    与 login 子命令的区别：不做登录检测、不做冷却预检（手动打开正是处理风控的手段），
+    打开淘宝首页后窗口保持，用户关闭浏览器后进程退出。
+    """
+    print(f"启动 CloakBrowser 窗口（采集 profile: {profile_dir}）...", file=sys.stderr)
+    os.makedirs(profile_dir, exist_ok=True)
+
+    ctx = None
+    try:
+        ctx, page = launch_browser(profile_dir, headless=False)
+        page.goto("https://www.taobao.com/", timeout=60000)
+        print("浏览器已打开（与自动采集共享登录态）。完成手动操作后直接关闭浏览器窗口即可。", file=sys.stderr)
+
+        # 等待用户关闭浏览器：所有页面都关掉即视为结束（与 run_login 同款存活检测）
+        while True:
+            time.sleep(1)
+            try:
+                current_pages = ctx.pages if hasattr(ctx, "pages") else []
+            except Exception:
+                break
+            if not current_pages:
+                break
+            alive = False
+            for p in current_pages:
+                try:
+                    if p.is_closed():
+                        continue
+                    p.evaluate("1")
+                    alive = True
+                    break
+                except Exception:
+                    continue
+            if not alive:
+                break
+
+        print(json.dumps({"ok": True}, ensure_ascii=False))
+    except Exception as e:
+        print(json.dumps({"error": str(e)}, ensure_ascii=False))
+        print(f"打开浏览器出错: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        close_browser_context(ctx)
+
+
 def run_check_login(profile_dir):
     """检测当前 profile 是否含有效淘宝登录态"""
     os.makedirs(profile_dir, exist_ok=True)
@@ -3754,6 +3800,11 @@ def main():
     check_parser = subparsers.add_parser("check-login", help="检测当前 Profile 是否含有效淘宝登录态")
     check_parser.add_argument("--profile-dir", required=True, help="持久化的 Profile 路径")
 
+    open_browser_parser = subparsers.add_parser(
+        "open-browser", help="手动拉起可见 CloakBrowser（共享采集 profile，人工处理验证/浏览）"
+    )
+    open_browser_parser.add_argument("--profile-dir", required=True, help="持久化的 Profile 路径")
+
     collect_parser = subparsers.add_parser("collect", help="自动采集淘宝商品详细数据")
     collect_parser.add_argument("--url", required=True, help="淘宝商品链接")
     collect_parser.add_argument("--profile-dir", required=True, help="持久化的 Profile 路径")
@@ -3792,6 +3843,8 @@ def main():
         run_login(args.profile_dir)
     elif args.command == "check-login":
         run_check_login(args.profile_dir)
+    elif args.command == "open-browser":
+        run_open_browser(args.profile_dir)
     elif args.command == "collect":
         run_collect(
             args.url,
