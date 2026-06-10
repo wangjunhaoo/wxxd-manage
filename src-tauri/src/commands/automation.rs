@@ -254,6 +254,10 @@ pub fn start_pipeline_driver(app: AppHandle) {
         eprintln!("🔥 任务 panic: {info}");
         default_hook(info);
     }));
+    // 启动基准：覆盖上次运行残留的心跳值，避免「停了一夜再开」在第一轮 tick 完成前误报卡死
+    if let Ok(conn) = open_connection(&app) {
+        let _ = set_string_setting(&conn, DRIVER_HEARTBEAT_SETTING, &now_shanghai());
+    }
     tauri::async_runtime::spawn(async move {
         loop {
             let app_tick = app.clone();
@@ -278,6 +282,13 @@ pub fn start_pipeline_driver(app: AppHandle) {
         }
     });
 }
+
+/// driver 心跳 setting 键：driver 启动时写一次基准（覆盖上次运行的残留值），之后每轮
+/// tick **完成时**更新。写在结尾而非开头是刻意的：240s 超时只是 detach 卡死的子任务，
+/// 主循环会继续 spawn 新 tick——若写在开头，hang 死的 tick（如钥匙串弹窗同步阻塞）反而
+/// 让心跳一直更新、绿灯掩盖故障；写在结尾则连续 hang 时心跳真正停更，前端按
+/// 「超过两轮 tick 上限（约 10 分钟）未完成任何一轮推进」亮红灯提示疑似卡死。
+pub(in crate::commands) const DRIVER_HEARTBEAT_SETTING: &str = "driver.last_tick_at";
 
 async fn drive_pipeline_once(app: &AppHandle) {
     // 阶段顺序刻意把「铺货」排在「审查」之前：审查走 AI 子进程（每个商品约 20~30s），
@@ -324,6 +335,10 @@ async fn drive_pipeline_once(app: &AppHandle) {
     .await
     {
         eprintln!("流水线 driver 审查阶段出错：{error}");
+    }
+    // 心跳：tick 完整跑完才写（hang 死的 tick 到不了这里 → 心跳停更 → 前端红灯能真实触发）
+    if let Ok(conn) = open_connection(app) {
+        let _ = set_string_setting(&conn, DRIVER_HEARTBEAT_SETTING, &now_shanghai());
     }
     eprintln!("[driver] tick: 本轮完成");
 }

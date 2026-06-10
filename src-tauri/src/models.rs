@@ -1745,13 +1745,42 @@ pub struct PipelineStats {
     pub archived: i64,
 }
 
-/// 铺货工作台数据包：状态统计 + 当前视图商品列表 + 全部导入批次。
-/// 选了批次时 stats 按该批次内聚合（Pill 数字 = 批次内各状态数）。
+/// 单个在途阶段的店级任务计数（漏斗一段）。
+#[derive(Debug, Serialize)]
+pub struct PipelineStageBucket {
+    /// await_review / precheck / attr_fill / category_precheck / asset_upload / submit / listing / audit
+    pub stage: String,
+    /// 该阶段排队+执行中（pending/running）
+    pub active: i64,
+    /// 该阶段被拦（blocked，含待人工与等退避重试）
+    pub blocked: i64,
+}
+
+/// 铺货阶段漏斗 + 总进度（店级任务「商品×店」口径，随批次筛选联动；不含已归档商品）。
+#[derive(Debug, Serialize)]
+pub struct PipelineStageStats {
+    /// 8 个在途阶段按推进顺序排列，前端直接按序渲染漏斗
+    pub stages: Vec<PipelineStageBucket>,
+    pub total_targets: i64,
+    /// 已完成（stage=done，即上架成功）
+    pub done_targets: i64,
+    pub blocked_targets: i64,
+    pub active_targets: i64,
+}
+
+/// 铺货工作台数据包：状态统计 + 阶段漏斗 + 当前视图商品列表 + 全部导入批次 + driver 心跳。
+/// 选了批次时 stats/stage_stats 都按该批次内聚合（Pill 数字 = 批次内各状态数）。
 #[derive(Debug, Serialize)]
 pub struct PipelineWorkbenchView {
     pub stats: PipelineStats,
+    pub stage_stats: PipelineStageStats,
     pub products: Vec<PipelineProductView>,
     pub batches: Vec<ImportBatchView>,
+    /// driver 心跳（RFC3339）：启动时写基准，之后每轮 tick 完成时更新；
+    /// 长时间不更新 = 连续多轮 tick 没跑完（疑似 hang 死）
+    pub driver_heartbeat_at: Option<String>,
+    /// 铺货自动化总开关当前值（心跳指示器区分「已关闭」与「疑似卡死」）
+    pub publish_automation_enabled: bool,
 }
 
 /// 流水线商品在单个目标店的推进视图（主行展开）。
@@ -1760,6 +1789,10 @@ pub struct PipelineShopTargetView {
     pub id: String,
     pub shop_id: String,
     pub shop_name: String,
+    /// 当前推进阶段（await_review…audit/done），前端展开行渲染阶段步进点
+    pub stage: String,
+    /// 是否被拦（blocked）：步进点当前段红色；正常推进为蓝色
+    pub blocked: bool,
     /// 人话状态：已上架 / 类目预检中 / 等待微信审核 / 失败原因 …
     pub status_text: String,
     pub error_code: Option<String>,

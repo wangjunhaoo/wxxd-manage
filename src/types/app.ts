@@ -1196,11 +1196,32 @@ export type ImportBatchView = {
   product_count: number;
 };
 
-// 铺货工作台数据包（后端 list_pipeline_products 返回；选了批次时 stats 为批次内统计）
+// 阶段漏斗一段：该阶段排队/执行中与被拦的店级任务数
+export type PipelineStageBucket = {
+  stage: string;
+  active: number;
+  blocked: number;
+};
+
+// 阶段漏斗 + 总进度（店级任务「商品×店」口径，随批次筛选联动，不含已归档）
+export type PipelineStageStats = {
+  stages: PipelineStageBucket[];
+  total_targets: number;
+  done_targets: number;
+  blocked_targets: number;
+  active_targets: number;
+};
+
+// 铺货工作台数据包（后端 list_pipeline_products 返回；选了批次时 stats/stage_stats 为批次内统计）
 export type PipelineWorkbenchView = {
   stats: PipelineStats;
+  stage_stats: PipelineStageStats;
   products: PipelineProductView[];
   batches: ImportBatchView[];
+  /** driver 上一轮 tick 开始时间（RFC3339）；null=本次启动后还没跑过 */
+  driver_heartbeat_at: string | null;
+  /** 铺货自动化总开关（心跳指示区分「已关闭」与「疑似卡死」） */
+  publish_automation_enabled: boolean;
 };
 
 // 统一流水线商品视图（后端 list_pipeline_products 返回，字段 snake_case）
@@ -1208,6 +1229,10 @@ export type PipelineShopTargetView = {
   id: string;
   shop_id: string;
   shop_name: string;
+  /** 当前推进阶段（await_review…audit/done），展开行渲染阶段步进点 */
+  stage: string;
+  /** 是否被拦（blocked）：当前步进点红色 */
+  blocked: boolean;
   status_text: string;
   error_code: string | null;
   error_reason: string | null;

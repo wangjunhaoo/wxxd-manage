@@ -754,6 +754,89 @@ fn load_pipeline_stats(conn: &Connection, batch_id: Option<&str>) -> AppResult<P
     .map_err(Into::into)
 }
 
+/// 店级任务的 8 个在途推进阶段（顺序即漏斗顺序；stage=done 不在内，单独计完成数）。
+const PIPELINE_STAGE_ORDER: [&str; 8] = [
+    "await_review",
+    "precheck",
+    "attr_fill",
+    "category_precheck",
+    "asset_upload",
+    "submit",
+    "listing",
+    "audit",
+];
+
+/// 阶段漏斗聚合：店级任务（商品×店）按 (stage, status) 一条 GROUP BY 算清分布，
+/// 回答「这一批分别卡在哪一步、整体跑了几成」。不含已归档商品；batch_id 非空时只看该批次。
+/// await_review 的 target 本身恒为 pending（等审查激活），其真实停滞原因在商品级——
+/// 商品 need_confirm/error 时把这些 target 归入 blocked，避免蓝色「进行中」高估推进量。
+fn load_pipeline_stage_stats(
+    conn: &Connection,
+    batch_id: Option<&str>,
+) -> AppResult<PipelineStageStats> {
+    let mut stmt = conn.prepare(
+        "SELECT t.stage,
+                CASE
+                  WHEN t.stage = 'await_review' AND p.status IN ('need_confirm', 'error')
+                    THEN 'blocked'
+                  ELSE t.status
+                END,
+                COUNT(*)
+         FROM pipeline_shop_targets t
+         JOIN pipeline_products p ON p.id = t.product_id
+         WHERE p.archived_at IS NULL
+           AND (?1 IS NULL OR p.import_batch_id = ?1)
+         GROUP BY 1, 2",
+    )?;
+    let rows = stmt
+        .query_map(params![batch_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut stages: Vec<PipelineStageBucket> = PIPELINE_STAGE_ORDER
+        .iter()
+        .map(|stage| PipelineStageBucket {
+            stage: stage.to_string(),
+            active: 0,
+            blocked: 0,
+        })
+        .collect();
+    let (mut total, mut done, mut blocked_total, mut active_total) = (0i64, 0i64, 0i64, 0i64);
+    for (stage, status, count) in rows {
+        total += count;
+        if stage == "done" {
+            done += count;
+            continue;
+        }
+        let blocked = target_is_failed(&status);
+        if blocked {
+            blocked_total += count;
+        } else {
+            active_total += count;
+        }
+        // 未知阶段（防御：历史脏数据）不进漏斗段，但已计入总数与 active/blocked
+        if let Some(bucket) = stages.iter_mut().find(|b| b.stage == stage) {
+            if blocked {
+                bucket.blocked += count;
+            } else {
+                bucket.active += count;
+            }
+        }
+    }
+    Ok(PipelineStageStats {
+        stages,
+        total_targets: total,
+        done_targets: done,
+        blocked_targets: blocked_total,
+        active_targets: active_total,
+    })
+}
+
 /// 全部导入批次（含商品计数），新批次在前，「历史数据」等旧批次靠后。
 fn load_import_batches(conn: &Connection) -> AppResult<Vec<ImportBatchView>> {
     let mut stmt = conn.prepare(
@@ -831,7 +914,10 @@ pub fn list_pipeline_products(
 ) -> AppResult<PipelineWorkbenchView> {
     let conn = open_connection(&app)?;
     let stats = load_pipeline_stats(&conn, batch_id.as_deref())?;
+    let stage_stats = load_pipeline_stage_stats(&conn, batch_id.as_deref())?;
     let batches = load_import_batches(&conn)?;
+    let driver_heartbeat_at = get_string_setting(&conn, DRIVER_HEARTBEAT_SETTING)?;
+    let publish_automation_enabled = load_automation_settings(&conn)?.publish_enabled;
 
     struct ProductRow {
         id: String,
@@ -935,6 +1021,8 @@ pub fn list_pipeline_products(
                 id: target.id.clone(),
                 shop_id: target.shop_id.clone(),
                 shop_name: target.shop_name.clone(),
+                stage: target.stage.clone(),
+                blocked,
                 status_text: target_status_text(
                     target.stage.as_str(),
                     target.status.as_str(),
@@ -989,8 +1077,11 @@ pub fn list_pipeline_products(
     }
     Ok(PipelineWorkbenchView {
         stats,
+        stage_stats,
         products: views,
         batches,
+        driver_heartbeat_at,
+        publish_automation_enabled,
     })
 }
 

@@ -593,3 +593,68 @@ a { color: inherit; }
   .shop-row { grid-template-columns: auto minmax(0, 1fr); }
   .shop-row-actions { grid-column: 1 / -1; flex-wrap: wrap; }
 }
+
+/* ============================================================
+   铺货进度观测区：总进度条 / driver 心跳 / 阶段漏斗 / 店级步进点
+   ============================================================ */
+.obs-panel {
+  padding: 12px 14px; margin-bottom: 14px;
+  background: var(--surface); border: 1px solid var(--line-2); border-radius: 12px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.obs-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.obs-text { font-size: 12.5px; color: var(--ink-2); white-space: nowrap; }
+
+/* 分段进度条：绿=完成 红=受阻 蓝=进行中 */
+.pg-track {
+  flex: 1 1 220px; min-width: 180px; height: 10px; border-radius: 6px;
+  background: var(--chip); overflow: hidden; display: flex;
+}
+.pg-seg { height: 100%; transition: width 0.6s ease; }
+.pg-done { background: var(--teal-dot); }
+.pg-blocked { background: var(--rose-dot); }
+.pg-active { background: var(--blue-dot); opacity: 0.55; }
+
+/* driver 心跳指示：ok=绿点呼吸 warn=红点 off=灰点 */
+.hb {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; margin-left: auto; white-space: nowrap;
+}
+.hb-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.hb-ok { color: var(--teal-ink); }
+.hb-ok .hb-dot { background: var(--teal-dot); animation: hb-breath 2s ease-in-out infinite; }
+.hb-warn { color: var(--rose-ink); }
+.hb-warn .hb-dot { background: var(--rose-dot); }
+.hb-off { color: var(--ink-3); }
+.hb-off .hb-dot { background: var(--neutral-dot); }
+@keyframes hb-breath { 50% { opacity: 0.35; } }
+
+/* 阶段漏斗：每段可点击过滤；红角标=该阶段 blocked 数 */
+.stage-funnel { display: flex; align-items: center; flex-wrap: wrap; row-gap: 6px; }
+.funnel-item { display: inline-flex; align-items: center; }
+.funnel-arrow { color: var(--ink-3); font-size: 11px; margin: 0 4px; }
+.funnel-seg {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--line-2); background: var(--surface);
+  font-size: 12px; color: var(--ink-2); cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.funnel-seg:hover { border-color: var(--accent); }
+.funnel-seg.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.funnel-seg.empty { opacity: 0.45; }
+.funnel-seg.fin { color: var(--teal-ink); }
+.funnel-seg.fin.on { background: var(--teal-bg); border-color: var(--teal-dot); color: var(--teal-ink); }
+.funnel-blocked {
+  font-style: normal; font-size: 11px; line-height: 1;
+  padding: 2px 5px; border-radius: 999px;
+  background: var(--rose-bg); color: var(--rose-ink); font-weight: 600;
+}
+
+/* 店级阶段步进点：已过=绿 当前=蓝(呼吸)/红(blocked) 未到=灰，done 加绿勾 */
+.stage-dots { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.sdot { width: 7px; height: 7px; border-radius: 50%; background: var(--neutral-dot); opacity: 0.5; }
+.sdot.past { background: var(--teal-dot); opacity: 1; }
+.sdot.cur { background: var(--blue-dot); opacity: 1; animation: hb-breath 1.6s ease-in-out infinite; }
+.sdot.cur-blocked { background: var(--rose-dot); opacity: 1; }
+.sdot-check { color: var(--teal-ink); font-size: 11px; font-weight: 700; margin-left: 2px; }

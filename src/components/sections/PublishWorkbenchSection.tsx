@@ -34,6 +34,85 @@ function statusTone(s: string): "info" | "warning" | "primary" | "success" | "da
   return STATUS_META[s]?.tone ?? "info";
 }
 
+/** 店级任务推进阶段顺序与中文标签（与后端 PIPELINE_STAGE_ORDER 一致，漏斗与步进点共用）。 */
+const STAGE_FLOW: { key: string; label: string }[] = [
+  { key: "await_review", label: "待审查" },
+  { key: "precheck", label: "预检" },
+  { key: "attr_fill", label: "补属性" },
+  { key: "category_precheck", label: "类目预检" },
+  { key: "asset_upload", label: "传图" },
+  { key: "submit", label: "提交" },
+  { key: "listing", label: "上架" },
+  { key: "audit", label: "审核" },
+];
+
+function stageLabel(stage: string): string {
+  if (stage === "done") return "完成";
+  return STAGE_FLOW.find((s) => s.key === stage)?.label ?? stage;
+}
+
+/** driver 心跳健康判定：心跳=每轮 tick 完成时间（hang 死的 tick 不更新），
+ *  连续两轮 tick 上限约 496s 没完成即异常，阈值 600s 留余量防误报。
+ *  铺货开关只改文案（关闭时采集/审查仍自动推进），不影响卡死判定。 */
+function driverHealth(
+  heartbeatAt: string | null,
+  enabled: boolean,
+): { tone: "ok" | "warn" | "off"; text: string } {
+  if (!heartbeatAt)
+    return { tone: "off", text: "driver 尚未活动（应用刚启动）" };
+  const sec = Math.max(
+    0,
+    Math.floor((Date.now() - new Date(heartbeatAt).getTime()) / 1000),
+  );
+  const ago = sec < 60 ? `${sec} 秒前` : `${Math.floor(sec / 60)} 分钟前`;
+  if (sec > 600) {
+    return {
+      tone: "warn",
+      text: `driver 超 ${Math.floor(sec / 60)} 分钟未完成任何一轮推进，疑似卡死（常见原因：钥匙串授权弹窗未点「始终允许」）`,
+    };
+  }
+  if (!enabled) {
+    return {
+      tone: "off",
+      text: `铺货已暂停（采集/审查仍自动推进）· 上轮完成 ${ago}`,
+    };
+  }
+  return { tone: "ok", text: `自动推进中 · 上轮完成 ${ago}` };
+}
+
+/** 店级阶段步进点：已过=绿、当前=蓝（blocked 红）、未到=灰，done 全绿+勾。 */
+function StageDots({ stage, blocked }: { stage: string; blocked: boolean }) {
+  const done = stage === "done";
+  const idx = done
+    ? STAGE_FLOW.length
+    : STAGE_FLOW.findIndex((s) => s.key === stage);
+  // 未知阶段（防御：历史脏数据）不渲染步进点，状态 Pill 仍正常显示
+  if (idx < 0) return null;
+  return (
+    <span
+      className="stage-dots"
+      title={done ? "已完成全部阶段" : `当前阶段：${stageLabel(stage)}`}
+    >
+      {STAGE_FLOW.map((s, i) => (
+        <span
+          key={s.key}
+          className={
+            "sdot" +
+            (i < idx
+              ? " past"
+              : i === idx
+                ? blocked
+                  ? " cur-blocked"
+                  : " cur"
+                : "")
+          }
+        />
+      ))}
+      {done && <span className="sdot-check">✓</span>}
+    </span>
+  );
+}
+
 /** 可补选店铺货的状态：待铺货（已采集审查完成）或仍在采集/审查中（提前补店）。 */
 function canAddTargets(status: string): boolean {
   return (
@@ -184,7 +263,15 @@ export default function PublishWorkbenchSection() {
     }
   };
 
-  const filteredProducts: PipelineProductView[] =
+  // ---- 阶段漏斗过滤：点漏斗某段 → 只看「有店卡在该阶段」的商品（与状态 Pill 叠加） ----
+  const [stageFilter, setStageFilter] = useState<string | null>(null);
+  const stageStats = pipe.stageStats.value;
+  const driver = driverHealth(
+    pipe.driverHeartbeatAt.value,
+    pipe.publishAutomationEnabled.value,
+  );
+
+  const statusFiltered: PipelineProductView[] =
     statusFilter === "all" || statusFilter === "archived"
       ? products
       : statusFilter === "collecting"
@@ -192,6 +279,13 @@ export default function PublishWorkbenchSection() {
             (p) => p.status === "pending_collect" || p.status === "collecting",
           )
         : products.filter((p) => p.status === statusFilter);
+  // 归档视图下观测区（漏斗）隐藏，阶段过滤一并失效，避免不可见的过滤条件让列表莫名变空
+  const filteredProducts: PipelineProductView[] =
+    stageFilter && !archivedView
+      ? statusFiltered.filter((p) =>
+          p.shops.some((t) => t.stage === stageFilter),
+        )
+      : statusFiltered;
 
   // ---- 表格展开行 ----
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -554,6 +648,95 @@ export default function PublishWorkbenchSection() {
           )}
         </div>
 
+        {/* 进度观测区：总进度条 + driver 心跳 + 阶段漏斗（归档视图下隐藏，店级口径=商品×店） */}
+        {!archivedView && (
+          <div className="obs-panel">
+            <div className="obs-row">
+              {stageStats.total_targets > 0 ? (
+                <>
+                  <div
+                    className="pg-track"
+                    title={`完成 ${stageStats.done_targets} · 受阻 ${stageStats.blocked_targets} · 进行中 ${stageStats.active_targets}`}
+                  >
+                    <div
+                      className="pg-seg pg-done"
+                      style={{
+                        width: `${(stageStats.done_targets / stageStats.total_targets) * 100}%`,
+                      }}
+                    />
+                    <div
+                      className="pg-seg pg-blocked"
+                      style={{
+                        width: `${(stageStats.blocked_targets / stageStats.total_targets) * 100}%`,
+                      }}
+                    />
+                    <div
+                      className="pg-seg pg-active"
+                      style={{
+                        width: `${(stageStats.active_targets / stageStats.total_targets) * 100}%`,
+                      }}
+                    />
+                  </div>
+                  <span className="obs-text">
+                    {stageStats.done_targets}/{stageStats.total_targets}{" "}
+                    店级任务完成
+                    {stageStats.blocked_targets > 0 &&
+                      ` · ${stageStats.blocked_targets} 受阻`}
+                    {stageStats.active_targets > 0 &&
+                      ` · ${stageStats.active_targets} 进行中`}
+                    （不含已归档）
+                  </span>
+                </>
+              ) : (
+                <span className="obs-text">暂无在途铺货任务</span>
+              )}
+              <span className={`hb hb-${driver.tone}`}>
+                <span className="hb-dot" />
+                {driver.text}
+              </span>
+            </div>
+            {stageStats.total_targets > 0 && (
+              <div className="stage-funnel">
+                {STAGE_FLOW.map((s, i) => {
+                  const bucket = stageStats.stages.find(
+                    (x) => x.stage === s.key,
+                  );
+                  const act = bucket?.active ?? 0;
+                  const blk = bucket?.blocked ?? 0;
+                  const on = stageFilter === s.key;
+                  return (
+                    <span key={s.key} className="funnel-item">
+                      {i > 0 && <span className="funnel-arrow">→</span>}
+                      <button
+                        type="button"
+                        className={`funnel-seg${on ? " on" : ""}${act + blk === 0 ? " empty" : ""}`}
+                        title={`${s.label}：${act} 进行中${blk > 0 ? `，${blk} 受阻` : ""}（点击筛选该阶段商品）`}
+                        onClick={() => setStageFilter(on ? null : s.key)}
+                      >
+                        {s.label} {act + blk}
+                        {blk > 0 && <em className="funnel-blocked">{blk}</em>}
+                      </button>
+                    </span>
+                  );
+                })}
+                <span className="funnel-item">
+                  <span className="funnel-arrow">→</span>
+                  <button
+                    type="button"
+                    className={`funnel-seg fin${stageFilter === "done" ? " on" : ""}`}
+                    title="已上架完成的店级任务（点击筛选）"
+                    onClick={() =>
+                      setStageFilter(stageFilter === "done" ? null : "done")
+                    }
+                  >
+                    完成 {stageStats.done_targets}
+                  </button>
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* 概览过滤 chips（「已归档」切服务端归档视图，其余在默认视图内过滤） */}
         <div className="chips" style={{ marginBottom: 16 }}>
           {overviewItems.map((item) => (
@@ -571,7 +754,12 @@ export default function PublishWorkbenchSection() {
         <div className="panel tight">
           {filteredProducts.length === 0 ? (
             <Empty>
-              还没有商品。点「导入铺货表」选 Excel 和目标店，导入后自动采集铺货。
+              {products.length > 0 ||
+              statusFilter !== "all" ||
+              stageFilter ||
+              selectedBatchId
+                ? "当前筛选条件下没有商品（试试切换批次 / 状态 / 阶段筛选）。"
+                : "还没有商品。点「导入铺货表」选 Excel 和目标店，导入后自动采集铺货。"}
             </Empty>
           ) : (
             <div className="tbl-wrap">
@@ -1207,6 +1395,7 @@ function ProductRow({
                     style={{ display: "flex", alignItems: "center", gap: 10 }}
                   >
                     <strong>{t.shop_name}</strong>
+                    <StageDots stage={t.stage} blocked={t.blocked} />
                     <Pill tone={t.error_code ? "danger" : "info"}>
                       {t.status_text}
                     </Pill>

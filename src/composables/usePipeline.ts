@@ -6,6 +6,7 @@ import type {
   ImportBatchView,
   PipelineProductDetailView,
   PipelineProductView,
+  PipelineStageStats,
   PipelineStats,
   PipelineWorkbenchView,
 } from "../types/app";
@@ -39,6 +40,17 @@ export function usePipeline(command: CommandFn) {
   });
   /** 当前视图：active=未归档（默认）/ archived=已归档 */
   const pipelineView = ref<"active" | "archived">("active");
+  /** 阶段漏斗 + 总进度（店级任务口径，随批次筛选联动） */
+  const stageStats = ref<PipelineStageStats>({
+    stages: [],
+    total_targets: 0,
+    done_targets: 0,
+    blocked_targets: 0,
+    active_targets: 0,
+  });
+  /** driver 上一轮 tick 时间（RFC3339，null=还没跑过）与铺货自动化开关 */
+  const driverHeartbeatAt = ref<string | null>(null);
+  const publishAutomationEnabled = ref(true);
   /** 全部导入批次（含商品计数，批次筛选下拉数据源） */
   const importBatches = ref<ImportBatchView[]>([]);
   /** 当前批次筛选：null=全部批次。选中后列表与状态统计都只看该批次 */
@@ -60,6 +72,9 @@ export function usePipeline(command: CommandFn) {
       if (seq !== refreshSeq) return; // 期间筛选条件已变，过期响应作废
       pipelineProducts.value = result.products;
       pipelineStats.value = result.stats;
+      stageStats.value = result.stage_stats;
+      driverHeartbeatAt.value = result.driver_heartbeat_at;
+      publishAutomationEnabled.value = result.publish_automation_enabled;
       importBatches.value = result.batches;
       // 选中的批次已不存在（如清库删除）：自动回退到全部批次，避免列表恒空
       if (
@@ -360,6 +375,9 @@ export function usePipeline(command: CommandFn) {
   return {
     pipelineProducts,
     pipelineStats,
+    stageStats,
+    driverHeartbeatAt,
+    publishAutomationEnabled,
     pipelineView,
     switchPipelineView,
     importBatches,
