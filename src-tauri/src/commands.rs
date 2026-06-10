@@ -92,7 +92,8 @@ use crate::models::{
     PurchaseTaskShipmentRequest, PurchaseTaskShipmentResult, PurchaseTaskView, ShipmentListResult,
     ShipmentRecordRequest, ShipmentRecordResult, ShipmentRetryResult, ShipmentView, Shop,
     ShopBasicInfoSyncResult, ShopCredentialCheck, ShopGroup, ShopListItem,
-    ShopProductListResult, SyncShopProductsResult, WechatShopProductDetailView,
+    CleanupOrphanDraftsResult, ShopProductListResult, SyncShopProductsResult,
+    WechatShopProductDetailView,
     WechatShopProductSkuView, WechatShopProductView,
     SupplierAftersaleFollowupListResult, SupplierAftersaleFollowupRecordRequest,
     SupplierAftersaleFollowupRecordResult, SupplierAftersaleFollowupView,
@@ -141,6 +142,8 @@ const AUTOMATION_PUBLISH_STATUS_SYNC_SETTING: &str = "automation.publish_status_
 const AUTOMATION_PUBLISH_LISTING_SETTING: &str = "automation.publish_listing_enabled";
 const AUTOMATION_PRICE_CONFIRM_SETTING: &str = "automation.price_confirm_enabled";
 const PUBLISH_PRICING_STRATEGY_SETTING: &str = "publish.pricing_strategy";
+// 店铺级默认运费模板：JSON map {shop_id: template_id}。铺货时优先用，未设置则自动选第一个。
+const PUBLISH_DEFAULT_FREIGHT_TEMPLATES_SETTING: &str = "publish.default_freight_templates";
 const AUTO_BACKUP_LAST_DATE_SETTING: &str = "backup.last_auto_created_date";
 const AI_PROVIDER_CUSTOM: &str = "custom";
 const AI_PROVIDER_LEGACY_PI: &str = "pi_coding_agent";
@@ -166,6 +169,13 @@ const WECHAT_IMAGE_MAX_BYTES: usize = 2 * 1024 * 1024;
 const WECHAT_IMAGE_TARGET_BYTES: usize = 1_800_000;
 const IMAGE_USER_AGENT: &str = "wx-xd-image-preflight/0.1";
 const IMAGE_ACCEPT_HEADER: &str = "image/avif,image/webp,image/apng,image/*,*/*;q=0.8";
+// 主图视频搬运（淘宝 → 微信小店 head_videos）相关常量。微信 scene_type=162 商品视频限制 500MB/180秒。
+// 淘宝 cloud.video.taobao.com 有防盗链：裸请求返回 490「非法访问」，必须带浏览器 UA + Referer 且
+// 跟随 302 才能下载到 video/mp4（实测 Chrome UA + item.taobao.com Referer 可过）。
+const VIDEO_DOWNLOAD_TIMEOUT_SECONDS: u64 = 60;
+const VIDEO_DOWNLOAD_MAX_BYTES: u64 = 500 * 1024 * 1024;
+const VIDEO_BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+const VIDEO_DOWNLOAD_REFERER: &str = "https://item.taobao.com/";
 
 #[derive(Debug)]
 struct TargetShop {
@@ -372,6 +382,8 @@ struct PreparedAsset {
     kind: String,
     sort_order: i64,
     wechat_url: String,
+    /// 原始淘宝图片 URL，作为 SKU 颜色图 → 微信 thumb_img 的映射键。
+    source_url: String,
 }
 
 #[derive(Debug)]

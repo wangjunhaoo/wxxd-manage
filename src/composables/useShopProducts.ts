@@ -1,6 +1,7 @@
 import { ref } from "../runtime/reactive";
 import { ElMessage } from "../runtime/feedback";
 import type {
+  CleanupOrphanDraftsResult,
   ShopProductListResult,
   SyncShopProductsResult,
   WechatShopProductDetailView,
@@ -71,6 +72,7 @@ export function useShopProducts(command: CommandFn) {
   const loading = ref(false);
   const syncing = ref(false);
   const refreshingStock = ref(false);
+  const cleaningDrafts = ref(false);
   const selectedShopId = ref<string>("");
   const statusFilter = ref<number | "all">("all");
   const keyword = ref("");
@@ -149,6 +151,31 @@ export function useShopProducts(command: CommandFn) {
       ElMessage.error(`刷新库存失败：${error}`);
     } finally {
       refreshingStock.value = false;
+    }
+  }
+
+  /** 清理孤儿草稿：删已上架重复草稿 + 独有草稿尝试上架转正（危险操作，组件层二次确认后调）。 */
+  async function cleanupDrafts(): Promise<boolean> {
+    if (!selectedShopId.value) {
+      ElMessage.warning("请先选择店铺");
+      return false;
+    }
+    cleaningDrafts.value = true;
+    try {
+      const result = await command<CleanupOrphanDraftsResult>("cleanup_orphan_drafts", {
+        shopId: selectedShopId.value,
+      });
+      ElMessage.success(
+        `清理完成：删除 ${result.deleted} 个重复/无效草稿，${result.listed_promoted} 个独有草稿上架转正，剩余草稿 ${result.remaining_after}`,
+      );
+      detailSkus.value = {};
+      await refreshList();
+      return true;
+    } catch (error) {
+      ElMessage.error(`清理草稿失败：${error}`);
+      return false;
+    } finally {
+      cleaningDrafts.value = false;
     }
   }
 
@@ -243,6 +270,7 @@ export function useShopProducts(command: CommandFn) {
     loading,
     syncing,
     refreshingStock,
+    cleaningDrafts,
     selectedShopId,
     statusFilter,
     keyword,
@@ -250,6 +278,7 @@ export function useShopProducts(command: CommandFn) {
     refreshList,
     syncProducts,
     refreshStock,
+    cleanupDrafts,
     loadDetail,
     listingProduct,
     delistingProduct,

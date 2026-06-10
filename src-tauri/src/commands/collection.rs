@@ -24,6 +24,33 @@ pub fn save_publish_pricing_strategy(
     Ok(strategy)
 }
 
+#[tauri::command]
+pub fn get_publish_default_freight_templates(
+    app: AppHandle,
+) -> AppResult<std::collections::HashMap<String, String>> {
+    let conn = open_connection(&app)?;
+    load_publish_default_freight_templates(&conn)
+}
+
+#[tauri::command]
+pub fn set_publish_default_freight_template(
+    app: AppHandle,
+    shop_id: String,
+    template_id: Option<String>,
+) -> AppResult<()> {
+    let conn = open_connection(&app)?;
+    // 指定模板时校验它在该店铺已同步列表内（清除时跳过）；防止存入无效模板 ID。
+    if let Some(tid) = template_id.as_deref() {
+        if !cached_freight_template_exists(&conn, &shop_id, tid)? {
+            return Err(AppError::Validation(format!(
+                "运费模板 {tid} 不在店铺 {shop_id} 的已同步列表中，请先在该店铺同步运费模板"
+            )));
+        }
+    }
+    save_shop_default_freight_template_to_db(&conn, &shop_id, template_id.as_deref())?;
+    Ok(())
+}
+
 // 1. Excel 导入并创建采集任务
 #[tauri::command]
 pub fn import_excel_for_collection(
@@ -3493,11 +3520,13 @@ mod collection_worker_tests {
             source_url: "https://item.taobao.com/item.htm?id=1".to_string(),
             images: vec![],
             detail_images: vec![],
+            main_video: None,
             skus: vec![crate::models::ExternalSkuInput {
                 external_sku_id: "sku-1".to_string(),
                 specs: serde_json::json!({ "颜色": "白色" }),
                 cost_price: 10.0,
                 stock: 10,
+                sku_image: None,
             }],
             supplier_name: Some("江陵童话".to_string()),
             supplier_product_id: Some("1".to_string()),

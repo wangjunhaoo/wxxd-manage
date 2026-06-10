@@ -232,20 +232,35 @@ pub(in crate::commands) fn load_freight_template_views(
     shop_id: Option<&str>,
 ) -> AppResult<Vec<FreightTemplateView>> {
     let mut stmt = conn.prepare(
-        "SELECT f.shop_id, s.name, f.template_id, f.synced_at
+        "SELECT f.shop_id, s.name, f.template_id, f.synced_at, f.raw_payload
          FROM wechat_freight_templates f
          JOIN shops s ON s.id = f.shop_id
          WHERE (?1 IS NULL OR f.shop_id = ?1)
          ORDER BY s.name ASC, f.template_id ASC
          LIMIT 200",
     )?;
+    let defaults = load_publish_default_freight_templates(conn)?;
     let items = stmt
         .query_map(params![shop_id], |row| {
+            let row_shop_id: String = row.get(0)?;
+            let row_template_id: String = row.get(2)?;
+            let is_default = defaults
+                .get(&row_shop_id)
+                .map(|tid| tid == &row_template_id)
+                .unwrap_or(false);
+            // 模板名称从 raw_payload（缓存的 freight_template 详情对象）里解析，存量缺详情则为 None。
+            let raw_payload_text: String = row.get(4)?;
+            let template_name = serde_json::from_str::<Value>(&raw_payload_text)
+                .ok()
+                .as_ref()
+                .and_then(freight_template_name_from_payload);
             Ok(FreightTemplateView {
-                shop_id: row.get(0)?,
+                shop_id: row_shop_id,
                 shop_name: row.get(1)?,
-                template_id: row.get(2)?,
+                template_id: row_template_id,
+                template_name,
                 synced_at: row.get(3)?,
+                is_default,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -269,8 +284,8 @@ pub(in crate::commands) async fn sync_freight_template_ids(
         match &call.result {
             WechatCallResult::Success(raw) => {
                 let template_ids = extract_freight_template_ids(&raw.raw_payload);
+                let synced_at = now_shanghai();
                 let conn = open_connection(app)?;
-                upsert_freight_template_ids(&conn, shop_id, &template_ids, &now_shanghai())?;
                 insert_api_call_log(
                     &conn,
                     Some(shop_id),
@@ -285,6 +300,62 @@ pub(in crate::commands) async fn sync_freight_template_ids(
                         template_ids.len()
                     )),
                 )?;
+                // 列表只给 template_id，逐个查询详情拿模板名称（及计费方式等）整体存入 raw_payload。
+                // 详情查询失败（如模板已删 10020005）降级为只存 ID，不中断整页同步。
+                for template_id in &template_ids {
+                    let detail_payload = match client
+                        .get_freight_template_detail(access_token, template_id)
+                        .await
+                    {
+                        Ok(detail_call) => {
+                            let detail_endpoint = detail_call.meta.endpoint;
+                            let detail_method = detail_call.meta.method;
+                            match detail_call.result {
+                                WechatCallResult::Success(detail) => {
+                                    extract_freight_template_detail(&detail.raw_payload)
+                                        .unwrap_or_else(|| {
+                                            serde_json::json!({ "template_id": template_id })
+                                        })
+                                }
+                                WechatCallResult::ApiError(error) => {
+                                    insert_api_call_log(
+                                        &conn,
+                                        Some(shop_id),
+                                        detail_endpoint,
+                                        detail_method,
+                                        "api_error",
+                                        Some(error.errcode),
+                                        Some(&error.errmsg),
+                                        Some(&format!(
+                                            "freight template detail api error template_id={template_id}"
+                                        )),
+                                    )?;
+                                    serde_json::json!({ "template_id": template_id })
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            insert_task_log(
+                                &conn,
+                                task_id,
+                                None,
+                                "warning",
+                                &format!(
+                                    "运费模板 {template_id} 详情查询失败，仅保留模板 ID：{error}"
+                                ),
+                                None,
+                            )?;
+                            serde_json::json!({ "template_id": template_id })
+                        }
+                    };
+                    upsert_freight_template(
+                        &conn,
+                        shop_id,
+                        template_id,
+                        &detail_payload,
+                        &synced_at,
+                    )?;
+                }
                 total += template_ids.len() as i64;
                 if template_ids.len() < limit as usize {
                     break;
@@ -406,27 +477,21 @@ pub(in crate::commands) fn upsert_wechat_category_relations(
     Ok(())
 }
 
-pub(in crate::commands) fn upsert_freight_template_ids(
+pub(in crate::commands) fn upsert_freight_template(
     conn: &Connection,
     shop_id: &str,
-    template_ids: &[String],
+    template_id: &str,
+    raw_payload: &Value,
     synced_at: &str,
 ) -> AppResult<()> {
-    for template_id in template_ids {
-        conn.execute(
-            "INSERT INTO wechat_freight_templates (shop_id, template_id, raw_payload, synced_at)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(shop_id, template_id) DO UPDATE SET
-               raw_payload = excluded.raw_payload,
-               synced_at = excluded.synced_at",
-            params![
-                shop_id,
-                template_id,
-                serde_json::json!({ "template_id": template_id }).to_string(),
-                synced_at
-            ],
-        )?;
-    }
+    conn.execute(
+        "INSERT INTO wechat_freight_templates (shop_id, template_id, raw_payload, synced_at)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(shop_id, template_id) DO UPDATE SET
+           raw_payload = excluded.raw_payload,
+           synced_at = excluded.synced_at",
+        params![shop_id, template_id, raw_payload.to_string(), synced_at],
+    )?;
     Ok(())
 }
 

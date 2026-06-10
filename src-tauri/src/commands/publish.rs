@@ -1089,6 +1089,15 @@ async fn resolve_default_freight_template_for_publish(
 ) -> AppResult<Result<AutoFreightTemplateSelection, (String, String)>> {
     {
         let conn = open_connection(app)?;
+        // 优先：用户为该店铺指定的默认运费模板（前提是它仍在已同步列表中，否则降级自动选）。
+        if let Some(template_id) = load_shop_default_freight_template(&conn, &item.shop_id)? {
+            if cached_freight_template_exists(&conn, &item.shop_id, &template_id)? {
+                return Ok(Ok(AutoFreightTemplateSelection {
+                    template_id,
+                    source: "shop_default",
+                }));
+            }
+        }
         if let Some(template_id) = select_cached_freight_template_id(&conn, &item.shop_id)? {
             return Ok(Ok(AutoFreightTemplateSelection {
                 template_id,
@@ -2013,13 +2022,31 @@ pub async fn run_publish_asset_uploads_once(
 
         let mut item_failed = false;
         for asset in assets {
-            match upload_or_reuse_asset(&app, &client, &access_token, &item, &asset).await? {
-                AssetUploadOutcome::Uploaded => uploaded_assets += 1,
-                AssetUploadOutcome::Reused => reused_assets += 1,
-                AssetUploadOutcome::Failed => {
+            // SKU 颜色图（切 SKU 换主图）与主图视频均为可选增强、非发品必需素材；上传失败时降级跳过、
+            // 不阻断商品上架。头图/详情图失败才阻断。
+            let is_optional = asset.kind == "sku_image" || asset.kind == "head_video";
+            // 主图视频走独立的 4 步分块上传链路；其余（头图/详情图/SKU 图）走通用图片上传。
+            let outcome = if asset.kind == "head_video" {
+                upload_or_reuse_video_asset(&app, &client, &access_token, &item, &asset).await
+            } else {
+                upload_or_reuse_asset(&app, &client, &access_token, &item, &asset).await
+            };
+            match outcome {
+                Ok(AssetUploadOutcome::Uploaded) => uploaded_assets += 1,
+                Ok(AssetUploadOutcome::Reused) => reused_assets += 1,
+                Ok(AssetUploadOutcome::Failed) => {
+                    if is_optional {
+                        continue;
+                    }
                     failed_items += 1;
                     item_failed = true;
                     break;
+                }
+                Err(error) => {
+                    if is_optional {
+                        continue;
+                    }
+                    return Err(error);
                 }
             }
         }
@@ -2085,10 +2112,19 @@ pub async fn run_publish_submits_once(
 
     for item in submit_items {
         job_ids.insert(item.job_id.clone());
-        {
+        // 标 running，并读出上一轮残留草稿 wechat_product_id（供 addproduct 前删旧草稿、防草稿箱堆积）。
+        // retry_count 不在此读：仅 SkuSwallowed 分支判断退避上限时需要，由该分支自行读取。
+        let stale_product_id: Option<String> = {
             let conn = open_connection(&app)?;
             mark_target_running(&conn, &item.item_id)?;
-        }
+            conn.query_row(
+                "SELECT wechat_product_id FROM pipeline_shop_targets WHERE id = ?1",
+                [item.item_id.as_str()],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten()
+        };
         insert_task_log_for_app(
             &app,
             &item.job_id,
@@ -2237,6 +2273,39 @@ pub async fn run_publish_submits_once(
             continue;
         }
 
+        // 防草稿箱堆积根治（根因见记忆 wechat-listing-sku-zero-6600099）：微信对同 out_product_id
+        // 重复 addproduct 不去重、每次新建独立草稿（真机实测同一商品堆 5 份同 ID 草稿）。同一 target
+        // 被多次重铺/手动 requeue 拉回 submit 时，若上一轮已建草稿（wechat_product_id 残留），必须先删
+        // 旧草稿再建新的，否则旧草稿沦为草稿箱孤儿。删除尽力而为：失败（草稿已不存在/审核中）也继续建新。
+        // （曾给重试加 -r{n} 后缀想绕过「去重」，真机证伪：微信本就不按 out_product_id 去重、恢复率没提升，已移除。）
+        if let Some(stale_id) = stale_product_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            let removed = match client.delete_product(&access_token, stale_id).await {
+                Ok(call) => matches!(call.result, WechatCallResult::Success(_)),
+                Err(_) => false,
+            };
+            insert_task_log_for_app(
+                &app,
+                &item.job_id,
+                Some(&item.item_id),
+                if removed { "info" } else { "warn" },
+                &if removed {
+                    format!("重新提交前已删除上一轮残留草稿 {stale_id}，避免草稿箱堆积")
+                } else {
+                    format!("重新提交前尝试删除上一轮残留草稿 {stale_id} 未成功（可能已不存在），继续建新草稿")
+                },
+                None,
+            )?;
+            let conn = open_connection(&app)?;
+            conn.execute(
+                "UPDATE pipeline_shop_targets SET wechat_product_id = NULL, updated_at = ?1 WHERE id = ?2",
+                params![now_shanghai(), item.item_id],
+            )?;
+        }
+
         let mut call = match client.add_product(&access_token, &payload).await {
             Ok(call) => call,
             Err(error) => {
@@ -2267,9 +2336,72 @@ pub async fn run_publish_submits_once(
             }
         }
 
-        let conn = open_connection(&app)?;
-        match &call.result {
+        // 微信 addproduct 偶发性静默吞 SKU 自愈（根因见记忆 wechat-listing-sku-zero-6600099）：addproduct
+        // 返回 errcode=0 + 正常 product_id，但微信偶发不写入 skus、草稿实际 skus=[]，直到 listing 才报
+        // 「上架SKU数量为0」(6600099)。真机实测「亚秒级连续重试」会落入微信对「同 spu 短时重复 addproduct」
+        // 持续吞 SKU 的陷阱（连续基本必吞），而隔分钟级重试约 44%/轮恢复。故此处只做单次 addproduct +
+        // getproduct 校验：被吞(=0)则删空草稿、交由 driver 指数退避重排（见下方 conn 块 block_target +
+        // retriable 错误码），不在调用内连续快重试。所有网络调用须在打开 conn 之前完成——conn 不可跨 await。
+        let outcome = match &call.result {
             WechatCallResult::Success(result) => {
+                let product_id = result.product_id.clone();
+                let (sku_count, diag) = match client.get_product(&access_token, &product_id, 3).await {
+                    Ok(get_call) => extract_draft_sku_count(&get_call),
+                    Err(error) => (
+                        None,
+                        serde_json::json!({ "getproduct_request_error": error.to_string() }),
+                    ),
+                };
+                insert_task_log_for_app(
+                    &app,
+                    &item.job_id,
+                    Some(&item.item_id),
+                    if sku_count == Some(0) { "warn" } else { "info" },
+                    &format!(
+                        "addproduct 草稿 getproduct 校验：实际入库 SKU 数={}",
+                        sku_count
+                            .map(|count| count.to_string())
+                            .unwrap_or_else(|| "未知（getproduct 响应未含 skus 字段）".to_string())
+                    ),
+                    Some(&diag),
+                )?;
+                if sku_count == Some(0) {
+                    // 入库 SKU=0：微信偶发吞。删空草稿避免残留孤儿。验真删除结果（微信 delete 业务失败
+                    // 也走 Ok(ApiError)，旧版 Ok(_) 误判成功是草稿箱堆积根因之一）：删成功→residual=None
+                    // 清空 wechat_product_id；删失败→residual=Some(product_id) 保留，待下轮 addproduct 前
+                    // 重删或清理命令兜底，避免空草稿堆进草稿箱。
+                    let removed = match client.delete_product(&access_token, &product_id).await {
+                        Ok(call) => matches!(call.result, WechatCallResult::Success(_)),
+                        Err(_) => false,
+                    };
+                    insert_task_log_for_app(
+                        &app,
+                        &item.job_id,
+                        Some(&item.item_id),
+                        if removed { "info" } else { "warn" },
+                        &if removed {
+                            format!("已删除被微信吞 SKU 的空草稿 {product_id}，将退避后重排重试")
+                        } else {
+                            format!("删除被吞 SKU 空草稿 {product_id} 未成功，保留 ID 待下轮重删（不阻塞）")
+                        },
+                        None,
+                    )?;
+                    AddProductOutcome::SkuSwallowed {
+                        residual_product_id: if removed { None } else { Some(product_id) },
+                    }
+                } else {
+                    AddProductOutcome::Success { product_id }
+                }
+            }
+            WechatCallResult::ApiError(error) => AddProductOutcome::ApiError {
+                errcode: error.errcode,
+                errmsg: error.errmsg.clone(),
+            },
+        };
+
+        let conn = open_connection(&app)?;
+        match outcome {
+            AddProductOutcome::Success { product_id } => {
                 insert_api_call_log(
                     &conn,
                     Some(&item.shop_id),
@@ -2278,7 +2410,7 @@ pub async fn run_publish_submits_once(
                     "success",
                     None,
                     None,
-                    Some(&format!("addproduct ok, product_id={}", result.product_id)),
+                    Some(&format!("addproduct ok, product_id={product_id}")),
                 )?;
                 // 方案A：addproduct 仅创建草稿(status=0)，必须推进到 listing 阶段调 listingproduct
                 // 上架以触发微信审核，不能直接进 audit——否则审核轮询永远等不到审核态而死锁。
@@ -2294,7 +2426,7 @@ pub async fn run_publish_submits_once(
                     params![
                         target_stage::LISTING,
                         target_status::PENDING,
-                        result.product_id,
+                        product_id,
                         now_shanghai(),
                         item.item_id
                     ],
@@ -2319,7 +2451,7 @@ pub async fn run_publish_submits_once(
                         item.shop_id,
                         item.external_product_id,
                         source_url,
-                        result.product_id,
+                        product_id,
                         now_shanghai()
                     ],
                 )?;
@@ -2329,29 +2461,91 @@ pub async fn run_publish_submits_once(
                     Some(&item.item_id),
                     "info",
                     "微信 addproduct 已创建草稿，等待 listing 上架",
-                    Some(&serde_json::json!({
-                        "wechat_product_id": result.product_id
-                    })),
+                    Some(&serde_json::json!({ "wechat_product_id": product_id })),
                 )?;
                 submitted_items += 1;
             }
-            WechatCallResult::ApiError(error) => {
+            AddProductOutcome::SkuSwallowed { residual_product_id } => {
+                // 入库 SKU=0。读当前退避轮数：未达上限则 block_target 标 retriable 错误码
+                // (WECHAT_ADDPRODUCT_SKU_SWALLOWED) 静默退避，driver 隔 1→2→4→8→16 分钟重排重新 submit
+                // （避开微信「同 spu 短时重复 addproduct」持续吞 SKU 的陷阱）；达上限才升级 fatal 真失败发通知。
+                let retry_count: i64 = conn
+                    .query_row(
+                        "SELECT retry_count FROM pipeline_shop_targets WHERE id = ?1",
+                        [item.item_id.as_str()],
+                        |row| row.get(0),
+                    )
+                    .optional()?
+                    .unwrap_or(0);
+                // 删空草稿成功→清掉 wechat_product_id；删失败→保留被吞草稿 id，让下轮 addproduct 前
+                // 「删旧草稿」逻辑重删、或由清理命令兜底，避免空草稿堆进草稿箱。
+                match &residual_product_id {
+                    Some(pid) => conn.execute(
+                        "UPDATE pipeline_shop_targets SET wechat_product_id = ?1 WHERE id = ?2",
+                        params![pid, item.item_id],
+                    )?,
+                    None => conn.execute(
+                        "UPDATE pipeline_shop_targets SET wechat_product_id = NULL WHERE id = ?1",
+                        [item.item_id.as_str()],
+                    )?,
+                };
+                if retry_count >= MAX_SKU_SWALLOW_RETRY {
+                    insert_api_call_log(
+                        &conn,
+                        Some(&item.shop_id),
+                        call.meta.endpoint,
+                        call.meta.method,
+                        "api_error",
+                        None,
+                        None,
+                        Some("addproduct 草稿多轮退避后仍被吞 SKU，升级失败"),
+                    )?;
+                    drop(conn);
+                    mark_publish_item_failed_for_app(
+                        &app,
+                        &item,
+                        "WECHAT_ADDPRODUCT_DRAFT_SKU_ZERO",
+                        &format!(
+                            "微信 addproduct 偶发吞 SKU：经 {retry_count} 轮退避重排后草稿入库 SKU 仍为 0（微信端 errcode=0 却未写入 skus），请稍后重新提交"
+                        ),
+                    )?;
+                } else {
+                    insert_api_call_log(
+                        &conn,
+                        Some(&item.shop_id),
+                        call.meta.endpoint,
+                        call.meta.method,
+                        "api_error",
+                        None,
+                        None,
+                        Some("addproduct 草稿被吞 SKU，退避重排重试"),
+                    )?;
+                    block_target(
+                        &conn,
+                        &item.item_id,
+                        "WECHAT_ADDPRODUCT_SKU_SWALLOWED",
+                        "微信 addproduct 偶发吞 SKU（草稿入库 0），已删空草稿，将隔开时间自动重排重新提交",
+                    )?;
+                }
+                failed_items += 1;
+            }
+            AddProductOutcome::ApiError { errcode, errmsg } => {
                 insert_api_call_log(
                     &conn,
                     Some(&item.shop_id),
                     call.meta.endpoint,
                     call.meta.method,
                     "api_error",
-                    Some(error.errcode),
-                    Some(&error.errmsg),
+                    Some(errcode),
+                    Some(&errmsg),
                     Some("addproduct api error"),
                 )?;
                 drop(conn);
                 mark_publish_item_failed_for_app(
                     &app,
                     &item,
-                    &format!("WECHAT_ADDPRODUCT_{}", error.errcode),
-                    &format!("微信 addproduct 失败：{}", error.errmsg),
+                    &format!("WECHAT_ADDPRODUCT_{errcode}"),
+                    &format!("微信 addproduct 失败：{errmsg}"),
                 )?;
                 failed_items += 1;
             }
@@ -2369,6 +2563,56 @@ pub async fn run_publish_submits_once(
         submitted_items,
         failed_items,
     })
+}
+
+/// 微信 addproduct 偶发吞 SKU 后，由 driver 指数退避重排重试的最大轮数（按 target.retry_count 计）。
+/// 真机实测「亚秒级连续重试」会落入微信对「同 spu 短时重复 addproduct」持续吞 SKU 的陷阱（连续基本
+/// 必吞），而 driver 退避(1→2→4→8→16分钟)隔开时间重排约 44%/轮恢复。超此轮数仍被吞才升级 fatal。
+const MAX_SKU_SWALLOW_RETRY: i64 = 5;
+
+/// run_publish_submits_once 中单次 addproduct + getproduct 校验的结局。
+enum AddProductOutcome {
+    /// getproduct 校验入库 SKU 正常，接受该草稿（product_id）推进 listing。
+    Success { product_id: String },
+    /// 入库 SKU=0（微信偶发吞）。residual_product_id：删空草稿成功=None；删失败=Some(被吞草稿 id)，
+    /// 保留待下轮 addproduct 前重删或清理命令兜底，避免空草稿堆进草稿箱。
+    SkuSwallowed { residual_product_id: Option<String> },
+    /// addproduct 返回 API 错误（errcode≠0）。
+    ApiError { errcode: i64, errmsg: String },
+}
+
+/// 从 getproduct 调用结果提取微信草稿实际入库的 SKU 数，并返回原始响应供留证分析。
+///
+/// 诊断 6600099「上架SKU数量为0」：addproduct 返回成功(有 product_id)但微信可能静默吞掉 SKU、
+/// 草稿实际 0 个 SKU，直到 listing 才暴露报错。addproduct 创建的是草稿(编辑态)，SKU 在 getproduct
+/// 返回的 edit_product.skus（兜底 product.skus），均被 WechatProductSnapshot.extra flatten 收集。
+/// 返回 (Some(0)=明确为空 / Some(n)=入库 n 个 / None=未取到字段, 原始响应 JSON)。
+fn extract_draft_sku_count(
+    call: &crate::wechat::ProductGetCall,
+) -> (Option<usize>, serde_json::Value) {
+    match &call.result {
+        WechatCallResult::Success(info) => {
+            let count_in_snapshot =
+                |snapshot: &Option<crate::wechat::WechatProductSnapshot>| -> Option<usize> {
+                    snapshot
+                        .as_ref()
+                        .and_then(|product| product.extra.get("skus"))
+                        .and_then(|skus| skus.as_array())
+                        .map(|skus| skus.len())
+                };
+            // 草稿优先看编辑态 edit_product，兜底线上态 product
+            let sku_count =
+                count_in_snapshot(&info.edit_product).or_else(|| count_in_snapshot(&info.product));
+            (sku_count, info.raw_payload.clone())
+        }
+        WechatCallResult::ApiError(error) => (
+            None,
+            serde_json::json!({
+                "getproduct_errcode": error.errcode,
+                "getproduct_errmsg": error.errmsg,
+            }),
+        ),
+    }
 }
 
 #[tauri::command]
@@ -2873,6 +3117,7 @@ mod tests {
             source_url: "https://example.com/item".to_string(),
             images: Vec::new(),
             detail_images: Vec::new(),
+            main_video: None,
             skus: Vec::new(),
             supplier_name: None,
             supplier_product_id: None,

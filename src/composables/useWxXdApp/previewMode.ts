@@ -1083,6 +1083,25 @@ export function createPreviewMode(deps: PreviewModeDeps) {
       };
       return publishPricingStrategy.value as T;
     }
+    if (name === "get_publish_default_freight_templates") {
+      const map: Record<string, string> = {};
+      for (const tpl of previewFreightTemplates.value) {
+        if (tpl.is_default) {
+          map[tpl.shop_id] = tpl.template_id;
+        }
+      }
+      return map as T;
+    }
+    if (name === "set_publish_default_freight_template") {
+      const shopId = String(args?.shopId || "");
+      const templateId = (args?.templateId as string | null | undefined) ?? null;
+      previewFreightTemplates.value = previewFreightTemplates.value.map((tpl) =>
+        tpl.shop_id === shopId
+          ? { ...tpl, is_default: templateId !== null && tpl.template_id === templateId }
+          : tpl,
+      );
+      return undefined as T;
+    }
     if (name === "run_publish_pipeline_once") {
       const result: PublishPipelineRunResult = {
         executed_steps: [],

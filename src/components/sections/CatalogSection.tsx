@@ -503,14 +503,16 @@ export default function CatalogSection() {
                 <thead>
                   <tr>
                     <th>店铺</th>
+                    <th>模板名称</th>
                     <th>模板 ID</th>
                     <th>同步时间</th>
+                    <th>铺货默认</th>
                   </tr>
                 </thead>
                 <tbody>
                   {freightTemplates.length === 0 ? (
                     <tr>
-                      <td colSpan={3}>
+                      <td colSpan={5}>
                         <Empty>暂无运费模板</Empty>
                       </td>
                     </tr>
@@ -518,8 +520,40 @@ export default function CatalogSection() {
                     freightTemplates.map((row) => (
                       <tr key={`${row.shop_id}:${row.template_id}`}>
                         <td>{row.shop_name}</td>
+                        <td>{row.template_name || "—"}</td>
                         <td>{row.template_id}</td>
                         <td>{ctx.formatDateTime(row.synced_at)}</td>
+                        <td>
+                          {row.is_default ? (
+                            <span
+                              style={{
+                                display: "inline-flex",
+                                gap: "8px",
+                                alignItems: "center",
+                              }}
+                            >
+                              <Pill tone="success">默认</Pill>
+                              <Button
+                                onClick={() =>
+                                  ctx.setDefaultFreightTemplate(row.shop_id, null)
+                                }
+                              >
+                                取消
+                              </Button>
+                            </span>
+                          ) : (
+                            <Button
+                              onClick={() =>
+                                ctx.setDefaultFreightTemplate(
+                                  row.shop_id,
+                                  row.template_id,
+                                )
+                              }
+                            >
+                              设为默认
+                            </Button>
+                          )}
+                        </td>
                       </tr>
                     ))
                   )}

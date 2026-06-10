@@ -506,6 +506,8 @@ export const createPreviewFreightTemplates = (): FreightTemplateView[] => [
     shop_id: "shop-preview",
     shop_name: "预览店铺",
     template_id: "template-preview-1001",
+    template_name: "标准快递（满 99 包邮）",
     synced_at: "2026-05-22T00:20:00+08:00",
+    is_default: true,
   },
 ];

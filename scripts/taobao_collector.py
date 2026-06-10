@@ -254,6 +254,19 @@ def _collect_single_product(ctx, page, url, profile_dir):
                 raise RuntimeError("被淘宝滑块验证码拦截，自动处理后仍未放行。")
             raise RuntimeError("未能捕获商品数据，页面可能改版或需要重新登录。")
 
+    # 优先从页面 SSR 的 ICE context 提取结构化商品数据（淘宝新版 PC 详情页主路径）。
+    # 新版 item.taobao.com 不再走 mtop getdetail，商品数据 SSR 注入 window.__ICE_APP_CONTEXT__，
+    # 含结构化 SKU 规格/价格/库存与颜色图；命中即返回，避免跌落到脏的 DOM 文本抓取。
+    ice_res = _find_ice_product_res(_extract_ice_app_context(page))
+    if ice_res and (ice_res.get("skuBase") or {}).get("skus"):
+        parsed_product = _parse_ice_product_data(ice_res, captured, url)
+        # ICE 提供结构化 SKU/标题/主图/颜色图，但详情图依赖 getdesc；缺则用 DOM 补详情图。
+        if not parsed_product.get("detail_images"):
+            dom_product = _extract_product_from_dom(page, url, preload_detail=True)
+            if dom_product.get("detail_images"):
+                parsed_product["detail_images"] = dom_product["detail_images"]
+        return parsed_product
+
     parsed_product = _parse_mtop_response(captured, url)
     if _is_empty_collected_product(parsed_product):
         parsed_product = _extract_product_from_dom(page, url)
@@ -1615,6 +1628,240 @@ def _merge_item_params(mtop_props, dom_params):
         if key not in merged and value and len(str(value)) <= 200:
             merged[key] = str(value)
     return merged
+
+
+def _extract_detail_images_from_desc(captured):
+    """从 getdesc 响应（captured['desc']）提取商品详情图列表。
+
+    淘宝新旧详情页的图文详情都走 mtop.taobao.detail.getdesc，故 ICE 路径与 mtop
+    路径共用本函数解析详情图。
+    """
+    detail_images = []
+    desc_data = captured.get("desc") if isinstance(captured, dict) else None
+    if not desc_data:
+        return detail_images
+    desc_inner = desc_data.get("data", desc_data)
+    if not isinstance(desc_inner, dict):
+        return detail_images
+    desc_info = desc_inner.get("desc", {})
+    seen = set()
+    if isinstance(desc_info, str):
+        for img in re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', desc_info):
+            if _append_unique_image(detail_images, seen, img, limit=80):
+                break
+    elif isinstance(desc_info, dict):
+        imgs = desc_info.get("images", []) or desc_info.get("descDetailInfo", {}).get("images", [])
+        for img in imgs:
+            if _append_unique_image(detail_images, seen, img, limit=80):
+                break
+    return detail_images
+
+
+def _extract_ice_app_context(page):
+    """读取页面 SSR 注入的 window.__ICE_APP_CONTEXT__（淘宝新版 PC 详情页商品数据容器）。"""
+    try:
+        return page.evaluate("() => window.__ICE_APP_CONTEXT__ || null")
+    except Exception:
+        return None
+
+
+def _find_ice_product_res(ice_ctx):
+    """在 ICE context 的 loaderData 各路由里定位商品数据根节点（含 skuBase/item 的 res）。
+
+    路由名（如 'home'）随页面类型变化，故遍历所有路由 + 递归兜底，而非写死路径。
+    """
+    if not isinstance(ice_ctx, dict):
+        return None
+    loader = ice_ctx.get("loaderData")
+    if not isinstance(loader, dict):
+        return None
+    for route_val in loader.values():
+        if isinstance(route_val, dict):
+            data = route_val.get("data")
+            if isinstance(data, dict):
+                res = data.get("res")
+                if isinstance(res, dict) and (
+                    isinstance(res.get("skuBase"), dict) or isinstance(res.get("item"), dict)
+                ):
+                    return res
+
+    def _dig(node, depth=0):
+        if depth > 8:
+            return None
+        if isinstance(node, dict):
+            if isinstance(node.get("skuBase"), dict) and isinstance(node.get("item"), dict):
+                return node
+            for value in node.values():
+                found = _dig(value, depth + 1)
+                if found:
+                    return found
+        elif isinstance(node, list):
+            for value in node[:5]:
+                found = _dig(value, depth + 1)
+                if found:
+                    return found
+        return None
+
+    return _dig(loader)
+
+
+def _extract_ice_item_params(res):
+    """从 ICE res 的 industryParamVO 提取商品参数（面料/适用年龄/品牌等），用于铺货填微信类目属性。
+
+    结构：plusViewVO.industryParamVO.{enhanceParamList,basicParamList} = [{propertyName, valueName}]。
+    """
+    params = {}
+    plus = res.get("plusViewVO", {}) if isinstance(res, dict) else {}
+    industry = plus.get("industryParamVO", {}) if isinstance(plus, dict) else {}
+    if not isinstance(industry, dict):
+        return params
+    for list_key in ("enhanceParamList", "basicParamList"):
+        for entry in (industry.get(list_key) or []):
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("propertyName", "")).strip()
+            value = str(entry.get("valueName", "")).strip()
+            if name and value and name not in params:
+                params[name] = value
+    return params
+
+
+def _extract_ice_main_video(res):
+    """从 ICE res 提取主图视频 mp4 直链。
+
+    优先 item.videos[0].url（https 直链），兜底 componentsVO.headImageVO.videos[0].url。
+    只取主图区视频，自然排除评价区 componentsVO.rateVO（rate.media 是评价图，非主图视频）。
+    返回空字符串表示该商品无主图视频。
+    """
+    if not isinstance(res, dict):
+        return ""
+    item = res.get("item") if isinstance(res.get("item"), dict) else {}
+    components = res.get("componentsVO") if isinstance(res.get("componentsVO"), dict) else {}
+    head_image_vo = (
+        components.get("headImageVO") if isinstance(components.get("headImageVO"), dict) else {}
+    )
+    for videos in (item.get("videos"), head_image_vo.get("videos")):
+        if isinstance(videos, list) and videos:
+            first = videos[0] if isinstance(videos[0], dict) else {}
+            url = first.get("url")
+            if isinstance(url, str) and url.strip():
+                return url.strip()
+    return ""
+
+
+def _parse_ice_product_data(res, captured, source_url):
+    """解析淘宝新版 PC 详情页 SSR 数据（window.__ICE_APP_CONTEXT__ 的 res 节点）。
+
+    新版 item.taobao.com 用 ICE 框架，商品数据不再走 mtop getdetail 而 SSR 注入页面。
+    本函数从结构化的 skuBase/skuCore 提取 SKU 规格、价格、库存，以及每个颜色对应的
+    SKU 图（skuBase.props[].values[].image），产出与 mtop 路径一致的格式（额外带 sku_image）。
+    """
+    item = res.get("item", {}) if isinstance(res, dict) else {}
+    title = item.get("title") or "淘宝未命名商品"
+
+    # 主图
+    images = []
+    seen_images = set()
+    for img in (item.get("images") or []):
+        if _looks_like_review_image(str(img)):
+            continue
+        if _append_unique_image(images, seen_images, img, limit=12):
+            break
+
+    # 详情图（与 mtop 路径共用 getdesc）
+    detail_images = _extract_detail_images_from_desc(captured)
+
+    sku_base = res.get("skuBase", {}) if isinstance(res, dict) else {}
+    sku_core = res.get("skuCore", {}) if isinstance(res, dict) else {}
+    sku2info = sku_core.get("sku2info", {}) if isinstance(sku_core, dict) else {}
+
+    # vid -> (维度名, 值名, 颜色图)；只有颜色维度的 value 带 image
+    prop_map = {}
+    for prop in (sku_base.get("props") or []):
+        pname = str(prop.get("name", "")).strip()
+        for val in (prop.get("values") or []):
+            vid = str(val.get("vid", "")).strip()
+            vname = str(val.get("name", "")).strip()
+            vimage = _normalize_url(val.get("image", "")) if val.get("image") else ""
+            if pname and vid and vname:
+                prop_map[vid] = (pname, vname, vimage)
+
+    skus = []
+    for sku_item in (sku_base.get("skus") or []):
+        sku_id = str(sku_item.get("skuId", "")).strip()
+        prop_path = sku_item.get("propPath", "") or ""
+        specs = {}
+        sku_image = ""
+        for part in prop_path.split(";"):
+            if ":" not in part:
+                continue
+            _, vid = part.split(":", 1)
+            vid = vid.strip()
+            if vid in prop_map:
+                pname, vname, vimage = prop_map[vid]
+                specs[pname] = vname
+                # 颜色维度的图作为该 SKU 的 SKU 图（取第一个有图的维度）
+                if vimage and not sku_image:
+                    sku_image = vimage
+
+        info = sku2info.get(sku_id, {}) if isinstance(sku2info, dict) else {}
+        price_cents = 0
+        price_node = info.get("price") if isinstance(info, dict) else None
+        if isinstance(price_node, dict):
+            try:
+                price_cents = int(price_node.get("priceMoney", 0) or 0)
+            except (TypeError, ValueError):
+                price_cents = 0
+        cost_price = float(price_cents) / 100.0 if price_cents > 0 else 9.9
+        try:
+            stock = int(info.get("quantity", 99) or 99) if isinstance(info, dict) else 99
+        except (TypeError, ValueError):
+            stock = 99
+
+        if not specs:
+            specs = {"规格": "默认规格"}
+
+        sku_entry = {
+            "external_sku_id": sku_id or f"sku_{len(skus)}",
+            "specs": specs,
+            "cost_price": cost_price,
+            "stock": stock,
+        }
+        if sku_image:
+            sku_entry["sku_image"] = sku_image
+        skus.append(sku_entry)
+
+    if not skus:
+        skus.append({
+            "external_sku_id": "default",
+            "specs": {"规格": "默认规格"},
+            "cost_price": 9.9,
+            "stock": 99,
+        })
+
+    mtop_props = _extract_ice_item_params(res)
+    brand_hint = mtop_props.get("品牌") or "无品牌"
+    main_video = _extract_ice_main_video(res)
+
+    return {
+        "external_product_id": source_url,
+        "title": title,
+        "source_url": source_url,
+        "images": images,
+        "detail_images": detail_images,
+        "skus": skus,
+        "main_video": main_video or None,
+        "supplier_name": "淘宝商家",
+        "supplier_product_id": source_url,
+        "category_hint": None,
+        "brand_hint": brand_hint,
+        "weight_gram": 500,
+        "metadata": {
+            "collection_source": "ice_ssr_context",
+            "taobao_item_params": mtop_props,
+            "taobao_item_params_quality": _item_params_quality_report(mtop_props, "ice_structured"),
+        },
+    }
 
 
 def _parse_mtop_response(captured, source_url):
@@ -3033,6 +3280,235 @@ def _print_login_state(matched, profile_dir=None):
     ))
 
 
+def _probe_page_product_data(page, dump_dir):
+    """探测页面 SSR / window 全局变量 / 内联 script 里的商品结构化数据来源。
+
+    淘宝新版 PC 详情页的商品 SKU 数据不再走 mtop getdetail，常以 SSR 形式注入在
+    window 全局变量或内联 <script> 中。本函数遍历它们、定位含 SKU 特征的数据并
+    dump 完整内容，供编写结构化解析器。
+    """
+    probe_js = r"""() => {
+        const hard = ['skuId','skuBase','propPath','sku2info','valItemInfo','priceMoney','skuCore','sku2Info','skuList','颜色分类'];
+        const soft = ['身高','尺码','颜色','skuMap','props'];
+        const out = {windows: [], scripts: []};
+        for (const k of Object.keys(window)) {
+            let v;
+            try { v = window[k]; } catch (e) { continue; }
+            if (v && typeof v === 'object') {
+                let s;
+                try { s = JSON.stringify(v); } catch (e) { continue; }
+                if (!s) continue;
+                const hardHits = hard.filter(n => s.includes(n));
+                const softHits = soft.filter(n => s.includes(n));
+                if (hardHits.length || softHits.length >= 2) {
+                    out.windows.push({key: k, size: s.length, hard: hardHits, soft: softHits});
+                }
+            }
+        }
+        const scripts = document.querySelectorAll('script');
+        for (let i = 0; i < scripts.length; i++) {
+            const t = scripts[i].textContent || '';
+            const hardHits = hard.filter(n => t.includes(n));
+            const softHits = soft.filter(n => t.includes(n));
+            if (hardHits.length || softHits.length >= 2) {
+                out.scripts.push({idx: i, id: scripts[i].id || '', size: t.length, hard: hardHits, soft: softHits});
+            }
+        }
+        return out;
+    }"""
+    result = page.evaluate(probe_js)
+    for w in result.get("windows", []):
+        key = w["key"]
+        try:
+            full = page.evaluate(
+                "(k) => { try { return JSON.stringify(window[k]); } catch (e) { return null; } }", key
+            )
+            if full:
+                fp = os.path.join(dump_dir, f"window_{re.sub(r'[^A-Za-z0-9_]', '_', key)}.json")
+                with open(fp, "w", encoding="utf-8") as f:
+                    f.write(full)
+                w["dump_file"] = fp
+        except Exception:
+            pass
+    for s in result.get("scripts", []):
+        idx = s["idx"]
+        try:
+            content = page.evaluate(
+                "(i) => { const el = document.querySelectorAll('script')[i]; return el ? el.textContent : ''; }", idx
+            )
+            if content:
+                fp = os.path.join(dump_dir, f"script_{idx}.txt")
+                with open(fp, "w", encoding="utf-8") as f:
+                    f.write(content)
+                s["dump_file"] = fp
+        except Exception:
+            pass
+    return result
+
+
+def run_diagnose_mtop(url, profile_dir, headed=True):
+    """诊断淘宝详情页实际发出的 mtop 端点与响应结构。
+
+    用于定位「mtop 结构化采集失效、全部跌落 DOM 抓取」的根因：打开商品页，
+    捕获所有 mtop.* 网络响应，分析每个端点的响应结构，标记携带商品详情数据
+    的端点，并把完整响应 dump 到文件，供比对代码里写死的端点匹配是否过时。
+    """
+    os.makedirs(profile_dir, exist_ok=True)
+    dump_dir = os.path.join(profile_dir, "mtop_diagnose")
+    os.makedirs(dump_dir, exist_ok=True)
+
+    records = []
+    seen_urls = set()
+    # 商品详情数据的特征 key（淘宝详情 API 特有的结构，不会在推荐/评价端点误报）
+    detail_sig_keys = {
+        "skubase", "skulist", "valiteminfo", "sku2info", "skucore",
+        "componentsvo", "iteminfomodel", "skucorewithcurrentchild",
+        "priceinfo", "h5moduledata", "skuverticalitem",
+    }
+
+    def _api_name(u):
+        for pat in (r"/(mtop\.[a-zA-Z0-9_.]+?)/\d",       # 路径形式 /mtop.x.y/1.0/
+                    r"[?&]api=(mtop\.[a-zA-Z0-9_.]+)",     # 查询参数 ?api=mtop.x.y
+                    r"(mtop\.[a-zA-Z0-9_.]+)"):            # 兜底
+            m = re.search(pat, u)
+            if m:
+                return m.group(1)
+        return None
+
+    def _scan_signals(body):
+        hits = set()
+        try:
+            for node in _iter_json_nodes(body):
+                if isinstance(node, dict):
+                    for k in node.keys():
+                        if str(k).lower() in detail_sig_keys:
+                            hits.add(str(k))
+        except Exception:
+            pass
+        return sorted(hits)
+
+    def _record(response):
+        try:
+            u = response.url
+            if "mtop" not in u.lower():
+                return
+            if u in seen_urls:
+                return
+            seen_urls.add(u)
+            try:
+                status = response.status
+            except Exception:
+                status = None
+            body = _read_response_json(response)
+            top_keys = list(body.keys())[:25] if isinstance(body, dict) else None
+            ret = body.get("ret") if isinstance(body, dict) else None
+            signals = _scan_signals(body) if body is not None else []
+            records.append({
+                "api": _api_name(u),
+                "status": status,
+                "json_ok": body is not None,
+                "ret": ret,
+                "top_keys": top_keys,
+                "detail_signals": signals,
+                "url": u[:240],
+                "_body": body,
+            })
+        except Exception:
+            pass
+
+    ctx = None
+    nav_error = None
+    page_data = {}
+    try:
+        ctx, page = launch_browser(profile_dir, headless=not headed)
+        warm_up_taobao_home(page)
+        page.on("response", _record)
+
+        def _on_finished(request):
+            try:
+                resp = request.response()
+                if resp:
+                    _record(resp)
+            except Exception:
+                pass
+
+        page.on("requestfinished", _on_finished)
+
+        try:
+            _navigate_to_product_detail(page, url)
+        except Exception as e:
+            nav_error = str(e)
+        # 多触发几轮，覆盖懒加载 / 切 SKU 触发的 mtop 请求
+        for _ in range(2):
+            try:
+                _trigger_product_requests(page, url, allow_reload=False)
+            except Exception:
+                pass
+        try:
+            page.wait_for_timeout(2500)
+        except Exception:
+            pass
+        # 探测页面 SSR / window / script 里的商品数据（mtop 不返回结构化 SKU 时的真实来源）
+        try:
+            page_data = _probe_page_product_data(page, dump_dir)
+        except Exception as e:
+            page_data = {"error": str(e)}
+    finally:
+        close_browser_context(ctx)
+
+    # dump 响应体 + 汇总端点
+    endpoints = {}
+    out_records = []
+    for i, rec in enumerate(records):
+        body = rec.pop("_body", None)
+        dump_file = None
+        if body is not None:
+            safe_api = (rec["api"] or "unknown").replace(".", "_")
+            tag = "DETAIL" if rec["detail_signals"] else "other"
+            dump_file = os.path.join(dump_dir, f"{i:02d}_{tag}_{safe_api}.json")
+            try:
+                with open(dump_file, "w", encoding="utf-8") as f:
+                    json.dump(body, f, ensure_ascii=False, indent=2)
+            except Exception:
+                dump_file = None
+        rec["dump_file"] = dump_file
+        out_records.append(rec)
+
+        a = rec["api"] or "unknown"
+        ep = endpoints.setdefault(
+            a, {"count": 0, "has_detail": False, "ret": None, "statuses": set()}
+        )
+        ep["count"] += 1
+        ep["has_detail"] = ep["has_detail"] or bool(rec["detail_signals"])
+        ep["ret"] = rec["ret"]
+        if rec["status"] is not None:
+            ep["statuses"].add(rec["status"])
+    for ep in endpoints.values():
+        ep["statuses"] = sorted(ep["statuses"])
+
+    # 代码当前会拦截的端点（用于对照淘宝是否改版）
+    code_matches = [
+        a for a in endpoints
+        if a and ("detail.getdetail" in a or "containerfacade.singleview" in a)
+    ]
+
+    print(json.dumps({
+        "url": url,
+        "nav_error": nav_error,
+        "total_mtop_responses": len(records),
+        "mtop_endpoints": endpoints,
+        "detail_endpoints": [a for a, v in endpoints.items() if v["has_detail"]],
+        "code_currently_matches": code_matches,
+        "page_data": page_data,
+        "records": out_records,
+        "dump_dir": dump_dir,
+        "hint": "detail_endpoints 列出的端点才是真正携带商品详情的 mtop API；"
+                "若它不在 code_currently_matches 内，说明淘宝改了端点，需要更新 "
+                "_capture_product_data 的匹配并适配 _parse_mtop_response 的解析。",
+    }, ensure_ascii=False, indent=2))
+    sys.exit(0)
+
+
 def run_collect(url, profile_dir, headed=False, debug_captured=False):
     """单次采集：启动浏览器 → 预热 → 采集 → 关闭"""
     os.makedirs(profile_dir, exist_ok=True)
@@ -3300,6 +3776,13 @@ def main():
     batch_parser.add_argument("--profile-dir", required=True, help="持久化的 Profile 路径")
     batch_parser.add_argument("--headed", action="store_true", help="以可见窗口方式运行")
 
+    diagnose_parser = subparsers.add_parser(
+        "diagnose-mtop", help="诊断商品页实际发出的 mtop 端点与响应结构（定位 mtop 采集失效根因）"
+    )
+    diagnose_parser.add_argument("--url", required=True, help="淘宝商品链接")
+    diagnose_parser.add_argument("--profile-dir", required=True, help="持久化的 Profile 路径")
+    diagnose_parser.add_argument("--headed", action="store_true", help="以可见窗口方式运行（默认即可见）")
+
     probe_parser = subparsers.add_parser(PROFILE_PROBE_COMMAND, help=argparse.SUPPRESS)
     probe_parser.add_argument("--profile-dir", required=True, help=argparse.SUPPRESS)
 
@@ -3325,6 +3808,8 @@ def main():
             print(json.dumps({"error": "--urls 必须为 JSON 数组"}), file=sys.stderr)
             sys.exit(1)
         run_batch_collect(urls, args.profile_dir, headed=bool(getattr(args, "headed", False)))
+    elif args.command == "diagnose-mtop":
+        run_diagnose_mtop(args.url, args.profile_dir, headed=True)
     elif args.command == "access-limit-state":
         run_access_limit_state(args.profile_dir)
     elif args.command == "clear-access-limit":

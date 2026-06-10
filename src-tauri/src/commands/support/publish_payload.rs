@@ -614,6 +614,32 @@ pub(in crate::commands) fn collect_product_assets(
             });
         }
     }
+    // SKU 颜色图：同色多尺码 SKU 共用一张，按 source_url 去重后只上传一次；submit 时按
+    // source_url 映射回各 SKU 填 thumb_img，实现「切换 SKU 换主图」。
+    let mut seen_sku_images = std::collections::HashSet::new();
+    for sku in &product.skus {
+        if let Some(sku_image) = sku.sku_image.as_deref() {
+            let source_url = sku_image.trim();
+            if !source_url.is_empty() && seen_sku_images.insert(source_url.to_string()) {
+                assets.push(ProductAsset {
+                    kind: "sku_image",
+                    sort_order: (seen_sku_images.len() - 1) as i64,
+                    source_url: source_url.to_string(),
+                });
+            }
+        }
+    }
+    // 主图视频（可选增强）：每商品最多 1 个，铺货时下载淘宝视频→微信 4 步上传→填 head_videos（数组 [{video_url}]）。
+    if let Some(main_video) = product.main_video.as_deref() {
+        let source_url = main_video.trim();
+        if !source_url.is_empty() {
+            assets.push(ProductAsset {
+                kind: "head_video",
+                sort_order: 0,
+                source_url: source_url.to_string(),
+            });
+        }
+    }
     assets
 }
 
@@ -623,7 +649,7 @@ pub(in crate::commands) fn load_prepared_assets(
 ) -> AppResult<Vec<PreparedAsset>> {
     let conn = open_connection(app)?;
     let mut stmt = conn.prepare(
-        "SELECT asset_kind, sort_order, wechat_url
+        "SELECT asset_kind, sort_order, wechat_url, source_url
          FROM publish_assets
          WHERE item_id = ?1
            AND status IN ('success', 'reused')
@@ -636,6 +662,7 @@ pub(in crate::commands) fn load_prepared_assets(
                 kind: row.get(0)?,
                 sort_order: row.get(1)?,
                 wechat_url: row.get(2)?,
+                source_url: row.get(3)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -666,12 +693,13 @@ fn resolve_add_product_base_payload_with_options(
                     .as_object()
                     .cloned()
                     .ok_or_else(|| format!("{source} 必须是微信 addproduct 请求对象"))?;
-                apply_add_product_defaults(&mut payload, product);
+                let mut warnings = Vec::new();
+                apply_add_product_defaults(&mut payload, product, &mut warnings);
                 validate_add_product_base_payload_with_options(&payload, require_after_sale)?;
                 return Ok(AddProductPayloadDraft {
                     payload: Value::Object(payload),
                     source,
-                    warnings: Vec::new(),
+                    warnings,
                 });
             }
         }
@@ -887,6 +915,7 @@ fn truncate_out_sku_id(raw: &str) -> String {
 pub(in crate::commands) fn apply_add_product_defaults(
     payload: &mut serde_json::Map<String, Value>,
     product: &ExternalProductInput,
+    warnings: &mut Vec<String>,
 ) {
     payload
         .entry("out_product_id".to_string())
@@ -917,6 +946,16 @@ pub(in crate::commands) fn apply_add_product_defaults(
                     }
                 }
             }
+        }
+
+        // 微信 addproduct 单商品 SKU 上限 500，固化 payload（路径B）同样需截断，否则整商品被拒。
+        // 截断保留前 500 个（有损：丢弃多余规格组合），记 warning 留痕。
+        if skus.len() > ADD_PRODUCT_MAX_SKUS {
+            let dropped = skus.len() - ADD_PRODUCT_MAX_SKUS;
+            warnings.push(format!(
+                "SKU 数超过微信上限 {ADD_PRODUCT_MAX_SKUS}，已截断保留前 {ADD_PRODUCT_MAX_SKUS} 个，丢弃 {dropped} 个规格组合"
+            ));
+            skus.truncate(ADD_PRODUCT_MAX_SKUS);
         }
     }
 }
@@ -1110,6 +1149,15 @@ pub(in crate::commands) fn build_add_product_skus(
     }
     if skus.is_empty() {
         return Err("没有可发布的有库存 SKU".to_string());
+    }
+    // 微信 addproduct 单商品 SKU 上限 500，超出整商品被拒。截断保留前 500 个（有损：丢弃多余规格组合），
+    // 记 warning 进 task log 留痕，避免整商品发布失败。
+    if skus.len() > ADD_PRODUCT_MAX_SKUS {
+        let dropped = skus.len() - ADD_PRODUCT_MAX_SKUS;
+        warnings.push(format!(
+            "SKU 数超过微信上限 {ADD_PRODUCT_MAX_SKUS}，已截断保留前 {ADD_PRODUCT_MAX_SKUS} 个，丢弃 {dropped} 个规格组合"
+        ));
+        skus.truncate(ADD_PRODUCT_MAX_SKUS);
     }
     Ok(skus)
 }
@@ -1411,8 +1459,12 @@ pub(in crate::commands) fn build_add_product_payload_relaxed_after_sale(
         _ => return Err("微信 addproduct 请求必须是对象".to_string()),
     };
 
-    let mut head_imgs = prepared_asset_urls(assets, "head_image");
-    let mut detail_imgs = prepared_asset_urls(assets, "detail_image");
+    // 按商品原始图片 URL 反查已上传素材的微信图，不依赖 publish_assets.asset_kind。
+    // 同一张淘宝图既作详情图又作 SKU 颜色图时，record_asset_success 的
+    // ON CONFLICT(item_id, source_url) 会把先写入的 detail 记录 asset_kind 覆盖成 sku_image，
+    // 按 kind 过滤会漏掉详情图（误报「详情图为空」）；头图与详情图同图同理。改按 source_url 匹配根治。
+    let mut head_imgs = resolve_asset_urls_by_source(&product.images, assets);
+    let mut detail_imgs = resolve_asset_urls_by_source(&product.detail_images, assets);
     if head_imgs.len() < ADD_PRODUCT_MIN_HEAD_IMAGES {
         return Err("微信发品头图不足 3 张，请先完成素材上传".to_string());
     }
@@ -1426,10 +1478,80 @@ pub(in crate::commands) fn build_add_product_payload_relaxed_after_sale(
         Value::Array(head_imgs.into_iter().map(Value::String).collect()),
     );
     upsert_desc_images(&mut payload, detail_imgs);
+    apply_sku_thumb_images(&mut payload, product, assets);
+    apply_head_video(&mut payload, assets);
 
     validate_add_product_base_payload_without_after_sale(&payload)?;
 
     Ok(Value::Object(payload))
+}
+
+/// 给 add_product payload 的 skus 填颜色图 thumb_img，实现「切换 SKU 换主图」。
+///
+/// 微信要求 thumb_img 为 mmecimage.cn/p 前缀的微信 URL（错误码 10020035），故必须用上传后的
+/// wechat_url，不能直接用淘宝 URL。映射链：payload.sku.out_sku_id == truncate_out_sku_id(external_sku_id)
+/// → product.sku.sku_image(淘宝 source_url) → assets[kind=sku_image].wechat_url。
+/// 找不到对应已上传微信图的 SKU 不填 thumb_img（宁缺勿错，避免 10020035）。
+fn apply_sku_thumb_images(
+    payload: &mut serde_json::Map<String, Value>,
+    product: &ExternalProductInput,
+    assets: &[PreparedAsset],
+) {
+    let source_to_wechat: std::collections::HashMap<&str, &str> = assets
+        .iter()
+        .filter(|asset| asset.kind == "sku_image")
+        .map(|asset| (asset.source_url.as_str(), asset.wechat_url.as_str()))
+        .collect();
+    if source_to_wechat.is_empty() {
+        return;
+    }
+    let mut out_sku_to_thumb: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for sku in &product.skus {
+        if let Some(source_url) = sku.sku_image.as_deref() {
+            if let Some(wechat_url) = source_to_wechat.get(source_url.trim()) {
+                out_sku_to_thumb.insert(
+                    truncate_out_sku_id(&sku.external_sku_id),
+                    (*wechat_url).to_string(),
+                );
+            }
+        }
+    }
+    if out_sku_to_thumb.is_empty() {
+        return;
+    }
+    if let Some(Value::Array(skus)) = payload.get_mut("skus") {
+        for sku in skus.iter_mut() {
+            let Some(obj) = sku.as_object_mut() else {
+                continue;
+            };
+            let out_sku_id = obj
+                .get("out_sku_id")
+                .and_then(|value| value.as_str())
+                .map(|value| value.to_string());
+            if let Some(out_sku_id) = out_sku_id {
+                if let Some(thumb) = out_sku_to_thumb.get(&out_sku_id) {
+                    obj.insert("thumb_img".to_string(), Value::String(thumb.clone()));
+                }
+            }
+        }
+    }
+}
+
+/// 给 add_product payload 填主图视频 head_videos（搬运淘宝主图视频到微信小店）。
+///
+/// 取已上传的 head_video 素材（微信临时播放 URL）；无则不填（视频为可选增强，缺失不影响上架）。
+/// 格式：head_videos 须为数组，元素为 { video_url: string }，即 `[{ "video_url": "..." }]`。
+/// ⚠️ 微信官方文档把 head_videos 标为 object，但 addproduct 服务端实测返回
+/// "data format error, expecting an array for field: head_videos"（错误码 47001）——
+/// 文档滞后/不准，以实测为准用数组。video_url 自身为 string（微信 2026-05-18 由 array 改 string）。
+fn apply_head_video(payload: &mut serde_json::Map<String, Value>, assets: &[PreparedAsset]) {
+    if let Some(video_url) = prepared_asset_urls(assets, "head_video").into_iter().next() {
+        payload.insert(
+            "head_videos".to_string(),
+            serde_json::json!([{ "video_url": video_url }]),
+        );
+    }
 }
 
 pub(in crate::commands) fn prepared_asset_urls(
@@ -1443,6 +1565,33 @@ pub(in crate::commands) fn prepared_asset_urls(
         .collect::<Vec<_>>();
     values.sort_by_key(|(sort_order, _)| *sort_order);
     values.into_iter().map(|(_, url)| url).collect()
+}
+
+/// 按商品原始图片 URL（淘宝侧）顺序反查已上传素材的微信图 URL，保持商品图片列表的原始顺序。
+///
+/// 不依赖 publish_assets.asset_kind：同一张图既作详情图又作 SKU 颜色图时，record_asset_success
+/// 的 ON CONFLICT(item_id, source_url) 会用后写入的 kind 覆盖先写入记录的 asset_kind，按 kind
+/// 过滤会漏图。改按 source_url 匹配可彻底规避，并天然复用同图记录（同 source_url 只上传一次微信图）。
+/// publish_assets.source_url 是 normalize 后的，故对商品原始 URL 同样 normalize 再匹配；
+/// 同一张微信图在列表内去重，避免重复图片进入 payload。
+fn resolve_asset_urls_by_source(source_urls: &[String], assets: &[PreparedAsset]) -> Vec<String> {
+    let source_to_wechat: std::collections::HashMap<&str, &str> = assets
+        .iter()
+        .map(|asset| (asset.source_url.as_str(), asset.wechat_url.as_str()))
+        .collect();
+    let mut resolved = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for source_url in source_urls {
+        let Ok(normalized) = normalize_image_source_url(source_url) else {
+            continue;
+        };
+        if let Some(wechat_url) = source_to_wechat.get(normalized.as_str()) {
+            if seen.insert(*wechat_url) {
+                resolved.push((*wechat_url).to_string());
+            }
+        }
+    }
+    resolved
 }
 
 pub(in crate::commands) fn upsert_desc_images(
@@ -1621,12 +1770,84 @@ mod tests {
             "skus": []
         }))
         .unwrap();
-        apply_add_product_defaults(&mut payload, &product);
+        apply_add_product_defaults(&mut payload, &product, &mut Vec::new());
         let sku = payload["skus"][0].as_object().unwrap();
         let code = sku["sku_code"].as_str().unwrap();
         assert!(code.len() <= WECHAT_SKU_CODE_MAX_BYTES);
         // out_sku_id 仅 ~约 41 字符 < 128，应保持完整不动(采购映射键)
         assert_eq!(sku["out_sku_id"].as_str().unwrap(), long);
+    }
+
+    #[test]
+    fn build_skus_truncates_over_wechat_limit() {
+        // 微信 addproduct 单商品 SKU 上限 500（路径A 动态构建）。构造 501 个有库存 SKU，
+        // 断言截断到 500 且 warning 留痕；截断后恰好 500 个，能通过 validate（>500 才拦截），
+        // 不会让整商品发布失败。
+        let skus: Vec<Value> = (0..501)
+            .map(|i| {
+                serde_json::json!({
+                    "external_sku_id": format!("sku-{i}"),
+                    "specs": { "编号": format!("{i}") },
+                    "cost_price": 10.0,
+                    "stock": 1
+                })
+            })
+            .collect();
+        let product: ExternalProductInput = serde_json::from_value(serde_json::json!({
+            "external_product_id": "https://item.taobao.com/item.htm?id=1",
+            "title": "测试超量 SKU",
+            "source_url": "https://item.taobao.com/item.htm?id=1",
+            "skus": skus
+        }))
+        .expect("构造测试商品");
+
+        let mut warnings = Vec::new();
+        let built = build_add_product_skus(&product, None, &mut warnings).expect("应截断后成功");
+        assert_eq!(built.len(), ADD_PRODUCT_MAX_SKUS, "SKU 应被截断到微信上限");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("截断") && w.contains("丢弃 1 个")),
+            "应记录截断 warning，实际={warnings:?}"
+        );
+    }
+
+    #[test]
+    fn apply_defaults_truncates_skus_over_wechat_limit() {
+        // 固化 payload（路径B）同样需对超 500 SKU 截断，否则 addproduct 整商品被拒。
+        let skus: Vec<Value> = (0..501)
+            .map(|i| {
+                serde_json::json!({
+                    "out_sku_id": format!("sku-{i}"),
+                    "sku_code": format!("sku-{i}"),
+                    "sale_price": 100,
+                    "stock_num": 1
+                })
+            })
+            .collect();
+        let mut payload = serde_json::json!({ "skus": skus })
+            .as_object()
+            .cloned()
+            .unwrap();
+        let product: ExternalProductInput = serde_json::from_value(serde_json::json!({
+            "external_product_id": "https://item.taobao.com/item.htm?id=1",
+            "title": "测试",
+            "source_url": "https://item.taobao.com/item.htm?id=1",
+            "skus": []
+        }))
+        .unwrap();
+
+        let mut warnings = Vec::new();
+        apply_add_product_defaults(&mut payload, &product, &mut warnings);
+        assert_eq!(
+            payload["skus"].as_array().map(Vec::len),
+            Some(ADD_PRODUCT_MAX_SKUS),
+            "固化 payload 的 SKU 应被截断到微信上限"
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("截断")),
+            "应记录截断 warning，实际={warnings:?}"
+        );
     }
 
     #[test]
@@ -1713,8 +1934,14 @@ mod tests {
             external_product_id: "item-1".to_string(),
             title: "测试商品标题".to_string(),
             source_url: "https://example.com/item".to_string(),
-            images: Vec::new(),
-            detail_images: Vec::new(),
+            // 头图/详情图原始 URL 须与下方 assets 的 source_url 对应，submit 端按 source_url 反查微信图
+            images: (0..12)
+                .map(|i| format!("https://img.alicdn.com/h{i}.jpg"))
+                .collect(),
+            detail_images: (0..55)
+                .map(|i| format!("https://img.alicdn.com/d{i}.jpg"))
+                .collect(),
+            main_video: None,
             skus: Vec::new(),
             supplier_name: None,
             supplier_product_id: None,
@@ -1738,11 +1965,13 @@ mod tests {
                 kind: "head_image".to_string(),
                 sort_order: index,
                 wechat_url: format!("https://mmecimage.cn/p/h{index}.jpg"),
+                source_url: format!("https://img.alicdn.com/h{index}.jpg"),
             })
             .chain((0..55).map(|index| PreparedAsset {
                 kind: "detail_image".to_string(),
                 sort_order: index,
                 wechat_url: format!("https://mmecimage.cn/p/d{index}.jpg"),
+                source_url: format!("https://img.alicdn.com/d{index}.jpg"),
             }))
             .collect::<Vec<_>>();
 
@@ -1763,5 +1992,300 @@ mod tests {
                 .map(Vec::len),
             Some(ADD_PRODUCT_MAX_DETAIL_IMAGES)
         );
+    }
+
+    #[test]
+    fn apply_sku_thumb_images_fills_per_color_thumb_and_degrades_gracefully() {
+        // 锁死「切换 SKU 换主图」铺货端契约。模拟真实主路径：AI 属性补齐后
+        // metadata.wechat_add_product_payload 已固化，其 skus[].out_sku_id == external_sku_id
+        // （build_add_product_skus 既定约定，out_sku_id 是采购对账映射键）。
+        // 断言：①同色多尺码共享一张颜色图 → 各 SKU 都填同一 thumb_img；
+        //       ②颜色图上传失败 / 无颜色图的 SKU 不填 thumb_img（宁缺勿错，避免微信 10020035）。
+        let product: ExternalProductInput = serde_json::from_value(serde_json::json!({
+            "external_product_id": "https://item.taobao.com/item.htm?id=1",
+            "title": "测试连衣裙",
+            "source_url": "https://item.taobao.com/item.htm?id=1",
+            "images": [
+                "https://img.alicdn.com/h0.jpg",
+                "https://img.alicdn.com/h1.jpg",
+                "https://img.alicdn.com/h2.jpg"
+            ],
+            "detail_images": ["https://img.alicdn.com/d0.jpg"],
+            "skus": [
+                {"external_sku_id": "颜色;红;尺码;S", "cost_price": 10.0, "stock": 5,
+                 "sku_image": "https://img.alicdn.com/red.jpg"},
+                {"external_sku_id": "颜色;红;尺码;M", "cost_price": 10.0, "stock": 5,
+                 "sku_image": "https://img.alicdn.com/red.jpg"},
+                {"external_sku_id": "颜色;蓝;尺码;S", "cost_price": 10.0, "stock": 5,
+                 "sku_image": "https://img.alicdn.com/blue.jpg"},
+                {"external_sku_id": "颜色;绿;尺码;S", "cost_price": 10.0, "stock": 5}
+            ],
+            "metadata": {
+                "wechat_add_product_payload": {
+                    "deliver_method": 0,
+                    "extra_service": { "seven_day_return": 1, "freight_insurance": 0 },
+                    "cats_v2": [{ "cat_id": 1 }, { "cat_id": 2 }, { "cat_id": 3 }],
+                    "skus": [
+                        { "out_sku_id": "颜色;红;尺码;S", "sale_price": 100, "stock_num": 5 },
+                        { "out_sku_id": "颜色;红;尺码;M", "sale_price": 100, "stock_num": 5 },
+                        { "out_sku_id": "颜色;蓝;尺码;S", "sale_price": 100, "stock_num": 5 },
+                        { "out_sku_id": "颜色;绿;尺码;S", "sale_price": 100, "stock_num": 5 }
+                    ]
+                }
+            }
+        }))
+        .expect("构造测试商品");
+
+        let mut assets: Vec<PreparedAsset> = (0..3)
+            .map(|index| PreparedAsset {
+                kind: "head_image".to_string(),
+                sort_order: index,
+                wechat_url: format!("https://mmecimage.cn/p/h{index}.jpg"),
+                source_url: format!("https://img.alicdn.com/h{index}.jpg"),
+            })
+            .collect();
+        assets.push(PreparedAsset {
+            kind: "detail_image".to_string(),
+            sort_order: 0,
+            wechat_url: "https://mmecimage.cn/p/d0.jpg".to_string(),
+            source_url: "https://img.alicdn.com/d0.jpg".to_string(),
+        });
+        // 仅红色颜色图上传成功；蓝色缺失，模拟其颜色图上传失败被降级跳过。
+        assets.push(PreparedAsset {
+            kind: "sku_image".to_string(),
+            sort_order: 0,
+            wechat_url: "https://mmecimage.cn/p/red.jpg".to_string(),
+            source_url: "https://img.alicdn.com/red.jpg".to_string(),
+        });
+
+        let payload = build_add_product_payload_relaxed_after_sale(&product, &assets)
+            .expect("应构建 add_product payload 成功");
+        let skus = payload
+            .get("skus")
+            .and_then(Value::as_array)
+            .expect("payload 应含 skus 数组");
+        let thumb_of = |out_sku_id: &str| -> Option<String> {
+            skus.iter()
+                .find(|sku| sku.get("out_sku_id").and_then(Value::as_str) == Some(out_sku_id))
+                .and_then(|sku| sku.get("thumb_img"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        };
+
+        // 同色多尺码共享同一张已上传微信颜色图
+        assert_eq!(
+            thumb_of("颜色;红;尺码;S").as_deref(),
+            Some("https://mmecimage.cn/p/red.jpg"),
+            "红色 S 应填入颜色图 thumb_img"
+        );
+        assert_eq!(
+            thumb_of("颜色;红;尺码;M").as_deref(),
+            Some("https://mmecimage.cn/p/red.jpg"),
+            "红色 M 应与红色 S 共享同一颜色图"
+        );
+        // 颜色图上传失败 / 无颜色图 → 不填 thumb_img（宁缺勿错）
+        assert_eq!(
+            thumb_of("颜色;蓝;尺码;S"),
+            None,
+            "蓝色颜色图上传失败时不应填 thumb_img"
+        );
+        assert_eq!(
+            thumb_of("颜色;绿;尺码;S"),
+            None,
+            "无颜色图的 SKU 不应填 thumb_img"
+        );
+    }
+
+    #[test]
+    fn collect_product_assets_includes_main_video() {
+        // 主图视频应被收集为 kind="head_video" 素材（每商品最多 1 个）；无 main_video 时不产生该素材。
+        let video_url =
+            "https://cloud.video.taobao.com/play/u/1/p/2/e/6/t/1/457890291899.mp4?appKey=38829";
+        let product: ExternalProductInput = serde_json::from_value(serde_json::json!({
+            "external_product_id": "id-1",
+            "title": "测试睡衣",
+            "source_url": "https://item.taobao.com/item.htm?id=1",
+            "images": ["https://img.alicdn.com/h0.jpg"],
+            "main_video": video_url,
+            "skus": [{"external_sku_id": "sku-1", "cost_price": 10.0, "stock": 5}]
+        }))
+        .expect("构造带视频商品");
+        let assets = collect_product_assets(&product);
+        let video_count = assets.iter().filter(|a| a.kind == "head_video").count();
+        assert_eq!(video_count, 1, "应收集到 1 个主图视频素材");
+        let video = assets
+            .iter()
+            .find(|a| a.kind == "head_video")
+            .expect("应有 head_video 素材");
+        assert_eq!(video.source_url.as_str(), video_url, "视频素材应保留淘宝原始 URL");
+
+        // 无 main_video 的商品不产生 head_video 素材
+        let no_video: ExternalProductInput = serde_json::from_value(serde_json::json!({
+            "external_product_id": "id-2",
+            "title": "无视频商品",
+            "source_url": "https://item.taobao.com/item.htm?id=2",
+            "images": ["https://img.alicdn.com/h0.jpg"],
+            "skus": [{"external_sku_id": "sku-1", "cost_price": 10.0, "stock": 5}]
+        }))
+        .expect("构造无视频商品");
+        assert!(
+            collect_product_assets(&no_video)
+                .iter()
+                .all(|a| a.kind != "head_video"),
+            "无 main_video 时不应产生 head_video 素材"
+        );
+    }
+
+    #[test]
+    fn build_payload_fills_head_video_and_omits_when_absent() {
+        // 锁死「主图视频搬运」铺货端契约：已上传的 head_video 素材 → payload.head_videos[0].video_url
+        // 填入微信播放 URL（head_videos 须为数组，见 apply_head_video）；无 head_video 素材 →
+        // 不输出 head_videos 字段（视频为可选增强，缺失不阻断）。
+        let product: ExternalProductInput = serde_json::from_value(serde_json::json!({
+            "external_product_id": "https://item.taobao.com/item.htm?id=9",
+            "title": "测试带视频商品",
+            "source_url": "https://item.taobao.com/item.htm?id=9",
+            "images": [
+                "https://img.alicdn.com/h0.jpg",
+                "https://img.alicdn.com/h1.jpg",
+                "https://img.alicdn.com/h2.jpg"
+            ],
+            "detail_images": ["https://img.alicdn.com/d0.jpg"],
+            "skus": [{"external_sku_id": "sku-1", "cost_price": 10.0, "stock": 5}],
+            "metadata": {
+                "wechat_add_product_payload": {
+                    "deliver_method": 0,
+                    "extra_service": { "seven_day_return": 1, "freight_insurance": 0 },
+                    "cats_v2": [{ "cat_id": 1 }, { "cat_id": 2 }, { "cat_id": 3 }],
+                    "skus": [{ "out_sku_id": "sku-1", "sale_price": 100, "stock_num": 5 }]
+                }
+            }
+        }))
+        .expect("构造测试商品");
+
+        let mut assets: Vec<PreparedAsset> = (0..3)
+            .map(|index| PreparedAsset {
+                kind: "head_image".to_string(),
+                sort_order: index,
+                wechat_url: format!("https://mmecimage.cn/p/h{index}.jpg"),
+                source_url: format!("https://img.alicdn.com/h{index}.jpg"),
+            })
+            .collect();
+        assets.push(PreparedAsset {
+            kind: "detail_image".to_string(),
+            sort_order: 0,
+            wechat_url: "https://mmecimage.cn/p/d0.jpg".to_string(),
+            source_url: "https://img.alicdn.com/d0.jpg".to_string(),
+        });
+
+        // 无 head_video 素材：payload 不应输出 head_videos
+        let without_video = build_add_product_payload_relaxed_after_sale(&product, &assets)
+            .expect("应构建 payload 成功");
+        assert!(
+            without_video.get("head_videos").is_none(),
+            "无视频素材时不应输出 head_videos"
+        );
+
+        // 含 head_video 素材：payload.head_videos[0].video_url 应为微信播放 URL
+        let wechat_video_url =
+            "https://173.wxapp.tc.qq.com/play/abc.f0.mp4?dis_k=k&dis_t=1";
+        assets.push(PreparedAsset {
+            kind: "head_video".to_string(),
+            sort_order: 0,
+            wechat_url: wechat_video_url.to_string(),
+            source_url: "https://cloud.video.taobao.com/play/u/1/457890291899.mp4?appKey=38829"
+                .to_string(),
+        });
+        let with_video = build_add_product_payload_relaxed_after_sale(&product, &assets)
+            .expect("应构建 payload 成功");
+        assert_eq!(
+            with_video
+                .pointer("/head_videos/0/video_url")
+                .and_then(Value::as_str),
+            Some(wechat_video_url),
+            "head_videos[0].video_url 应填入已上传的微信视频 URL"
+        );
+        // head_videos 必须是数组（微信服务端要求，object 会报 addproduct 47001）
+        assert!(
+            with_video
+                .get("head_videos")
+                .map(Value::is_array)
+                .unwrap_or(false),
+            "head_videos 必须是数组"
+        );
+    }
+
+    #[test]
+    fn detail_image_resolved_when_kind_overwritten_by_sku_image() {
+        // 回归 bug：同一张淘宝图既作详情图又作 SKU 颜色图时，publish_assets 的
+        // ON CONFLICT(item_id, source_url) 把这条记录的 asset_kind 覆盖成后写入的 sku_image，
+        // 旧逻辑按 asset_kind='detail_image' 取详情图会取不到、误报「详情图为空」。
+        // 本测试模拟「被覆盖现场」：共享图在 assets 里 kind=sku_image，验证 submit 端仍能
+        // 按 source_url 反查到该详情图（不再依赖会被覆盖的 kind）。
+        let shared = "https://img.alicdn.com/shared-color-and-detail.jpg";
+        let shared_wechat = "https://mmecimage.cn/p/shared.jpg";
+        let product: ExternalProductInput = serde_json::from_value(serde_json::json!({
+            "external_product_id": "item-shared",
+            "title": "详情图与颜色图同图商品",
+            "source_url": "https://item.taobao.com/item.htm?id=2",
+            "images": [
+                "https://img.alicdn.com/h0.jpg",
+                "https://img.alicdn.com/h1.jpg",
+                "https://img.alicdn.com/h2.jpg"
+            ],
+            "detail_images": [shared],
+            "skus": [
+                {"external_sku_id": "sku-1", "cost_price": 10.0, "stock": 5, "sku_image": shared}
+            ],
+            "metadata": {
+                "wechat_add_product_payload": {
+                    "deliver_method": 0,
+                    "extra_service": { "seven_day_return": 1, "freight_insurance": 0 },
+                    "cats_v2": [{ "cat_id": 1 }, { "cat_id": 2 }, { "cat_id": 3 }],
+                    "skus": [{ "out_sku_id": "sku-1", "sale_price": 100, "stock_num": 5 }]
+                }
+            }
+        }))
+        .expect("构造测试商品");
+
+        let mut assets: Vec<PreparedAsset> = (0..3)
+            .map(|index| PreparedAsset {
+                kind: "head_image".to_string(),
+                sort_order: index,
+                wechat_url: format!("https://mmecimage.cn/p/h{index}.jpg"),
+                source_url: format!("https://img.alicdn.com/h{index}.jpg"),
+            })
+            .collect();
+        // 共享图：详情图先写、SKU 图后写，ON CONFLICT 后这条记录 asset_kind 已是 sku_image（仅一条）。
+        assets.push(PreparedAsset {
+            kind: "sku_image".to_string(),
+            sort_order: 0,
+            wechat_url: shared_wechat.to_string(),
+            source_url: shared.to_string(),
+        });
+
+        let payload = build_add_product_payload_relaxed_after_sale(&product, &assets)
+            .expect("详情图被 SKU 图覆盖 kind 后仍应能按 source_url 反查到，不应报详情图为空");
+        // 详情图按 source_url 反查到（即便 asset_kind 已是 sku_image）
+        let desc_imgs = payload
+            .pointer("/desc_info/imgs")
+            .and_then(Value::as_array)
+            .expect("payload 应含 desc_info.imgs");
+        assert_eq!(
+            desc_imgs
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>(),
+            vec![shared_wechat],
+            "详情图应按 source_url 反查到共享图的微信 URL"
+        );
+        // 同图作 SKU 颜色图也应正常填 thumb_img
+        let thumb = payload
+            .get("skus")
+            .and_then(Value::as_array)
+            .and_then(|skus| skus.first())
+            .and_then(|sku| sku.get("thumb_img"))
+            .and_then(Value::as_str);
+        assert_eq!(thumb, Some(shared_wechat), "共享图应同时作为 SKU thumb_img");
     }
 }

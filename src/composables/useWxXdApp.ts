@@ -1051,6 +1051,27 @@ export function useWxXdApp() {
     freightTemplates.value = result.freight_templates;
   }
 
+  // 设置/清除某店铺的铺货默认运费模板（templateId 为 null 表示清除，回退到自动选第一个）。
+  async function setDefaultFreightTemplate(
+    shopId: string,
+    templateId: string | null,
+  ): Promise<boolean> {
+    try {
+      await command<void>("set_publish_default_freight_template", {
+        shopId,
+        templateId,
+      });
+      ElMessage.success(
+        templateId ? "已设为铺货默认运费模板" : "已取消默认运费模板",
+      );
+      await refreshCategoryCatalog();
+      return true;
+    } catch (error) {
+      ElMessage.error(String(error));
+      return false;
+    }
+  }
+
   async function refreshPurchaseTasks() {
     const result = await command<PurchaseTaskListResult>(
       "list_purchase_tasks",
@@ -3739,6 +3760,7 @@ export function useWxXdApp() {
     selectPurchaseTaskShipment,
     selectSupplierFollowupTarget,
     setAutoSendDelivery,
+    setDefaultFreightTemplate,
     shipmentForm,
     shopForm,
     shops,

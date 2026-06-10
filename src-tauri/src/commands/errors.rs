@@ -536,6 +536,30 @@ pub fn classify_error_code(code: &str) -> ErrorClassification {
             suggested_action: "请按微信驳回原因修改商品后重新提交",
         };
     }
+    // 微信 addproduct 偶发吞 SKU（errcode=0 但草稿 skus=[]）：submit 阶段已自动「getproduct 校验
+    // + 删空草稿 + 重新 addproduct」重试多次仍未入库，判定为微信端接口偶发故障。retriable=false——
+    // 自动重试已用尽，继续自动重试只会再撞偶发故障并消耗发品配额，留待人工择机重新提交（requeue）。
+    // 微信 addproduct 偶发吞 SKU 的单次失败（errcode=0 但草稿 skus=[]）：retriable=true，交 driver
+    // 指数退避(1→2→4→8→16→30分钟)隔开时间重排重新 addproduct，避开微信对「同 spu 短时重复 addproduct」
+    // 持续吞 SKU 的陷阱（亚秒级连续重试基本必吞，隔分钟级重试约 44%/轮恢复）。超重排上限升级为下方 fatal 码。
+    if code == "WECHAT_ADDPRODUCT_SKU_SWALLOWED" {
+        return ErrorClassification {
+            category: ErrorCategory::Transient,
+            attention: Attention::Error,
+            retriable: true,
+            human_reason: "微信偶发吞 SKU，正在自动退避重排重试",
+            suggested_action: "无需操作，系统将隔开时间自动重新提交",
+        };
+    }
+    if code == "WECHAT_ADDPRODUCT_DRAFT_SKU_ZERO" {
+        return ErrorClassification {
+            category: ErrorCategory::Fatal,
+            attention: Attention::Error,
+            retriable: false,
+            human_reason: "微信偶发吞 SKU，自动退避重排多轮仍未入库",
+            suggested_action: "微信 addproduct 接口偶发故障，请稍后重新提交该商品",
+        };
+    }
     UNKNOWN_CLASSIFICATION
 }
 
@@ -615,5 +639,21 @@ mod tests {
             classify_error_code("COLLECT_ACCESS_LIMITED").category,
             ErrorCategory::Fatal
         );
+    }
+
+    #[test]
+    fn addproduct_sku_swallow_codes_classified() {
+        // 退避重排码：Transient/可自动重试（driver 隔开时间重排，避开微信短时重复吞 SKU 陷阱）。
+        let retry = classify_error_code("WECHAT_ADDPRODUCT_SKU_SWALLOWED");
+        assert_eq!(retry.category, ErrorCategory::Transient);
+        assert_eq!(retry.attention, Attention::Error);
+        assert!(retry.retriable, "退避重排码应可自动重试");
+        assert!(!retry.human_reason.is_empty());
+        assert!(!retry.suggested_action.is_empty());
+        // 升级真失败码：Fatal/不自动重试（多轮退避仍被吞，留待人工 requeue）。
+        let dead = classify_error_code("WECHAT_ADDPRODUCT_DRAFT_SKU_ZERO");
+        assert_eq!(dead.category, ErrorCategory::Fatal);
+        assert_eq!(dead.attention, Attention::Error);
+        assert!(!dead.retriable, "退避重排用尽，不应再自动重试");
     }
 }

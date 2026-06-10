@@ -6,6 +6,12 @@ const STABLE_TOKEN_URL: &str = "https://api.weixin.qq.com/cgi-bin/stable_token";
 const SHOP_BASIC_INFO_URL: &str = "https://api.weixin.qq.com/channels/ec/basics/info/get";
 const API_QUOTA_URL: &str = "https://api.weixin.qq.com/cgi-bin/openapi/quota/get";
 const IMAGE_UPLOAD_URL: &str = "https://api.weixin.qq.com/shop/ec/basics/img/upload";
+const VIDEO_INIT_UPLOAD_URL: &str = "https://api.weixin.qq.com/shop/ec/basics/video/initupload";
+const VIDEO_UPLOAD_PART_URL: &str = "https://api.weixin.qq.com/shop/ec/basics/video/uploadpart";
+const VIDEO_FINISH_UPLOAD_URL: &str =
+    "https://api.weixin.qq.com/shop/ec/basics/video/finishupload";
+const VIDEO_GET_PLAY_INFO_URL: &str =
+    "https://api.weixin.qq.com/shop/ec/basics/video/getplayinfo";
 const PRODUCT_ADD_URL: &str = "https://api.weixin.qq.com/channels/ec/product/add";
 const PRODUCT_UPDATE_URL: &str = "https://api.weixin.qq.com/channels/ec/product/update";
 const PRODUCT_GET_URL: &str = "https://api.weixin.qq.com/channels/ec/product/get";
@@ -39,6 +45,8 @@ const CATEGORY_DELIVERY_RULE_URL: &str =
     "https://api.weixin.qq.com/shop/ec/category/getcategoryrule";
 const FREIGHT_TEMPLATE_LIST_URL: &str =
     "https://api.weixin.qq.com/channels/ec/merchant/getfreighttemplatelist";
+const FREIGHT_TEMPLATE_DETAIL_URL: &str =
+    "https://api.weixin.qq.com/channels/ec/merchant/getfreighttemplatedetail";
 const MERCHANT_ADDRESS_LIST_URL: &str =
     "https://api.weixin.qq.com/channels/ec/merchant/address/list";
 const MERCHANT_ADDRESS_GET_URL: &str = "https://api.weixin.qq.com/channels/ec/merchant/address/get";
@@ -375,6 +383,48 @@ struct ImageUploadPicFile {
 }
 
 #[derive(Debug, Deserialize)]
+struct VideoInitUploadResponse {
+    errcode: i64,
+    errmsg: String,
+    data: Option<VideoInitUploadData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VideoInitUploadData {
+    video_upload_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VideoUploadPartResponse {
+    errcode: i64,
+    errmsg: String,
+    data: Option<VideoUploadPartData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VideoUploadPartData {
+    part_sha: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VideoFinishUploadResponse {
+    errcode: i64,
+    errmsg: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct VideoGetPlayInfoResponse {
+    errcode: i64,
+    errmsg: String,
+    data: Option<VideoGetPlayInfoData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VideoGetPlayInfoData {
+    url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct ProductAddResponse {
     errcode: i64,
     errmsg: String,
@@ -628,6 +678,11 @@ struct CategoryDeliveryRuleRequest {
 struct FreightTemplateListRequest {
     offset: i64,
     limit: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct FreightTemplateDetailRequest<'a> {
+    template_id: &'a str,
 }
 
 #[derive(Debug, Serialize)]
@@ -1000,6 +1055,242 @@ impl WechatShopClient {
             },
             result,
         })
+    }
+
+    /// 视频上传第①步：申请上传，返回 video_upload_key（关联整个上传流程）。
+    /// scene_type=162 为商品视频（限制 500MB/180秒），file_type 固定 mp4。
+    pub async fn video_init_upload(
+        &self,
+        access_token: &str,
+        file_size: usize,
+    ) -> AppResult<WechatCallResult<String>> {
+        let mut url = Url::parse(VIDEO_INIT_UPLOAD_URL)
+            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
+        url.query_pairs_mut().append_pair("access_token", access_token);
+        let body = serde_json::json!({
+            "scene_type": 162,
+            "file_type": "mp4",
+            "file_size": file_size,
+        });
+        let response = self
+            .http
+            .post(url)
+            .json(&body)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<VideoInitUploadResponse>()
+            .await?;
+        if response.errcode == 0 {
+            match response.data.and_then(|data| data.video_upload_key) {
+                Some(key) if !key.trim().is_empty() => Ok(WechatCallResult::Success(key)),
+                _ => Ok(WechatCallResult::ApiError(WechatApiError {
+                    errcode: -999_997,
+                    errmsg: "微信视频 initupload 成功但缺少 video_upload_key".to_string(),
+                })),
+            }
+        } else {
+            Ok(WechatCallResult::ApiError(WechatApiError {
+                errcode: response.errcode,
+                errmsg: response.errmsg,
+            }))
+        }
+    }
+
+    /// 视频上传第②步：上传单个分块，返回服务端计算的 part_sha（finishupload 时回传校验）。
+    /// partnum 从 1 起；除最后一块外每块须 ≥1MB，否则 finishupload 会返回 10020342。
+    pub async fn video_upload_part(
+        &self,
+        access_token: &str,
+        video_upload_key: &str,
+        partnum: u32,
+        bytes: Vec<u8>,
+    ) -> AppResult<WechatCallResult<String>> {
+        let mut url = Url::parse(VIDEO_UPLOAD_PART_URL)
+            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
+        url.query_pairs_mut()
+            .append_pair("access_token", access_token)
+            .append_pair("video_upload_key", video_upload_key)
+            .append_pair("partnum", &partnum.to_string());
+        let part = multipart::Part::bytes(bytes)
+            .file_name("part")
+            .mime_str("application/octet-stream")
+            .map_err(|error| AppError::Validation(format!("视频分块 MIME 不合法: {error}")))?;
+        let form = multipart::Form::new().part("media", part);
+        let response = self
+            .http
+            .post(url)
+            .multipart(form)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<VideoUploadPartResponse>()
+            .await?;
+        if response.errcode == 0 {
+            match response.data.and_then(|data| data.part_sha) {
+                Some(sha) if !sha.trim().is_empty() => Ok(WechatCallResult::Success(sha)),
+                _ => Ok(WechatCallResult::ApiError(WechatApiError {
+                    errcode: -999_996,
+                    errmsg: "微信视频 uploadpart 成功但缺少 part_sha".to_string(),
+                })),
+            }
+        } else {
+            Ok(WechatCallResult::ApiError(WechatApiError {
+                errcode: response.errcode,
+                errmsg: response.errmsg,
+            }))
+        }
+    }
+
+    /// 视频上传第③步：完成上传，提交全部分片的 (partnum, part_sha) 供服务端校验连续性与 SHA。
+    pub async fn video_finish_upload(
+        &self,
+        access_token: &str,
+        video_upload_key: &str,
+        finish_parts: &[(u32, String)],
+    ) -> AppResult<WechatCallResult<()>> {
+        let mut url = Url::parse(VIDEO_FINISH_UPLOAD_URL)
+            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
+        url.query_pairs_mut().append_pair("access_token", access_token);
+        let parts: Vec<serde_json::Value> = finish_parts
+            .iter()
+            .map(|(partnum, part_sha)| {
+                serde_json::json!({ "partnum": partnum, "part_sha": part_sha })
+            })
+            .collect();
+        let body = serde_json::json!({
+            "video_upload_key": video_upload_key,
+            "finish_parts": parts,
+        });
+        let response = self
+            .http
+            .post(url)
+            .json(&body)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<VideoFinishUploadResponse>()
+            .await?;
+        if response.errcode == 0 {
+            Ok(WechatCallResult::Success(()))
+        } else {
+            Ok(WechatCallResult::ApiError(WechatApiError {
+                errcode: response.errcode,
+                errmsg: response.errmsg,
+            }))
+        }
+    }
+
+    /// 视频上传第④步：获取临时播放 URL（GET）。10020347 表示视频仍在转码，需由上层轮询重试。
+    pub async fn video_get_play_info(
+        &self,
+        access_token: &str,
+        video_upload_key: &str,
+    ) -> AppResult<WechatCallResult<String>> {
+        let mut url = Url::parse(VIDEO_GET_PLAY_INFO_URL)
+            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
+        url.query_pairs_mut()
+            .append_pair("access_token", access_token)
+            .append_pair("video_upload_key", video_upload_key);
+        let response = self
+            .http
+            .get(url)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<VideoGetPlayInfoResponse>()
+            .await?;
+        if response.errcode == 0 {
+            match response.data.and_then(|data| data.url) {
+                Some(play_url) if !play_url.trim().is_empty() => {
+                    Ok(WechatCallResult::Success(play_url))
+                }
+                _ => Ok(WechatCallResult::ApiError(WechatApiError {
+                    errcode: -999_995,
+                    errmsg: "微信视频 getplayinfo 成功但缺少 url".to_string(),
+                })),
+            }
+        } else {
+            Ok(WechatCallResult::ApiError(WechatApiError {
+                errcode: response.errcode,
+                errmsg: response.errmsg,
+            }))
+        }
+    }
+
+    /// 4 步分块上传视频到微信，返回临时播放 URL（填 add_product 的 head_videos.video_url）。
+    /// 流程：initupload(scene_type=162) → 逐块 uploadpart 收集 part_sha → finishupload 校验 →
+    /// 轮询 getplayinfo（10020347 转码中则每 2 秒重试，最多 30 次）。任一步 API 失败返回 ApiError，
+    /// 由调用方降级处理（视频为可选增强，失败不阻断商品上架）。
+    pub async fn upload_video_bytes(
+        &self,
+        access_token: &str,
+        bytes: Vec<u8>,
+    ) -> AppResult<WechatCallResult<String>> {
+        // 分块大小取 1.5MB，落在微信要求的 1~2MB 区间内（除末块外每块须 ≥1MB）。
+        const PART_SIZE: usize = 1_500_000;
+        const TRANSCODING_ERRCODE: i64 = 10020347;
+        const MAX_POLLS: u32 = 30;
+
+        if bytes.is_empty() {
+            return Ok(WechatCallResult::ApiError(WechatApiError {
+                errcode: -999_999,
+                errmsg: "视频内容为空".to_string(),
+            }));
+        }
+        let file_size = bytes.len();
+
+        // ① 申请上传
+        let video_upload_key = match self.video_init_upload(access_token, file_size).await? {
+            WechatCallResult::Success(key) => key,
+            WechatCallResult::ApiError(error) => return Ok(WechatCallResult::ApiError(error)),
+        };
+
+        // ② 分块上传，partnum 从 1 起，收集每块的 part_sha
+        let mut finish_parts: Vec<(u32, String)> = Vec::new();
+        for (index, chunk) in bytes.chunks(PART_SIZE).enumerate() {
+            let partnum = (index + 1) as u32;
+            match self
+                .video_upload_part(access_token, &video_upload_key, partnum, chunk.to_vec())
+                .await?
+            {
+                WechatCallResult::Success(part_sha) => finish_parts.push((partnum, part_sha)),
+                WechatCallResult::ApiError(error) => {
+                    return Ok(WechatCallResult::ApiError(error))
+                }
+            }
+        }
+
+        // ③ 完成上传（服务端校验分片连续 + SHA）
+        if let WechatCallResult::ApiError(error) = self
+            .video_finish_upload(access_token, &video_upload_key, &finish_parts)
+            .await?
+        {
+            return Ok(WechatCallResult::ApiError(error));
+        }
+
+        // ④ 轮询取临时播放 URL（10020347 = 转码中，每 2 秒重试）
+        for attempt in 0..MAX_POLLS {
+            match self
+                .video_get_play_info(access_token, &video_upload_key)
+                .await?
+            {
+                WechatCallResult::Success(play_url) => {
+                    return Ok(WechatCallResult::Success(play_url))
+                }
+                WechatCallResult::ApiError(error) if error.errcode == TRANSCODING_ERRCODE => {
+                    if attempt + 1 >= MAX_POLLS {
+                        return Ok(WechatCallResult::ApiError(error));
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                }
+                WechatCallResult::ApiError(error) => return Ok(WechatCallResult::ApiError(error)),
+            }
+        }
+        Ok(WechatCallResult::ApiError(WechatApiError {
+            errcode: TRANSCODING_ERRCODE,
+            errmsg: "微信视频转码超时（轮询约 60 秒仍未就绪）".to_string(),
+        }))
     }
 
     pub async fn add_product(
@@ -2015,6 +2306,37 @@ impl WechatShopClient {
         Ok(WechatRawCall {
             meta: WechatCallMeta {
                 endpoint: FREIGHT_TEMPLATE_LIST_URL,
+                method: "POST",
+            },
+            result: raw_wechat_result(response),
+        })
+    }
+
+    /// 查询单个运费模板详情（getfreighttemplatedetail）。
+    /// 列表接口仅返回 template_id，模板名称与计费方式等需逐个调本接口获取。
+    pub async fn get_freight_template_detail(
+        &self,
+        access_token: &str,
+        template_id: &str,
+    ) -> AppResult<WechatRawCall> {
+        let mut url = Url::parse(FREIGHT_TEMPLATE_DETAIL_URL)
+            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
+        url.query_pairs_mut()
+            .append_pair("access_token", access_token);
+
+        let response = self
+            .http
+            .post(url)
+            .json(&FreightTemplateDetailRequest { template_id })
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<RawWechatResponse>()
+            .await?;
+
+        Ok(WechatRawCall {
+            meta: WechatCallMeta {
+                endpoint: FREIGHT_TEMPLATE_DETAIL_URL,
                 method: "POST",
             },
             result: raw_wechat_result(response),

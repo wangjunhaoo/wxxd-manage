@@ -115,7 +115,9 @@ export type FreightTemplateView = {
   shop_id: string;
   shop_name: string;
   template_id: string;
+  template_name: string | null;
   synced_at: string;
+  is_default: boolean;
 };
 
 export type CategoryCatalogListResult = {
@@ -1318,6 +1320,14 @@ export type SyncShopProductsResult = {
   synced_count: number;
   total_num: number;
   failed_count: number;
+};
+
+export type CleanupOrphanDraftsResult = {
+  shop_id: string;
+  draft_total: number;
+  deleted: number;
+  listed_promoted: number;
+  remaining_after: number;
 };
 
 export type PublishPricingStrategy = {

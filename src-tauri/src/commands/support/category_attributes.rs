@@ -3017,6 +3017,24 @@ pub(in crate::commands) fn extract_freight_template_ids(raw_payload: &Value) -> 
         .unwrap_or_default()
 }
 
+/// 从运费模板详情响应（getfreighttemplatedetail）中取出 freight_template 对象，整体存入缓存。
+pub(in crate::commands) fn extract_freight_template_detail(raw_payload: &Value) -> Option<Value> {
+    raw_payload
+        .get("freight_template")
+        .filter(|value| value.is_object())
+        .cloned()
+}
+
+/// 从已缓存的运费模板 raw_payload 中解析模板名称（freight_template.name，缺失或空串返回 None）。
+pub(in crate::commands) fn freight_template_name_from_payload(raw_payload: &Value) -> Option<String> {
+    raw_payload
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+}
+
 pub(in crate::commands) fn category_detail_counts(raw_payload: &Value) -> CategoryDetailCounts {
     CategoryDetailCounts {
         product_attr_count: count_named_arrays(raw_payload, "product_attr_list"),
@@ -3050,6 +3068,41 @@ pub(in crate::commands) fn count_named_arrays(value: &Value, key: &str) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extract_freight_template_detail_picks_object_then_name_round_trips() {
+        // getfreighttemplatedetail 成功响应：errcode/errmsg 平铺 + freight_template 对象
+        let response = serde_json::json!({
+            "errcode": 0,
+            "errmsg": "ok",
+            "freight_template": {
+                "template_id": "1012494298004",
+                "name": "标准快递（满 99 包邮）",
+                "shipping_method": "CONDITION_FREE"
+            }
+        });
+        // 同步时取出的 freight_template 对象即为存入 raw_payload 的内容
+        let stored = extract_freight_template_detail(&response).expect("应取出 freight_template 对象");
+        assert_eq!(stored.get("template_id").and_then(Value::as_str), Some("1012494298004"));
+        // load 时再从存储对象的顶层 name 解析出模板名称（两跳契约）
+        assert_eq!(
+            freight_template_name_from_payload(&stored).as_deref(),
+            Some("标准快递（满 99 包邮）")
+        );
+    }
+
+    #[test]
+    fn freight_template_name_falls_back_to_none_when_missing_or_blank() {
+        // 详情查询失败的降级对象只有 template_id，无 name → None（前端兜底显示 ID）
+        let degraded = serde_json::json!({ "template_id": "1012494298004" });
+        assert_eq!(freight_template_name_from_payload(&degraded), None);
+        // 纯空白名称同样视为无名称
+        let blank = serde_json::json!({ "name": "   " });
+        assert_eq!(freight_template_name_from_payload(&blank), None);
+        // 缺少 freight_template 字段的响应取不到对象
+        let empty = serde_json::json!({ "errcode": 0, "errmsg": "ok" });
+        assert!(extract_freight_template_detail(&empty).is_none());
+    }
 
     #[test]
     fn fallback_fills_empty_options_free_text_required_attr() {
@@ -3177,6 +3230,7 @@ mod tests {
             source_url: "https://example.com/item".to_string(),
             images: Vec::new(),
             detail_images: Vec::new(),
+            main_video: None,
             skus: Vec::new(),
             supplier_name: None,
             supplier_product_id: None,
@@ -3240,6 +3294,7 @@ mod tests {
             source_url: "https://example.com/item".to_string(),
             images: Vec::new(),
             detail_images: Vec::new(),
+            main_video: None,
             skus: Vec::new(),
             supplier_name: None,
             supplier_product_id: None,
@@ -3272,6 +3327,7 @@ mod tests {
             source_url: "https://example.com/item".to_string(),
             images: Vec::new(),
             detail_images: Vec::new(),
+            main_video: None,
             skus: Vec::new(),
             supplier_name: None,
             supplier_product_id: None,
@@ -3362,6 +3418,7 @@ mod tests {
             source_url: "https://example.com/item".to_string(),
             images: Vec::new(),
             detail_images: Vec::new(),
+            main_video: None,
             skus: [110, 130, 150]
                 .into_iter()
                 .map(|height| crate::models::ExternalSkuInput {
@@ -3372,6 +3429,7 @@ mod tests {
                     }),
                     cost_price: 10.0,
                     stock: 10,
+                    sku_image: None,
                 })
                 .collect(),
             supplier_name: None,
@@ -3479,6 +3537,7 @@ mod tests {
             source_url: "https://example.com/item".to_string(),
             images: Vec::new(),
             detail_images: Vec::new(),
+            main_video: None,
             skus: (80..130)
                 .map(|size| crate::models::ExternalSkuInput {
                     external_sku_id: format!("sku-{size}"),
@@ -3487,6 +3546,7 @@ mod tests {
                     }),
                     cost_price: 10.0,
                     stock: 10,
+                    sku_image: None,
                 })
                 .collect(),
             supplier_name: None,
@@ -3563,11 +3623,13 @@ mod tests {
             source_url: "https://example.com/item".to_string(),
             images: Vec::new(),
             detail_images: Vec::new(),
+            main_video: None,
             skus: vec![crate::models::ExternalSkuInput {
                 external_sku_id: "sku-1".to_string(),
                 specs,
                 cost_price: 1.0,
                 stock: 10,
+                sku_image: None,
             }],
             supplier_name: None,
             supplier_product_id: None,

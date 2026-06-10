@@ -51,6 +51,7 @@ export default function ProductManagementSection() {
   const loading = sp.loading.value;
   const syncing = sp.syncing.value;
   const refreshingStock = sp.refreshingStock.value;
+  const cleaningDrafts = sp.cleaningDrafts.value;
   const selectedShopId = sp.selectedShopId.value;
   const statusFilter = sp.statusFilter.value;
   const keyword = sp.keyword.value;
@@ -234,6 +235,28 @@ export default function ProductManagementSection() {
                 onClick={() => sp.refreshStock()}
               >
                 {refreshingStock ? "刷新中…" : "刷新库存"}
+              </Button>
+              <Button
+                size="sm"
+                disabled={!selectedShopId || cleaningDrafts}
+                onClick={async () => {
+                  try {
+                    await ElMessageBox.confirm(
+                      "将删除草稿箱里「已上架商品的重复草稿」，并把「独有未上架草稿」尝试上架转正、上架失败的删除。批量删除微信草稿不可恢复，确认继续？",
+                      "清理孤儿草稿",
+                      {
+                        type: "warning",
+                        confirmButtonText: "确认清理",
+                        cancelButtonText: "取消",
+                      },
+                    );
+                  } catch {
+                    return;
+                  }
+                  await sp.cleanupDrafts();
+                }}
+              >
+                {cleaningDrafts ? "清理中…" : "清理草稿"}
               </Button>
               <Button
                 size="sm"

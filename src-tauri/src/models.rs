@@ -159,7 +159,12 @@ pub struct FreightTemplateView {
     pub shop_id: String,
     pub shop_name: String,
     pub template_id: String,
+    /// 运费模板名称（微信 getfreighttemplatedetail 的 freight_template.name）。
+    /// 存量未补详情或详情查询失败时为 None，前端兜底显示模板 ID。
+    pub template_name: Option<String>,
     pub synced_at: String,
+    /// 是否为该店铺铺货时使用的默认运费模板（用户在运费模板面板指定）。
+    pub is_default: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -324,6 +329,10 @@ pub struct ExternalProductInput {
     pub images: Vec<String>,
     #[serde(default)]
     pub detail_images: Vec<String>,
+    /// 主图视频（淘宝原始 mp4 直链）。铺货时下载并经微信 4 步分块上传，填入 head_videos.video_url。
+    /// 视频为可选增强，缺失或上传失败均不阻断商品上架。
+    #[serde(default)]
+    pub main_video: Option<String>,
     pub skus: Vec<ExternalSkuInput>,
     pub supplier_name: Option<String>,
     pub supplier_product_id: Option<String>,
@@ -341,6 +350,10 @@ pub struct ExternalSkuInput {
     pub specs: serde_json::Value,
     pub cost_price: f64,
     pub stock: i64,
+    /// SKU 颜色图（淘宝原始 URL）。同色多尺码 SKU 共用一张；铺货时上传微信后填入 sku.thumb_img，
+    /// 实现「切换 SKU 换主图」。仅颜色维度的 SKU 有值。
+    #[serde(default)]
+    pub sku_image: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1056,6 +1069,21 @@ pub struct SyncShopProductsResult {
     pub synced_count: i64,
     pub total_num: i64,
     pub failed_count: i64,
+}
+
+/// 清理孤儿草稿的结果统计。
+#[derive(Debug, Serialize)]
+pub struct CleanupOrphanDraftsResult {
+    /// 店铺 id（回显）。
+    pub shop_id: String,
+    /// 清理前草稿箱(status=0)总数。
+    pub draft_total: i64,
+    /// 实际删除的草稿数（已上架重复 + 独有上架失败 + 空草稿）。
+    pub deleted: i64,
+    /// 独有未上架商品成功 listing 上架转正数。
+    pub listed_promoted: i64,
+    /// 清理后剩余草稿数（再次同步后实测）。
+    pub remaining_after: i64,
 }
 
 #[derive(Debug, Serialize)]

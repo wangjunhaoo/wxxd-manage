@@ -435,6 +435,165 @@ pub async fn sync_shop_products(
     })
 }
 
+/// 清理孤儿草稿：根治草稿箱堆积（根因见记忆 wechat-listing-sku-zero-6600099 / 草稿箱排查）。
+/// 微信对同 out_product_id 重复 addproduct 不去重、每次新建独立草稿，叠加历史退避换 ID 重试，
+/// 致同一淘宝商品在草稿箱(status=0)堆多份未上架草稿。本命令：① 先 sync 刷新本地缓存；② 读 status=0
+/// 草稿与 status=5 已上架的 out_product_id base（去 -r{n} 后缀归并同一商品）；③ base 已上架的草稿=
+/// 重复→删除，base 独有的→按 base 归并保 SKU 最多 1 个尝试 listing 上架（配额已解除可转正），上架
+/// 失败或空草稿一律删除；④ 再 sync 刷新并统计。网络调用均在数据库连接关闭后进行（conn 不可跨 await）。
+#[tauri::command]
+pub async fn cleanup_orphan_drafts(
+    app: AppHandle,
+    shop_id: String,
+) -> AppResult<CleanupOrphanDraftsResult> {
+    let client = WechatShopClient::default();
+    let access_token = ensure_access_token(&app, &shop_id, &client).await?;
+
+    // 1) 先同步刷新本地缓存（复用 sync_shop_products 的翻页 + 详情拉取，含 status=0 草稿补拉）。
+    sync_shop_products(app.clone(), shop_id.clone()).await?;
+
+    // 2) 读本地草稿(status=0)与已上架(status=5)的 base 集合（base = 去退避换 ID 残留 -r{n} 后缀）。
+    struct DraftRow {
+        product_id: String,
+        base: String,
+        sku_count: i64,
+    }
+    let (drafts, listed_bases, draft_total) = {
+        let conn = open_connection(&app)?;
+        let drafts: Vec<DraftRow> = {
+            let mut stmt = conn.prepare(
+                "SELECT wechat_product_id, IFNULL(out_product_id, ''), sku_count
+                 FROM wechat_shop_products WHERE shop_id = ?1 AND status = 0",
+            )?;
+            // collect 结果先绑定 let（rusqlite MappedRows 借用 stmt，不能作 block 末尾表达式
+            // 直接返回，否则 stmt 临时先于借用 drop 触发 E0597）。
+            let rows = stmt
+                .query_map([&shop_id], |row| {
+                    let product_id: String = row.get(0)?;
+                    let out_id: String = row.get(1)?;
+                    let sku_count: i64 = row.get(2)?;
+                    Ok(DraftRow {
+                        product_id,
+                        base: strip_retry_suffix(&out_id),
+                        sku_count,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+        let listed_bases: std::collections::HashSet<String> = {
+            let mut stmt = conn.prepare(
+                "SELECT IFNULL(out_product_id, '') FROM wechat_shop_products
+                 WHERE shop_id = ?1 AND status = 5",
+            )?;
+            let bases = stmt
+                .query_map([&shop_id], |row| row.get::<_, String>(0))?
+                .filter_map(Result::ok)
+                .map(|out_id| strip_retry_suffix(&out_id))
+                .filter(|base| !base.is_empty())
+                .collect();
+            bases
+        };
+        let draft_total = drafts.len() as i64;
+        (drafts, listed_bases, draft_total)
+    };
+
+    // 3) 分组决策（纯内存）：重复草稿入删除集；独有按 base 归并，保 SKU 最多 1 个尝试上架、其余删。
+    let mut by_base: std::collections::BTreeMap<String, Vec<DraftRow>> =
+        std::collections::BTreeMap::new();
+    let mut to_delete: Vec<String> = Vec::new();
+    for draft in drafts {
+        if draft.base.is_empty() || listed_bases.contains(&draft.base) {
+            to_delete.push(draft.product_id);
+        } else {
+            by_base.entry(draft.base.clone()).or_default().push(draft);
+        }
+    }
+    let mut to_list: Vec<String> = Vec::new();
+    for (_base, mut group) in by_base {
+        group.sort_by(|a, b| b.sku_count.cmp(&a.sku_count));
+        let mut iter = group.into_iter();
+        if let Some(best) = iter.next() {
+            if best.sku_count > 0 {
+                to_list.push(best.product_id);
+            } else {
+                to_delete.push(best.product_id);
+            }
+        }
+        for rest in iter {
+            to_delete.push(rest.product_id);
+        }
+    }
+
+    // 4) 执行：先上架独有草稿（成功转正、失败转删），再批量删除。网络调用均在 conn 关闭后。
+    let mut listed_promoted = 0i64;
+    for product_id in to_list {
+        let promoted = matches!(
+            client.listing_product(&access_token, &product_id).await,
+            Ok(call) if matches!(call.result, WechatCallResult::Success(_))
+        );
+        if promoted {
+            listed_promoted += 1;
+        } else {
+            to_delete.push(product_id);
+        }
+    }
+    let mut deleted = 0i64;
+    for product_id in &to_delete {
+        if let Ok(call) = client.delete_product(&access_token, product_id).await {
+            if matches!(call.result, WechatCallResult::Success(_)) {
+                deleted += 1;
+            }
+        }
+    }
+
+    // 5) 再次同步刷新缓存、统计清理后剩余草稿数，并记一条 api_call_log 留痕。
+    sync_shop_products(app.clone(), shop_id.clone()).await?;
+    let remaining_after = {
+        let conn = open_connection(&app)?;
+        let remaining: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM wechat_shop_products WHERE shop_id = ?1 AND status = 0",
+            [&shop_id],
+            |row| row.get(0),
+        )?;
+        insert_api_call_log(
+            &conn,
+            Some(&shop_id),
+            "cleanup_orphan_drafts",
+            "LOCAL",
+            "success",
+            None,
+            None,
+            Some(&format!(
+                "清理孤儿草稿：清理前 {draft_total}，删除 {deleted}，上架转正 {listed_promoted}，剩余 {remaining}"
+            )),
+        )?;
+        remaining
+    };
+
+    Ok(CleanupOrphanDraftsResult {
+        shop_id,
+        draft_total,
+        deleted,
+        listed_promoted,
+        remaining_after,
+    })
+}
+
+/// 去掉退避换 ID 残留的 `-r{n}` 后缀，把同一淘宝商品的多份草稿归并到同一 base。
+/// out_product_id 形如 `https://item.taobao.com/item.htm?id=123`（淘宝 URL，不含 -r）或历史
+/// `...id=123-r2`（旧版换 ID 产物）。仅当 `-r` 后全为数字才视作重试后缀，避免误伤 URL 内容。
+fn strip_retry_suffix(out_id: &str) -> String {
+    let trimmed = out_id.trim();
+    if let Some(idx) = trimmed.rfind("-r") {
+        let suffix = &trimmed[idx + 2..];
+        if !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit()) {
+            return trimmed[..idx].to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
 /// 读缓存商品列表，支持按店铺、状态、关键词筛选。
 #[tauri::command]
 pub fn list_cached_shop_products(

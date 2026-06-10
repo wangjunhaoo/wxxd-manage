@@ -133,6 +133,154 @@ pub(in crate::commands) async fn upload_or_reuse_asset(
     }
 }
 
+/// 主图视频版的素材上传：下载淘宝主图视频 → 微信 4 步分块上传 → 记录临时播放 URL。
+///
+/// 与图片不同，视频是可选增强（搬运淘宝主图视频到微信小店 head_videos），任何失败都仅记录素材
+/// 失败、**不调 mark_publish_item_failed**（不阻断商品上架）；由调用方按 is_optional 降级跳过。
+pub(in crate::commands) async fn upload_or_reuse_video_asset(
+    app: &AppHandle,
+    client: &WechatShopClient,
+    access_token: &str,
+    item: &PendingPublishItem,
+    asset: &ProductAsset,
+) -> AppResult<AssetUploadOutcome> {
+    let asset = match normalize_product_asset(asset) {
+        Ok(asset) => asset,
+        Err(error_summary) => {
+            record_asset_failure(app, item, asset, "INVALID_VIDEO_SOURCE_URL", &error_summary)?;
+            return Ok(AssetUploadOutcome::Failed);
+        }
+    };
+
+    // 复用：同一淘宝视频此前已上传过（同 shop + source_url），直接复用微信 video_url，省流量与转码。
+    if let Some(wechat_url) = find_cached_asset_url(app, &item.shop_id, &asset.source_url)? {
+        record_asset_success(app, item, &asset, &wechat_url, "reused")?;
+        return Ok(AssetUploadOutcome::Reused);
+    }
+
+    let bytes = match prepare_video_for_upload(&asset.source_url).await {
+        Ok(bytes) => bytes,
+        Err(error_summary) => {
+            record_asset_failure(app, item, &asset, "VIDEO_DOWNLOAD_FAILED", &error_summary)?;
+            return Ok(AssetUploadOutcome::Failed);
+        }
+    };
+
+    let call = match client.upload_video_bytes(access_token, bytes).await {
+        Ok(call) => call,
+        Err(error) => {
+            let error_summary = format!("微信视频上传请求失败：{error}");
+            record_asset_failure(
+                app,
+                item,
+                &asset,
+                "WECHAT_VIDEO_UPLOAD_HTTP_FAILED",
+                &error_summary,
+            )?;
+            return Ok(AssetUploadOutcome::Failed);
+        }
+    };
+
+    let conn = open_connection(app)?;
+    match &call {
+        WechatCallResult::Success(video_url) => {
+            insert_api_call_log(
+                &conn,
+                Some(&item.shop_id),
+                "shop/ec/basics/video (4-step upload)",
+                "POST",
+                "success",
+                None,
+                None,
+                Some("video upload ok"),
+            )?;
+            drop(conn);
+            record_asset_success(app, item, &asset, video_url, "success")?;
+            insert_task_log_for_app(
+                app,
+                &item.job_id,
+                Some(&item.item_id),
+                "info",
+                "主图视频已上传微信",
+                Some(&serde_json::json!({
+                    "asset_kind": asset.kind,
+                    "video_url": video_url,
+                })),
+            )?;
+            Ok(AssetUploadOutcome::Uploaded)
+        }
+        WechatCallResult::ApiError(error) => {
+            insert_api_call_log(
+                &conn,
+                Some(&item.shop_id),
+                "shop/ec/basics/video (4-step upload)",
+                "POST",
+                "api_error",
+                Some(error.errcode),
+                Some(&error.errmsg),
+                Some("video upload api error"),
+            )?;
+            drop(conn);
+            let error_code = format!("WECHAT_VIDEO_UPLOAD_{}", error.errcode);
+            let error_summary = format!("微信视频上传失败：{}", error.errmsg);
+            record_asset_failure(app, item, &asset, &error_code, &error_summary)?;
+            Ok(AssetUploadOutcome::Failed)
+        }
+    }
+}
+
+/// 下载淘宝主图视频到内存，供微信 4 步分块上传。淘宝 cloud.video.taobao.com 有防盗链（裸请求返回
+/// 490「非法访问」），必须带浏览器 UA + Referer 并跟随 302 重定向。校验体积 ≤500MB（微信 162 场景上限）。
+pub(in crate::commands) async fn prepare_video_for_upload(source_url: &str) -> Result<Vec<u8>, String> {
+    use reqwest::header::REFERER;
+
+    let http = reqwest::Client::builder()
+        .redirect(Policy::limited(5))
+        .timeout(StdDuration::from_secs(VIDEO_DOWNLOAD_TIMEOUT_SECONDS))
+        .build()
+        .map_err(|error| format!("初始化视频下载客户端失败：{error}"))?;
+    let response = http
+        .get(source_url)
+        .header(USER_AGENT, VIDEO_BROWSER_USER_AGENT)
+        .header(REFERER, VIDEO_DOWNLOAD_REFERER)
+        .send()
+        .await
+        .map_err(|error| format!("下载视频失败：{error}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("视频 URL 打开失败：HTTP {status}"));
+    }
+    if let Some(content_length) = response
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        if content_length > VIDEO_DOWNLOAD_MAX_BYTES {
+            return Err(format!(
+                "视频过大：{}，超过微信上限 {}",
+                format_bytes_short(content_length as usize),
+                format_bytes_short(VIDEO_DOWNLOAD_MAX_BYTES as usize)
+            ));
+        }
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| format!("读取视频内容失败：{error}"))?;
+    if bytes.is_empty() {
+        return Err("视频内容为空".to_string());
+    }
+    if bytes.len() as u64 > VIDEO_DOWNLOAD_MAX_BYTES {
+        return Err(format!(
+            "视频过大：{}，超过微信上限 {}",
+            format_bytes_short(bytes.len()),
+            format_bytes_short(VIDEO_DOWNLOAD_MAX_BYTES as usize)
+        ));
+    }
+    Ok(bytes.to_vec())
+}
+
 pub(in crate::commands) fn validate_image_source_url(
     app: &AppHandle,
     source_url: &str,

@@ -118,6 +118,80 @@ pub(in crate::commands) fn save_publish_pricing_strategy_to_db(
     Ok(())
 }
 
+/// 读取所有店铺的默认运费模板映射 {shop_id: template_id}。无配置时返回空 map。
+pub(in crate::commands) fn load_publish_default_freight_templates(
+    conn: &Connection,
+) -> AppResult<std::collections::HashMap<String, String>> {
+    let Some(raw) = conn
+        .query_row(
+            "SELECT value_json FROM app_settings WHERE key = ?1",
+            [PUBLISH_DEFAULT_FREIGHT_TEMPLATES_SETTING],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+    else {
+        return Ok(std::collections::HashMap::new());
+    };
+    Ok(serde_json::from_str(&raw).unwrap_or_default())
+}
+
+/// 读取单个店铺指定的默认运费模板 ID（未指定返回 None）。
+pub(in crate::commands) fn load_shop_default_freight_template(
+    conn: &Connection,
+    shop_id: &str,
+) -> AppResult<Option<String>> {
+    Ok(load_publish_default_freight_templates(conn)?.remove(shop_id))
+}
+
+/// 设置/清除单个店铺的默认运费模板（template_id 为 None 表示清除该店铺的指定）。
+pub(in crate::commands) fn save_shop_default_freight_template_to_db(
+    conn: &Connection,
+    shop_id: &str,
+    template_id: Option<&str>,
+) -> AppResult<()> {
+    let mut map = load_publish_default_freight_templates(conn)?;
+    match template_id {
+        Some(tid) => {
+            map.insert(shop_id.to_string(), tid.to_string());
+        }
+        None => {
+            map.remove(shop_id);
+        }
+    }
+    let value_json = serde_json::to_string(&map)
+        .map_err(|error| AppError::Validation(format!("默认运费模板序列化失败：{error}")))?;
+    conn.execute(
+        "INSERT INTO app_settings (key, value_json, updated_at)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET
+           value_json = excluded.value_json,
+           updated_at = excluded.updated_at",
+        params![
+            PUBLISH_DEFAULT_FREIGHT_TEMPLATES_SETTING,
+            value_json,
+            now_shanghai()
+        ],
+    )?;
+    Ok(())
+}
+
+/// 校验某运费模板 ID 是否在指定店铺已同步的运费模板列表中。
+pub(in crate::commands) fn cached_freight_template_exists(
+    conn: &Connection,
+    shop_id: &str,
+    template_id: &str,
+) -> AppResult<bool> {
+    let exists = conn
+        .query_row(
+            "SELECT 1 FROM wechat_freight_templates WHERE shop_id = ?1 AND template_id = ?2 LIMIT 1",
+            params![shop_id, template_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    Ok(exists)
+}
+
 pub(in crate::commands) fn apply_publish_pricing_strategy(
     product: &mut ExternalProductInput,
     strategy: &PublishPricingStrategy,

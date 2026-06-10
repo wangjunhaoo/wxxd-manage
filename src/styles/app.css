@@ -530,3 +530,66 @@ a { color: inherit; }
 .detail-desc-value { color: var(--ink); word-break: break-all; }
 .detail-long-images { display: flex; flex-direction: column; gap: 4px; }
 .detail-long-img { width: 100%; border-radius: var(--r-sm); display: block; }
+
+/* ============================================================================
+   店铺与密钥页（系统设置 · shops）—— 主从两栏 + 概览条 + 详情行卡
+   ============================================================================ */
+/* 顶部概览统计条：四个维度（总数 / 已连接 / 待处理 / 缺密钥） */
+.shops-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 18px; }
+.shops-stat { background: var(--surface); border-radius: var(--r-lg); padding: 18px 20px; box-shadow: var(--sh); }
+.shops-stat .s-top { display: flex; align-items: center; gap: 8px; }
+.shops-stat .s-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--blue-dot); flex: 0 0 auto; }
+.shops-stat.ok .s-dot { background: var(--teal-dot); }
+.shops-stat.warn .s-dot { background: var(--amber-dot); }
+.shops-stat.crit .s-dot { background: var(--rose-dot); }
+.shops-stat .s-lab { font-size: 12.5px; color: var(--ink-2); font-weight: 500; }
+.shops-stat .s-num { font-size: 30px; font-weight: 500; letter-spacing: -0.03em; line-height: 1; margin-top: 10px; color: var(--ink); }
+.shops-stat.ok .s-num { color: var(--teal-ink); }
+.shops-stat.warn .s-num { color: var(--amber-ink); }
+.shops-stat.crit .s-num { color: var(--rose-ink); }
+.shops-stat .s-hint { font-size: 12px; color: var(--ink-3); margin-top: 6px; }
+
+/* 店铺组列表（收进「店铺组」Modal 内复用） */
+.group-list { display: flex; flex-direction: column; gap: 2px; margin-bottom: 4px; }
+.group-row { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 11px; padding: 11px 10px; border-radius: var(--r-sm); transition: background 0.15s; }
+.group-row:hover { background: var(--hover); }
+.group-row .g-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--teal-dot); flex: 0 0 auto; }
+.group-row .g-dot.warn { background: var(--amber-dot); }
+.group-row .g-dot.crit { background: var(--rose-dot); }
+.group-row .g-name { font-size: 13.5px; font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-row .g-sub { font-size: 12px; color: var(--ink-3); margin-top: 2px; }
+
+/* 新建店铺组 inline 表单（左栏底部） */
+.group-new { display: flex; gap: 8px; padding-top: 14px; margin-top: 10px; border-top: 1px solid var(--line); }
+.group-new .inp { flex: 1; min-width: 0; height: 42px; }
+
+/* 店铺总览：标题行 + 行卡列表（全宽主体） */
+.shops-main-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 2px 2px 14px; }
+.shops-main-head .t { display: flex; align-items: center; gap: 10px; }
+.shops-main-head h3 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -0.015em; }
+.shops-head-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* 店铺详情行卡：左 badge + 中信息(标题/状态/元信息) + 右操作 */
+.shop-rows { display: flex; flex-direction: column; gap: 12px; }
+.shop-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 16px; background: var(--surface); border-radius: var(--r); padding: 16px 20px; box-shadow: var(--sh); transition: box-shadow 0.2s; }
+.shop-row:hover { box-shadow: var(--sh-lift); }
+.shop-row-badge { width: 44px; height: 44px; border-radius: 13px; display: grid; place-items: center; font-size: 17px; font-weight: 600; background: var(--chip); color: var(--ink-2); flex: 0 0 auto; }
+.shop-row-badge.ok { background: var(--teal-bg); color: var(--teal-ink); }
+.shop-row-badge.warn { background: var(--amber-bg); color: var(--amber-ink); }
+.shop-row-badge.crit { background: var(--rose-bg); color: var(--rose-ink); }
+.shop-row-badge.info { background: var(--blue-bg); color: var(--blue-ink); }
+.shop-row-body { min-width: 0; }
+.shop-row-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.shop-row-head .s-name { font-size: 15px; font-weight: 600; color: var(--ink); letter-spacing: -0.01em; }
+.shop-meta { display: flex; flex-wrap: wrap; gap: 6px 20px; margin-top: 9px; }
+.shop-meta-item { display: flex; align-items: baseline; gap: 6px; font-size: 12.5px; min-width: 0; }
+.shop-meta-item .m-lab { color: var(--ink-3); flex: 0 0 auto; }
+.shop-meta-item .m-val { color: var(--ink-2); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shop-meta-item .m-val.mono { font-family: var(--font-mono); }
+.shop-row-actions { display: flex; gap: 8px; align-items: center; flex: 0 0 auto; }
+
+@media (max-width: 760px) {
+  .shops-stats { grid-template-columns: repeat(2, 1fr); }
+  .shop-row { grid-template-columns: auto minmax(0, 1fr); }
+  .shop-row-actions { grid-column: 1 / -1; flex-wrap: wrap; }
+}
