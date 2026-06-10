@@ -7,7 +7,6 @@ import type {
   CategoryCatalogShopSummary,
   CategoryRelationView,
   CollectionTaskView,
-  ExternalApiLogView,
   FreightTemplateView,
   GuaranteeOrderView,
   NotificationView,
@@ -354,21 +353,6 @@ export const createPreviewProfitAdjustments = (): Array<{
   { order_id: "order-preview-1", kind: "purchase_freight", amount_cents: 600 },
 ];
 export const createPreviewDatabaseBackups = (): BackupInfo[] => [];
-export const createPreviewExternalApiLogs = (): ExternalApiLogView[] => [
-  {
-    id: "external-api-log-preview",
-    method: "POST",
-    path: "/api/publish-jobs",
-    status: "success",
-    status_code: 200,
-    error_code: null,
-    request_summary:
-      "request_id=req-preview products=1 target_groups=1 target_shops=0",
-    response_summary: "ok",
-    duration_ms: 38,
-    created_at: "2026-05-22T00:17:00+08:00",
-  },
-];
 export const createPreviewNotifications = (): NotificationView[] => [
   {
     id: "notification-preview-publish",

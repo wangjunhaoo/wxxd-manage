@@ -13,25 +13,15 @@ pub fn list_task_runs(app: AppHandle) -> AppResult<Vec<TaskRunView>> {
            t.started_at,
            t.finished_at,
            (
-             SELECT COUNT(*) FROM publish_job_items i
-             WHERE i.job_id = t.id
-               AND i.status IN ('pending', 'prechecking', 'category_prechecking', 'asset_uploading', 'publishing', 'listing', 'running', 'submitted', 'audit_pending')
-           ) + (
              SELECT COUNT(*) FROM price_update_items p
              WHERE p.job_id = t.id
                AND p.status IN ('pending', 'prechecking', 'submitting', 'submitted', 'audit_pending')
            ) AS pending_count,
            (
-             SELECT COUNT(*) FROM publish_job_items i
-             WHERE i.job_id = t.id AND i.status IN ('ready_to_publish', 'category_prechecked', 'assets_ready')
-           ) + (
              SELECT COUNT(*) FROM price_update_items p
              WHERE p.job_id = t.id AND p.status = 'ready_to_update'
            ) AS ready_count,
            (
-             SELECT COUNT(*) FROM publish_job_items i
-             WHERE i.job_id = t.id AND i.status = 'failed'
-           ) + (
              SELECT COUNT(*) FROM price_update_items p
              WHERE p.job_id = t.id AND p.status = 'failed'
            ) AS failed_count
@@ -74,46 +64,21 @@ pub fn set_automation_settings(
     Ok(settings)
 }
 
-#[derive(Debug, Clone, Copy)]
-struct PublishPipelineStepSwitches {
-    precheck: bool,
-    attribute_fill: bool,
-    category_precheck: bool,
-    asset_upload: bool,
-    submit: bool,
-    status_sync: bool,
-    listing: bool,
-}
-
-impl PublishPipelineStepSwitches {
-    fn all_enabled() -> Self {
-        Self {
-            precheck: true,
-            attribute_fill: true,
-            category_precheck: true,
-            asset_upload: true,
-            submit: true,
-            status_sync: true,
-            listing: true,
-        }
-    }
-
-    fn from_automation_settings(settings: &OperationalAutomationSettings) -> Self {
-        Self {
-            precheck: settings.publish_precheck_enabled,
-            attribute_fill: settings.publish_attribute_fill_enabled,
-            category_precheck: settings.publish_category_precheck_enabled,
-            asset_upload: settings.publish_asset_upload_enabled,
-            submit: settings.publish_submit_enabled,
-            status_sync: settings.publish_status_sync_enabled,
-            listing: settings.publish_listing_enabled,
-        }
-    }
-}
+/// 铺货 7 个阶段的步骤名（与 run_publish_pipeline_steps 内执行顺序一致），
+/// 供「铺货自动化总开关」关闭时整体记入 skipped_steps，保持前端计数语义。
+const PUBLISH_PIPELINE_STEPS: [&str; 7] = [
+    "publish.precheck_products",
+    "publish.fill_required_attributes",
+    "publish.category_precheck",
+    "publish.upload_assets",
+    "publish.submit_products",
+    "publish.listing_products",
+    "publish.sync_status",
+];
 
 #[tauri::command]
 pub async fn run_publish_pipeline_once(app: AppHandle) -> AppResult<PublishPipelineRunResult> {
-    Ok(run_publish_pipeline_steps(app, PublishPipelineStepSwitches::all_enabled()).await)
+    Ok(run_publish_pipeline_steps(app).await)
 }
 
 /// 给单个铺货阶段套独立超时预算后执行。
@@ -148,10 +113,7 @@ async fn run_publish_stage_within<T>(
     }
 }
 
-async fn run_publish_pipeline_steps(
-    app: AppHandle,
-    switches: PublishPipelineStepSwitches,
-) -> PublishPipelineRunResult {
+async fn run_publish_pipeline_steps(app: AppHandle) -> PublishPipelineRunResult {
     let mut result = PublishPipelineRunResult {
         executed_steps: Vec::new(),
         skipped_steps: Vec::new(),
@@ -165,156 +127,112 @@ async fn run_publish_pipeline_steps(
         publish_listing: None,
     };
 
-    if switches.precheck {
-        match run_publish_tasks_once(app.clone(), Some(50)) {
-            Ok(step_result) => {
+    match run_publish_tasks_once(app.clone(), Some(50)) {
+        Ok(step_result) => {
+            result
+                .executed_steps
+                .push("publish.precheck_products".to_string());
+            result.publish_precheck = Some(step_result);
+        }
+        Err(error) => push_publish_pipeline_error(&mut result, "publish.precheck_products", error),
+    }
+
+    // AI 补属性走子进程，给 40s 预算；超时/出错则本轮跳过，不阻塞后续阶段。
+    if let Some(ai_result) = run_publish_stage_within(
+        &mut result,
+        "publish.fill_required_attributes.ai",
+        40,
+        run_publish_ai_attribute_suggestions_once(app.clone(), Some(20)),
+    )
+    .await
+    {
+        match run_publish_attribute_fill_once(app.clone(), Some(50)) {
+            Ok(rule_result) => {
+                let step_result = merge_attribute_fill_results(ai_result, rule_result);
                 result
                     .executed_steps
-                    .push("publish.precheck_products".to_string());
-                result.publish_precheck = Some(step_result);
+                    .push("publish.fill_required_attributes".to_string());
+                result.publish_attribute_fill = Some(step_result);
             }
             Err(error) => {
-                push_publish_pipeline_error(&mut result, "publish.precheck_products", error)
+                push_publish_pipeline_error(&mut result, "publish.fill_required_attributes", error)
             }
         }
-    } else {
-        result
-            .skipped_steps
-            .push("publish.precheck_products".to_string());
     }
 
-    if switches.attribute_fill {
-        // AI 补属性走子进程，给 40s 预算；超时/出错则本轮跳过，不阻塞后续阶段。
-        if let Some(ai_result) = run_publish_stage_within(
-            &mut result,
-            "publish.fill_required_attributes.ai",
-            40,
-            run_publish_ai_attribute_suggestions_once(app.clone(), Some(20)),
-        )
-        .await
-        {
-            match run_publish_attribute_fill_once(app.clone(), Some(50)) {
-                Ok(rule_result) => {
-                    let step_result = merge_attribute_fill_results(ai_result, rule_result);
-                    result
-                        .executed_steps
-                        .push("publish.fill_required_attributes".to_string());
-                    result.publish_attribute_fill = Some(step_result);
-                }
-                Err(error) => push_publish_pipeline_error(
-                    &mut result,
-                    "publish.fill_required_attributes",
-                    error,
-                ),
-            }
-        }
-    } else {
+    if let Some(step_result) = run_publish_stage_within(
+        &mut result,
+        "publish.category_precheck",
+        25,
+        run_publish_category_prechecks_once(app.clone(), Some(20)),
+    )
+    .await
+    {
         result
-            .skipped_steps
-            .push("publish.fill_required_attributes".to_string());
-    }
-
-    if switches.category_precheck {
-        if let Some(step_result) = run_publish_stage_within(
-            &mut result,
-            "publish.category_precheck",
-            25,
-            run_publish_category_prechecks_once(app.clone(), Some(20)),
-        )
-        .await
-        {
-            result
-                .executed_steps
-                .push("publish.category_precheck".to_string());
-            result.publish_category_precheck = Some(step_result);
-        }
-    } else {
-        result
-            .skipped_steps
+            .executed_steps
             .push("publish.category_precheck".to_string());
+        result.publish_category_precheck = Some(step_result);
     }
 
-    if switches.asset_upload {
-        // 图片下载/上传是最易 hang 的阶段（淘宝源图慢/死链 + 微信上传），给 40s 预算硬限；
-        // 超时只跳过本轮、卡顿项留在 running 下轮重试，绝不再拖垮后面的 submit/listing。
-        if let Some(step_result) = run_publish_stage_within(
-            &mut result,
-            "publish.upload_assets",
-            40,
-            run_publish_asset_uploads_once(app.clone(), Some(10)),
-        )
-        .await
-        {
-            result
-                .executed_steps
-                .push("publish.upload_assets".to_string());
-            result.publish_asset_upload = Some(step_result);
-        }
-    } else {
+    // 图片下载/上传是最易 hang 的阶段（淘宝源图慢/死链 + 微信上传），给 40s 预算硬限；
+    // 超时只跳过本轮、卡顿项留在 running 下轮重试，绝不再拖垮后面的 submit/listing。
+    if let Some(step_result) = run_publish_stage_within(
+        &mut result,
+        "publish.upload_assets",
+        40,
+        run_publish_asset_uploads_once(app.clone(), Some(10)),
+    )
+    .await
+    {
         result
-            .skipped_steps
+            .executed_steps
             .push("publish.upload_assets".to_string());
+        result.publish_asset_upload = Some(step_result);
     }
 
-    if switches.submit {
-        if let Some(step_result) = run_publish_stage_within(
-            &mut result,
-            "publish.submit_products",
-            35,
-            run_publish_submits_once(app.clone(), Some(10)),
-        )
-        .await
-        {
-            result
-                .executed_steps
-                .push("publish.submit_products".to_string());
-            result.publish_submit = Some(step_result);
-        }
-    } else {
+    if let Some(step_result) = run_publish_stage_within(
+        &mut result,
+        "publish.submit_products",
+        35,
+        run_publish_submits_once(app.clone(), Some(10)),
+    )
+    .await
+    {
         result
-            .skipped_steps
+            .executed_steps
             .push("publish.submit_products".to_string());
+        result.publish_submit = Some(step_result);
     }
 
     // 方案A 正确顺序：submit(add 草稿) → listing(listingproduct 提交上架触发审核)
     // → status_sync(audit 轮询审核/上架结果)。listing 必须排在 status_sync 之前，
     // 否则商品停在草稿态(status=0)、审核轮询永远等不到结果而死锁。
-    if switches.listing {
-        if let Some(step_result) = run_publish_stage_within(
-            &mut result,
-            "publish.listing_products",
-            20,
-            run_publish_listing_once(app.clone(), Some(10)),
-        )
-        .await
-        {
-            result
-                .executed_steps
-                .push("publish.listing_products".to_string());
-            result.publish_listing = Some(step_result);
-        }
-    } else {
+    if let Some(step_result) = run_publish_stage_within(
+        &mut result,
+        "publish.listing_products",
+        20,
+        run_publish_listing_once(app.clone(), Some(10)),
+    )
+    .await
+    {
         result
-            .skipped_steps
+            .executed_steps
             .push("publish.listing_products".to_string());
+        result.publish_listing = Some(step_result);
     }
 
-    if switches.status_sync {
-        if let Some(step_result) = run_publish_stage_within(
-            &mut result,
-            "publish.sync_status",
-            20,
-            run_publish_status_sync_once(app.clone(), Some(20)),
-        )
-        .await
-        {
-            result
-                .executed_steps
-                .push("publish.sync_status".to_string());
-            result.publish_status_sync = Some(step_result);
-        }
-    } else {
-        result.skipped_steps.push("publish.sync_status".to_string());
+    if let Some(step_result) = run_publish_stage_within(
+        &mut result,
+        "publish.sync_status",
+        20,
+        run_publish_status_sync_once(app.clone(), Some(20)),
+    )
+    .await
+    {
+        result
+            .executed_steps
+            .push("publish.sync_status".to_string());
+        result.publish_status_sync = Some(step_result);
     }
 
     result
@@ -371,10 +289,18 @@ async fn drive_pipeline_once(app: &AppHandle) {
         }
     }
 
-    // 3. 铺货（优先）：7 个阶段顺序推进一批（precheck→属性→类目预检→传图→提交→审核同步→上架）
-    eprintln!("[driver] tick: 铺货阶段");
-    let _ =
-        run_publish_pipeline_steps(app.clone(), PublishPipelineStepSwitches::all_enabled()).await;
+    // 3. 铺货（优先）：7 个阶段顺序推进一批（precheck→属性→类目预检→传图→提交→上架→审核同步）。
+    //    受「铺货自动化」总开关控制：关闭时 driver 跳过铺货（采集/审查照常），便于风控冷却等场景暂停发品。
+    let publish_enabled = open_connection(app)
+        .and_then(|conn| load_automation_settings(&conn))
+        .map(|settings| settings.publish_enabled)
+        .unwrap_or(true);
+    if publish_enabled {
+        eprintln!("[driver] tick: 铺货阶段");
+        let _ = run_publish_pipeline_steps(app.clone()).await;
+    } else {
+        eprintln!("[driver] tick: 铺货自动化已关闭，跳过");
+    }
 
     // 4. 审查（次之）：处理 stage=review 的商品，高置信自动通过并激活各店 target 进入铺货。
     //    limit 从 20 收紧到 8——单跳审查 ≤8 个 AI 调用可在预算内完成，避免 180s 超时把铺货挤掉；
@@ -531,12 +457,15 @@ pub async fn run_operational_automation_once(
             .push("delivery.submit_wechat_shipment".to_string());
     }
 
-    let publish_result = run_publish_pipeline_steps(
-        app.clone(),
-        PublishPipelineStepSwitches::from_automation_settings(&settings),
-    )
-    .await;
-    apply_publish_pipeline_result(&mut result, publish_result);
+    // 铺货 7 阶段作为一个整体开关：开则全链路推进，关则整体记入 skipped 保持前端计数语义。
+    if settings.publish_enabled {
+        let publish_result = run_publish_pipeline_steps(app.clone()).await;
+        apply_publish_pipeline_result(&mut result, publish_result);
+    } else {
+        result
+            .skipped_steps
+            .extend(PUBLISH_PIPELINE_STEPS.iter().map(|s| s.to_string()));
+    }
 
     if settings.price_confirm_enabled {
         match run_price_update_confirm_once(app.clone(), Some(50)).await {

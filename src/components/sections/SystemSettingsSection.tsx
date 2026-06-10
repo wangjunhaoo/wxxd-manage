@@ -1,10 +1,9 @@
-/* 系统设置（settings）—— 二级 Tab 壳：店铺 / 类目 / AI / 本地 API / 任务 / 备份 */
+/* 系统设置（settings）—— 二级 Tab 壳：店铺 / 类目 / AI / 任务 / 备份 */
 import { useState } from "react";
 import { useApp } from "../../runtime/AppContext";
 import ShopsSection from "./ShopsSection";
 import CatalogSection from "./CatalogSection";
 import AiSettingsSection from "./AiSettingsSection";
-import PublishApiSection from "./PublishApiSection";
 import TasksSection from "./TasksSection";
 import BackupSection from "./BackupSection";
 
@@ -12,7 +11,6 @@ const TABS = [
   { key: "shops", label: "店铺与密钥" },
   { key: "catalog", label: "类目规则" },
   { key: "ai", label: "AI 设置" },
-  { key: "api", label: "本地 API" },
   { key: "tasks", label: "任务日志" },
   { key: "backup", label: "数据备份" },
 ];
@@ -47,7 +45,6 @@ export default function SystemSettingsSection() {
       {tab === "shops" && <ShopsSection />}
       {tab === "catalog" && <CatalogSection />}
       {tab === "ai" && <AiSettingsSection />}
-      {tab === "api" && <PublishApiSection />}
       {tab === "tasks" && <TasksSection />}
       {tab === "backup" && <BackupSection />}
     </>

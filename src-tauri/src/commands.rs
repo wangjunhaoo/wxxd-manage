@@ -34,15 +34,6 @@ pub use purchase::*;
 pub use shop_products::*;
 pub use shops::*;
 use support::*;
-pub(crate) use support::{
-    get_agent_active_categories, get_agent_after_sale_addresses, get_agent_aftersale,
-    get_agent_category_detail, get_agent_category_tree, get_agent_delivery_companies,
-    get_agent_freight_templates, get_agent_inventory_risk, get_agent_order,
-    get_agent_product_detail, get_agent_product_sales, get_agent_profit_summary,
-    get_agent_purchase_task, get_agent_reject_reasons, get_agent_shop_info, get_agent_shop_product,
-    list_agent_aftersales, list_agent_collections, list_agent_orders, search_agent_categories,
-    search_agent_docs,
-};
 pub use system::*;
 
 use crate::crypto::{
@@ -66,7 +57,7 @@ use crate::models::{
     CollectionPublishWorkspaceResetResult, CollectionReviewBatchResult,
     CollectionReviewCategoryCandidate, CollectionReviewConfirmRequest, CollectionReviewRunRequest,
     CollectionTaskView, CreateShopRequest, DashboardSummary, DeliveryCompanySyncResult,
-    DeliveryCompanyView, DeliverySettings, DeliverySubmitBatchResult, ExternalApiLogView,
+    DeliveryCompanyView, DeliverySettings, DeliverySubmitBatchResult,
     ExternalProductInput, ExternalPublishJobRequest, FreightTemplateView, GuaranteeFollowupRequest,
     GuaranteeFollowupResult, GuaranteeOrderListResult, GuaranteeOrderView,
     GuaranteeSyncBatchResult, InventoryRiskListResult, InventoryRiskScanResult, InventoryRiskView,
@@ -132,14 +123,8 @@ const AUTOMATION_ORDER_DETAIL_SYNC_SETTING: &str = "automation.order_detail_sync
 const AUTOMATION_AFTERSALE_SYNC_SETTING: &str = "automation.aftersale_sync_enabled";
 const AUTOMATION_PURCHASE_TASK_SETTING: &str = "automation.purchase_task_enabled";
 const AUTOMATION_DELIVERY_SUBMISSION_SETTING: &str = "automation.delivery_submission_enabled";
-const AUTOMATION_PUBLISH_PRECHECK_SETTING: &str = "automation.publish_precheck_enabled";
-const AUTOMATION_PUBLISH_ATTRIBUTE_FILL_SETTING: &str = "automation.publish_attribute_fill_enabled";
-const AUTOMATION_PUBLISH_CATEGORY_PRECHECK_SETTING: &str =
-    "automation.publish_category_precheck_enabled";
-const AUTOMATION_PUBLISH_ASSET_UPLOAD_SETTING: &str = "automation.publish_asset_upload_enabled";
-const AUTOMATION_PUBLISH_SUBMIT_SETTING: &str = "automation.publish_submit_enabled";
-const AUTOMATION_PUBLISH_STATUS_SYNC_SETTING: &str = "automation.publish_status_sync_enabled";
-const AUTOMATION_PUBLISH_LISTING_SETTING: &str = "automation.publish_listing_enabled";
+/// 铺货自动化总开关：driver 与运营自动化的铺货 7 阶段整体开/关（细粒度阶段开关已收敛移除）。
+const AUTOMATION_PUBLISH_ENABLED_SETTING: &str = "automation.publish_enabled";
 const AUTOMATION_PRICE_CONFIRM_SETTING: &str = "automation.price_confirm_enabled";
 const PUBLISH_PRICING_STRATEGY_SETTING: &str = "publish.pricing_strategy";
 // 店铺级默认运费模板：JSON map {shop_id: template_id}。铺货时优先用，未设置则自动选第一个。

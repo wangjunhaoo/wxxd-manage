@@ -869,23 +869,6 @@ export type DeliveryCompanySyncResult = {
   failed_steps: string[];
 };
 
-export type LocalApiConfig = {
-  enabled: boolean;
-  host: string;
-  port: number;
-  base_url: string;
-  has_api_key: boolean;
-  api_key_hint: string | null;
-  auth_header: string;
-};
-
-export type LocalApiKeyRotationResult = {
-  api_key: string;
-  key_hint: string;
-  base_url: string;
-  warning: string;
-};
-
 export type AiProviderSettings = {
   enabled: boolean;
   provider_type: string;
@@ -939,19 +922,6 @@ export type AgentSkillTestResult = {
   status: string;
   summary: string;
   checked_at: string;
-};
-
-export type ExternalApiLogView = {
-  id: string;
-  method: string;
-  path: string;
-  status: string;
-  status_code: number;
-  error_code: string | null;
-  request_summary: string | null;
-  response_summary: string | null;
-  duration_ms: number;
-  created_at: string;
 };
 
 export type NotificationView = {
@@ -1069,13 +1039,8 @@ export type OperationalAutomationSettings = {
   aftersale_sync_enabled: boolean;
   purchase_task_enabled: boolean;
   delivery_submission_enabled: boolean;
-  publish_precheck_enabled: boolean;
-  publish_attribute_fill_enabled: boolean;
-  publish_category_precheck_enabled: boolean;
-  publish_asset_upload_enabled: boolean;
-  publish_submit_enabled: boolean;
-  publish_status_sync_enabled: boolean;
-  publish_listing_enabled: boolean;
+  /** 铺货自动化总开关：driver 与运营自动化的铺货全链路整体开/关 */
+  publish_enabled: boolean;
   price_confirm_enabled: boolean;
 };
 

@@ -17,7 +17,6 @@ import type {
   CategoryCatalogSyncResult,
   CategoryDetailPrewarmResult,
   CategoryRuleSyncResult,
-  PublishJobCreated,
   TaskRunView,
   PublishPipelineRunResult,
   PriceUpdateJobCreated,
@@ -74,15 +73,12 @@ import type {
   DeliverySettings,
   DeliveryCompanyView,
   DeliveryCompanySyncResult,
-  LocalApiConfig,
-  LocalApiKeyRotationResult,
   AiProviderSettings,
   AiProviderTestResult,
   AgentRunView,
   AgentSkillSettingsRequest,
   AgentSkillTestResult,
   AgentSkillView,
-  ExternalApiLogView,
   NotificationView,
   NotificationListResult,
   NotificationMarkResult,
@@ -107,7 +103,6 @@ import {
   aftersaleTerminalStatuses,
   createDefaultOrderPriceAdjustmentPayload,
   createDefaultPriceUpdatePayload,
-  createDefaultPublishPayload,
   defaultAutomationSettings,
   defaultPublishPricingStrategy,
   evidenceStatusOptions,
@@ -148,7 +143,6 @@ import {
   createPreviewSupplierAftersaleFollowups,
   createPreviewProfitAdjustments,
   createPreviewDatabaseBackups,
-  createPreviewExternalApiLogs,
   createPreviewNotifications,
   createPreviewCategoryCatalogShops,
   createPreviewCategoryCache,
@@ -270,16 +264,6 @@ export function useWxXdApp() {
   const deliveryShipments = ref<ShipmentView[]>([]);
   const deliveryShipmentTotal = ref(0);
   const deliveryStatusFilter = ref("all");
-  const localApiConfig = ref<LocalApiConfig>({
-    enabled: true,
-    host: "127.0.0.1",
-    port: 17890,
-    base_url: "http://127.0.0.1:17890",
-    has_api_key: false,
-    api_key_hint: null,
-    auth_header: "x-wx-xd-api-key",
-  });
-  const rotatedLocalApiKey = ref("");
   const aiProviderOptions = [
     {
       value: "xiaomi",
@@ -442,7 +426,6 @@ export function useWxXdApp() {
   const agentRunsLoading = ref(false);
   const agentRunSceneFilter = ref("all");
   const agentRunStatusFilter = ref("all");
-  const externalApiLogs = ref<ExternalApiLogView[]>([]);
   const notifications = ref<NotificationView[]>([]);
   const notificationTotal = ref(0);
   const unreadNotificationCount = ref(0);
@@ -518,9 +501,6 @@ export function useWxXdApp() {
   const previewLastOrderSyncAt = ref<string | null>(null);
   const previewDatabaseBackups = ref<BackupInfo[]>(
     createPreviewDatabaseBackups(),
-  );
-  const previewExternalApiLogs = ref<ExternalApiLogView[]>(
-    createPreviewExternalApiLogs(),
   );
   const previewNotifications = ref<NotificationView[]>(
     createPreviewNotifications(),
@@ -666,7 +646,6 @@ export function useWxXdApp() {
     latestOrderPriceAdjustmentTaskId,
     latestPriceTaskId,
     latestTaskId,
-    localApiConfig,
     publishPricingStrategy,
     previewAftersaleEvidence,
     previewAftersaleRejectReasons,
@@ -676,7 +655,6 @@ export function useWxXdApp() {
     previewCategoryRelations,
     previewCollectionTasks,
     previewDatabaseBackups,
-    previewExternalApiLogs,
     previewFreightTemplates,
     previewGroups,
     previewGuaranteeOrders,
@@ -807,8 +785,6 @@ export function useWxXdApp() {
     return reasons.length > 0 ? reasons : aftersaleRejectReasons.value;
   });
 
-  const publishPayload = ref(createDefaultPublishPayload());
-
   const priceUpdatePayload = ref(createDefaultPriceUpdatePayload());
   const orderPriceAdjustmentPayload = ref(
     createDefaultOrderPriceAdjustmentPayload(),
@@ -843,11 +819,9 @@ export function useWxXdApp() {
         deliveryCompaniesResult,
         automationSettingsResult,
         publishPricingStrategyResult,
-        localApiConfigResult,
         aiProviderSettingsResult,
         agentSkillsResult,
         agentRunsResult,
-        externalApiLogsResult,
         backupsResult,
       ] = await Promise.all([
         command<DashboardSummary>("get_dashboard"),
@@ -858,11 +832,9 @@ export function useWxXdApp() {
         command<DeliveryCompanyView[]>("list_delivery_companies"),
         command<OperationalAutomationSettings>("get_automation_settings"),
         command<PublishPricingStrategy>("get_publish_pricing_strategy"),
-        command<LocalApiConfig>("get_local_api_config"),
         command<AiProviderSettings>("get_ai_provider_settings"),
         command<AgentSkillView[]>("list_agent_skills"),
         command<AgentRunView[]>("list_agent_runs", { limit: 80 }),
-        command<ExternalApiLogView[]>("list_external_api_logs", { limit: 80 }),
         command<BackupInfo[]>("list_database_backups"),
       ]);
       dashboard.value = dashboardResult;
@@ -873,12 +845,10 @@ export function useWxXdApp() {
       deliveryCompanies.value = deliveryCompaniesResult;
       automationSettings.value = automationSettingsResult;
       publishPricingStrategy.value = publishPricingStrategyResult;
-      localApiConfig.value = localApiConfigResult;
       aiProviderSettings.value = aiProviderSettingsResult;
       syncAiProviderForm(aiProviderSettingsResult);
       syncAgentSkills(agentSkillsResult);
       agentRuns.value = agentRunsResult;
-      externalApiLogs.value = externalApiLogsResult;
       databaseBackups.value = backupsResult;
       if (!shopForm.group_id && groups.value.length > 0) {
         shopForm.group_id = groups.value[0].id;
@@ -1482,30 +1452,6 @@ export function useWxXdApp() {
     }
   }
 
-  async function rotateLocalApiKey() {
-    try {
-      const result = await command<LocalApiKeyRotationResult>(
-        "rotate_local_api_key",
-      );
-      rotatedLocalApiKey.value = result.api_key;
-      await refreshAll();
-      ElMessage.success("本地 HTTP API Key 已生成，旧 Key 已失效");
-    } catch (error) {
-      ElMessage.error(String(error));
-    }
-  }
-
-  async function refreshExternalApiLogs() {
-    try {
-      externalApiLogs.value = await command<ExternalApiLogView[]>(
-        "list_external_api_logs",
-        { limit: 80 },
-      );
-    } catch (error) {
-      ElMessage.error(String(error));
-    }
-  }
-
   async function saveAiProviderSettings() {
     const temperature = Number(aiProviderForm.temperature || "0.1");
     if (!Number.isFinite(temperature) || temperature < 0 || temperature > 1) {
@@ -1769,29 +1715,6 @@ export function useWxXdApp() {
       ElMessage.error(String(error));
     } finally {
       automationRunning.value = false;
-    }
-  }
-
-  async function createPublishJob() {
-    let request: unknown;
-    try {
-      request = JSON.parse(publishPayload.value);
-    } catch {
-      ElMessage.error("铺货 JSON 格式不正确");
-      return;
-    }
-    try {
-      const result = await command<PublishJobCreated>(
-        "create_external_publish_job",
-        { request },
-      );
-      latestTaskId.value = result.task_id;
-      queriedTaskId.value = result.task_id;
-      selectedSection.value = "publish-tasks";
-      ElMessage.success(`铺货任务已创建：${result.task_id}`);
-      await Promise.all([refreshAll(), queryJob()]);
-    } catch (error) {
-      ElMessage.error(String(error));
     }
   }
 
@@ -3513,7 +3436,6 @@ export function useWxXdApp() {
     createGroup,
     createOrderPriceAdjustmentJob,
     createPriceUpdateJob,
-    createPublishJob,
     createShop,
     criticalNotificationCount,
     currentJob,
@@ -3543,7 +3465,6 @@ export function useWxXdApp() {
     exportAftersaleEvidence,
     exportPurchaseTasks,
     exportSupplierAgentTasks,
-    externalApiLogs,
     fallbackDeliveryCompanyOptions,
     fillSupplierAgentTemplate,
     formatBytes,
@@ -3578,7 +3499,6 @@ export function useWxXdApp() {
     latestOrderPriceAdjustmentTaskId,
     latestTaskId,
     loading,
-    localApiConfig,
     markAllNotificationsRead,
     markNotificationRead,
     markPurchaseTaskIssue,
@@ -3614,7 +3534,6 @@ export function useWxXdApp() {
     previewCategoryCatalogShops,
     previewCategoryRelations,
     previewDatabaseBackups,
-    previewExternalApiLogs,
     previewFreightTemplates,
     previewGroups,
     previewGuaranteeOrders,
@@ -3644,7 +3563,6 @@ export function useWxXdApp() {
     productManagementTotal,
     profitAdjustmentKindOptions,
     profitStatusLabel,
-    publishPayload,
     publishRetryRunning,
     purchaseExportPath,
     purchaseIssueForm,
@@ -3680,7 +3598,6 @@ export function useWxXdApp() {
     refreshDatabaseBackups,
     refreshDeliveryCompanies,
     refreshDeliveryShipments,
-    refreshExternalApiLogs,
     refreshGuaranteeOrders,
     refreshInventoryRisks,
     refreshNotifications,
@@ -3706,8 +3623,6 @@ export function useWxXdApp() {
     reviewSelectedCollectionTasks,
     retryDeliveryShipment,
     revealBackup,
-    rotatedLocalApiKey,
-    rotateLocalApiKey,
     runAftersaleSyncOnce,
     runDeliverySubmissionOnce,
     runGuaranteeSyncOnce,

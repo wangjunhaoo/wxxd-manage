@@ -22,12 +22,10 @@ import type {
   CategoryCatalogShopSummary,
   CategoryRelationView,
   DeliverySettings,
-  ExternalApiLogView,
   FreightTemplateView,
   DeliverySubmitBatchResult,
   GuaranteeOrderView,
   InventoryRiskView,
-  LocalApiConfig,
   OperationalAutomationRunResult,
   NotificationView,
   OperationalAutomationSettings,
@@ -71,7 +69,6 @@ interface PreviewModeDeps {
   latestOrderPriceAdjustmentTaskId: Ref<string>;
   latestPriceTaskId: Ref<string>;
   latestTaskId: Ref<string>;
-  localApiConfig: Ref<LocalApiConfig>;
   publishPricingStrategy: Ref<PublishPricingStrategy>;
   previewAftersaleEvidence: Ref<AftersaleEvidenceView[]>;
   previewAftersaleRejectReasons: Ref<AftersaleRejectReasonView[]>;
@@ -81,7 +78,6 @@ interface PreviewModeDeps {
   previewCategoryRelations: Ref<CategoryRelationView[]>;
   previewCollectionTasks: Ref<CollectionTaskView[]>;
   previewDatabaseBackups: Ref<BackupInfo[]>;
-  previewExternalApiLogs: Ref<ExternalApiLogView[]>;
   previewFreightTemplates: Ref<FreightTemplateView[]>;
   previewGroups: Ref<ShopGroup[]>;
   previewGuaranteeOrders: Ref<GuaranteeOrderView[]>;
@@ -122,7 +118,6 @@ export function createPreviewMode(deps: PreviewModeDeps) {
     latestOrderPriceAdjustmentTaskId,
     latestPriceTaskId,
     latestTaskId,
-    localApiConfig,
     publishPricingStrategy,
     previewAftersaleEvidence,
     previewAftersaleRejectReasons,
@@ -132,7 +127,6 @@ export function createPreviewMode(deps: PreviewModeDeps) {
     previewCategoryRelations,
     previewCollectionTasks,
     previewDatabaseBackups,
-    previewExternalApiLogs,
     previewFreightTemplates,
     previewGroups,
     previewGuaranteeOrders,
@@ -672,29 +666,6 @@ export function createPreviewMode(deps: PreviewModeDeps) {
         target_shop_count: shopIds.length,
       } as T;
     }
-    if (name === "create_external_publish_job") {
-      const taskId = `pub_preview_${Date.now()}`;
-      latestTaskId.value = taskId;
-      currentJob.value = buildPreviewJob(taskId);
-      previewTaskRuns.value.unshift({
-        id: taskId,
-        task_type: "publish.create_external_job",
-        status: "queued",
-        progress: 0,
-        created_at: "2026-05-22T00:00:00+08:00",
-        started_at: null,
-        finished_at: null,
-        pending_count: 1,
-        ready_count: 0,
-        failed_count: 0,
-      });
-      return {
-        task_id: taskId,
-        status: "queued",
-        accepted_product_count: 1,
-        target_shop_count: 1,
-      } as T;
-    }
     if (name === "get_publish_job") {
       return (currentJob.value ||
         buildPreviewJob(String(args?.taskId || "pub_preview"))) as T;
@@ -759,9 +730,6 @@ export function createPreviewMode(deps: PreviewModeDeps) {
     }
     if (name === "list_task_runs") {
       return previewTaskRuns.value as T;
-    }
-    if (name === "get_local_api_config") {
-      return localApiConfig.value as T;
     }
     if (name === "get_ai_provider_settings") {
       return aiProviderSettings.value as T;
@@ -869,9 +837,6 @@ export function createPreviewMode(deps: PreviewModeDeps) {
       );
       return result as T;
     }
-    if (name === "list_external_api_logs") {
-      return previewExternalApiLogs.value as T;
-    }
     if (name === "list_notifications") {
       const status = String(args?.status || "all");
       const severity = String(args?.severity || "all");
@@ -967,20 +932,6 @@ export function createPreviewMode(deps: PreviewModeDeps) {
         integrity_ok: true,
         message:
           "数据库已恢复并通过完整性校验，建议重启应用以确保所有页面读取最新连接。",
-      } as T;
-    }
-    if (name === "rotate_local_api_key") {
-      const apiKey = `preview_${Math.random().toString(36).slice(2)}_${Date.now()}`;
-      localApiConfig.value = {
-        ...localApiConfig.value,
-        has_api_key: true,
-        api_key_hint: `末尾 ${apiKey.slice(-6)}`,
-      };
-      return {
-        api_key: apiKey,
-        key_hint: localApiConfig.value.api_key_hint,
-        base_url: localApiConfig.value.base_url,
-        warning: "预览模式生成的是示例 Key。",
       } as T;
     }
     if (name === "get_delivery_settings") {
@@ -1271,7 +1222,7 @@ export function createPreviewMode(deps: PreviewModeDeps) {
         },
       );
       await runStep<PublishTaskBatchResult>(
-        automationSettings.value.publish_precheck_enabled,
+        automationSettings.value.publish_enabled,
         "publish.precheck_products",
         "run_publish_tasks_once",
         { limit: 50 },
@@ -1280,7 +1231,7 @@ export function createPreviewMode(deps: PreviewModeDeps) {
         },
       );
       await runStep<PublishAttributeFillBatchResult>(
-        automationSettings.value.publish_attribute_fill_enabled,
+        automationSettings.value.publish_enabled,
         "publish.fill_required_attributes",
         "run_publish_attribute_fill_once",
         { limit: 50 },
@@ -1289,7 +1240,7 @@ export function createPreviewMode(deps: PreviewModeDeps) {
         },
       );
       await runStep<PublishCategoryPrecheckBatchResult>(
-        automationSettings.value.publish_category_precheck_enabled,
+        automationSettings.value.publish_enabled,
         "publish.category_precheck",
         "run_publish_category_prechecks_once",
         { limit: 20 },
@@ -1298,7 +1249,7 @@ export function createPreviewMode(deps: PreviewModeDeps) {
         },
       );
       await runStep<AssetUploadBatchResult>(
-        automationSettings.value.publish_asset_upload_enabled,
+        automationSettings.value.publish_enabled,
         "publish.upload_assets",
         "run_publish_asset_uploads_once",
         { limit: 10 },
@@ -1307,7 +1258,7 @@ export function createPreviewMode(deps: PreviewModeDeps) {
         },
       );
       await runStep<ProductSubmitBatchResult>(
-        automationSettings.value.publish_submit_enabled,
+        automationSettings.value.publish_enabled,
         "publish.submit_products",
         "run_publish_submits_once",
         { limit: 10 },
@@ -1316,7 +1267,7 @@ export function createPreviewMode(deps: PreviewModeDeps) {
         },
       );
       await runStep<ProductStatusSyncBatchResult>(
-        automationSettings.value.publish_status_sync_enabled,
+        automationSettings.value.publish_enabled,
         "publish.sync_status",
         "run_publish_status_sync_once",
         { limit: 20 },
@@ -1325,7 +1276,7 @@ export function createPreviewMode(deps: PreviewModeDeps) {
         },
       );
       await runStep<ProductListingBatchResult>(
-        automationSettings.value.publish_listing_enabled,
+        automationSettings.value.publish_enabled,
         "publish.listing_products",
         "run_publish_listing_once",
         { limit: 10 },

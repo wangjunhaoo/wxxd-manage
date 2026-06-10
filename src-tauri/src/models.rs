@@ -476,13 +476,8 @@ pub struct OperationalAutomationSettings {
     pub aftersale_sync_enabled: bool,
     pub purchase_task_enabled: bool,
     pub delivery_submission_enabled: bool,
-    pub publish_precheck_enabled: bool,
-    pub publish_attribute_fill_enabled: bool,
-    pub publish_category_precheck_enabled: bool,
-    pub publish_asset_upload_enabled: bool,
-    pub publish_submit_enabled: bool,
-    pub publish_status_sync_enabled: bool,
-    pub publish_listing_enabled: bool,
+    /// 铺货自动化总开关：driver 与运营自动化的铺货 7 阶段整体开/关
+    pub publish_enabled: bool,
     pub price_confirm_enabled: bool,
 }
 
@@ -575,20 +570,6 @@ pub struct CollectionPublishWorkspaceResetResult {
     pub integrity_message: String,
     pub counts: Vec<WorkspaceResetTableCount>,
     pub message: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ExternalApiLogView {
-    pub id: String,
-    pub method: String,
-    pub path: String,
-    pub status: String,
-    pub status_code: i64,
-    pub error_code: Option<String>,
-    pub request_summary: Option<String>,
-    pub response_summary: Option<String>,
-    pub duration_ms: i64,
-    pub created_at: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1582,25 +1563,6 @@ pub struct DeliveryCompanySyncResult {
     pub shop_id: String,
     pub synced_companies: i64,
     pub failed_steps: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct LocalApiConfig {
-    pub enabled: bool,
-    pub host: String,
-    pub port: u16,
-    pub base_url: String,
-    pub has_api_key: bool,
-    pub api_key_hint: Option<String>,
-    pub auth_header: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct LocalApiKeyRotationResult {
-    pub api_key: String,
-    pub key_hint: String,
-    pub base_url: String,
-    pub warning: String,
 }
 
 #[derive(Debug, Serialize)]

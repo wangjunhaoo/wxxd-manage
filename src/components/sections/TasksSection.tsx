@@ -43,27 +43,11 @@ function taskStatusType(
 export default function TasksSection() {
   const ctx = useApp();
 
-  // ---- 复合计算：自动铺货开关（所有 7 个 publish 标志全为 true 才算开启）----
   const settings = ctx.automationSettings.value;
-  const publishAutomationEnabled = [
-    settings.publish_precheck_enabled,
-    settings.publish_attribute_fill_enabled,
-    settings.publish_category_precheck_enabled,
-    settings.publish_asset_upload_enabled,
-    settings.publish_submit_enabled,
-    settings.publish_status_sync_enabled,
-    settings.publish_listing_enabled,
-  ].every(Boolean);
+  const publishAutomationEnabled = settings.publish_enabled;
 
   async function togglePublishAutomation(value: boolean) {
-    const s = ctx.automationSettings.value;
-    s.publish_precheck_enabled = value;
-    s.publish_attribute_fill_enabled = value;
-    s.publish_category_precheck_enabled = value;
-    s.publish_asset_upload_enabled = value;
-    s.publish_submit_enabled = value;
-    s.publish_status_sync_enabled = value;
-    s.publish_listing_enabled = value;
+    ctx.automationSettings.value.publish_enabled = value;
     await ctx.saveAutomationSettings();
   }
 

@@ -306,39 +306,6 @@ fn collection_publish_workspace_counts(
 }
 
 #[tauri::command]
-pub fn list_external_api_logs(
-    app: AppHandle,
-    limit: Option<i64>,
-) -> AppResult<Vec<ExternalApiLogView>> {
-    let limit = limit.unwrap_or(80).clamp(1, 300);
-    let conn = open_connection(&app)?;
-    let mut stmt = conn.prepare(
-        "SELECT id, method, path, status, status_code, error_code,
-                request_summary, response_summary, duration_ms, created_at
-           FROM external_api_logs
-          ORDER BY created_at DESC
-          LIMIT ?1",
-    )?;
-    let logs = stmt
-        .query_map([limit], |row| {
-            Ok(ExternalApiLogView {
-                id: row.get(0)?,
-                method: row.get(1)?,
-                path: row.get(2)?,
-                status: row.get(3)?,
-                status_code: row.get(4)?,
-                error_code: row.get(5)?,
-                request_summary: row.get(6)?,
-                response_summary: row.get(7)?,
-                duration_ms: row.get(8)?,
-                created_at: row.get(9)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(logs)
-}
-
-#[tauri::command]
 pub fn list_notifications(
     app: AppHandle,
     status: Option<String>,

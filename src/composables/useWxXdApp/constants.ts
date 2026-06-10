@@ -8,13 +8,7 @@ export const defaultAutomationSettings = (): OperationalAutomationSettings => ({
   aftersale_sync_enabled: true,
   purchase_task_enabled: true,
   delivery_submission_enabled: true,
-  publish_precheck_enabled: true,
-  publish_attribute_fill_enabled: true,
-  publish_category_precheck_enabled: true,
-  publish_asset_upload_enabled: true,
-  publish_submit_enabled: true,
-  publish_status_sync_enabled: true,
-  publish_listing_enabled: true,
+  publish_enabled: true,
   price_confirm_enabled: true,
 });
 
@@ -242,52 +236,6 @@ export const statusTone: Record<string, string> = {
   unread: "warning",
   read: "info",
 };
-export const createDefaultPublishPayload = () =>
-  JSON.stringify(
-    {
-      request_id: `req-${Date.now()}`,
-      target_shop_group_ids: ["group-default"],
-      products: [
-        {
-          external_product_id: "demo-1688-10001",
-          title: "夏季薄款防晒衣女",
-          source_url: "https://example.com/products/10001",
-          images: [
-            "https://example.com/images/1.jpg",
-            "https://example.com/images/2.jpg",
-            "https://example.com/images/3.jpg",
-          ],
-          detail_images: ["https://example.com/detail/1.jpg"],
-          supplier_name: "示例供应商",
-          supplier_product_id: "10001",
-          category_hint: "女装/防晒衣",
-          brand_hint: "无品牌",
-          weight_gram: 500,
-          skus: [
-            {
-              external_sku_id: "black-m",
-              specs: { 颜色: "黑色", 尺码: "M" },
-              cost_price: 12.5,
-              stock: 100,
-            },
-          ],
-          metadata: {
-            wechat_category_ids: [1000001, 1000101, 1000102],
-            wechat_attrs: [{ attr_key: "材质", attr_value: "聚酯纤维" }],
-            freight_template_id: "replace-with-shop-freight-template-id",
-            extra_service: {
-              seven_day_return: 1,
-              freight_insurance: 0,
-            },
-            sale_price_markup_rate: 1.8,
-            sale_price_fixed_cents: 500,
-          },
-        },
-      ],
-    },
-    null,
-    2,
-  );
 export const createDefaultPriceUpdatePayload = () =>
   JSON.stringify(
     {

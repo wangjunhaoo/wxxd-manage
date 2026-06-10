@@ -1,7 +1,8 @@
 use super::*;
 
-#[tauri::command]
-pub fn create_external_publish_job(
+/// 创建铺货任务：把已审查的商品数据按目标店铺展开为 pipeline 流水线记录。
+/// 原为本机 HTTP API 的对外入口，HTTP API 移除后仅供采集链路（collection.rs）内部复用。
+pub(in crate::commands) fn create_external_publish_job(
     app: AppHandle,
     request: ExternalPublishJobRequest,
 ) -> AppResult<PublishJobCreated> {

@@ -222,13 +222,7 @@ pub(in crate::commands) fn default_automation_settings() -> OperationalAutomatio
         aftersale_sync_enabled: true,
         purchase_task_enabled: true,
         delivery_submission_enabled: true,
-        publish_precheck_enabled: true,
-        publish_attribute_fill_enabled: true,
-        publish_category_precheck_enabled: true,
-        publish_asset_upload_enabled: true,
-        publish_submit_enabled: true,
-        publish_status_sync_enabled: true,
-        publish_listing_enabled: true,
+        publish_enabled: true,
         price_confirm_enabled: true,
     }
 }
@@ -263,40 +257,10 @@ pub(in crate::commands) fn load_automation_settings(
             AUTOMATION_DELIVERY_SUBMISSION_SETTING,
             defaults.delivery_submission_enabled,
         )?,
-        publish_precheck_enabled: get_bool_setting(
+        publish_enabled: get_bool_setting(
             conn,
-            AUTOMATION_PUBLISH_PRECHECK_SETTING,
-            defaults.publish_precheck_enabled,
-        )?,
-        publish_attribute_fill_enabled: get_bool_setting(
-            conn,
-            AUTOMATION_PUBLISH_ATTRIBUTE_FILL_SETTING,
-            defaults.publish_attribute_fill_enabled,
-        )?,
-        publish_category_precheck_enabled: get_bool_setting(
-            conn,
-            AUTOMATION_PUBLISH_CATEGORY_PRECHECK_SETTING,
-            defaults.publish_category_precheck_enabled,
-        )?,
-        publish_asset_upload_enabled: get_bool_setting(
-            conn,
-            AUTOMATION_PUBLISH_ASSET_UPLOAD_SETTING,
-            defaults.publish_asset_upload_enabled,
-        )?,
-        publish_submit_enabled: get_bool_setting(
-            conn,
-            AUTOMATION_PUBLISH_SUBMIT_SETTING,
-            defaults.publish_submit_enabled,
-        )?,
-        publish_status_sync_enabled: get_bool_setting(
-            conn,
-            AUTOMATION_PUBLISH_STATUS_SYNC_SETTING,
-            defaults.publish_status_sync_enabled,
-        )?,
-        publish_listing_enabled: get_bool_setting(
-            conn,
-            AUTOMATION_PUBLISH_LISTING_SETTING,
-            defaults.publish_listing_enabled,
+            AUTOMATION_PUBLISH_ENABLED_SETTING,
+            defaults.publish_enabled,
         )?,
         price_confirm_enabled: get_bool_setting(
             conn,
@@ -337,38 +301,8 @@ pub(in crate::commands) fn save_automation_settings(
     )?;
     set_bool_setting(
         conn,
-        AUTOMATION_PUBLISH_PRECHECK_SETTING,
-        settings.publish_precheck_enabled,
-    )?;
-    set_bool_setting(
-        conn,
-        AUTOMATION_PUBLISH_ATTRIBUTE_FILL_SETTING,
-        settings.publish_attribute_fill_enabled,
-    )?;
-    set_bool_setting(
-        conn,
-        AUTOMATION_PUBLISH_CATEGORY_PRECHECK_SETTING,
-        settings.publish_category_precheck_enabled,
-    )?;
-    set_bool_setting(
-        conn,
-        AUTOMATION_PUBLISH_ASSET_UPLOAD_SETTING,
-        settings.publish_asset_upload_enabled,
-    )?;
-    set_bool_setting(
-        conn,
-        AUTOMATION_PUBLISH_SUBMIT_SETTING,
-        settings.publish_submit_enabled,
-    )?;
-    set_bool_setting(
-        conn,
-        AUTOMATION_PUBLISH_STATUS_SYNC_SETTING,
-        settings.publish_status_sync_enabled,
-    )?;
-    set_bool_setting(
-        conn,
-        AUTOMATION_PUBLISH_LISTING_SETTING,
-        settings.publish_listing_enabled,
+        AUTOMATION_PUBLISH_ENABLED_SETTING,
+        settings.publish_enabled,
     )?;
     set_bool_setting(
         conn,

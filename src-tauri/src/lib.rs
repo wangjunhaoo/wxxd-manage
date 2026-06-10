@@ -1,6 +1,5 @@
 mod commands;
 mod crypto;
-mod local_api;
 mod models;
 mod storage;
 mod wechat;
@@ -15,7 +14,6 @@ pub fn run() {
             if let Err(error) = commands::run_startup_database_backup(app.handle().clone()) {
                 eprintln!("启动自动备份失败：{error}");
             }
-            local_api::start(app.handle().clone());
             commands::trigger_collection_worker(app.handle().clone());
             commands::start_pipeline_driver(app.handle().clone());
             Ok(())
@@ -26,7 +24,6 @@ pub fn run() {
             commands::create_database_backup,
             commands::restore_database_backup,
             commands::reset_collection_publish_workspace,
-            commands::list_external_api_logs,
             commands::list_notifications,
             commands::mark_notification_read,
             commands::mark_all_notifications_read,
@@ -49,7 +46,6 @@ pub fn run() {
             commands::sync_shop_category_catalog,
             commands::sync_category_rules,
             commands::prewarm_shop_category_details,
-            commands::create_external_publish_job,
             commands::get_publish_job,
             commands::get_publish_pricing_strategy,
             commands::save_publish_pricing_strategy,
@@ -110,8 +106,6 @@ pub fn run() {
             commands::run_price_update_confirm_once,
             commands::run_order_price_adjustment_once,
             commands::run_publish_pipeline_once,
-            local_api::get_local_api_config,
-            local_api::rotate_local_api_key,
             commands::import_excel_for_collection,
             commands::open_taobao_login,
             commands::get_collection_tasks,

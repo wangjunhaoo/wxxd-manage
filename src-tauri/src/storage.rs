@@ -1,7 +1,7 @@
 use chrono::SecondsFormat;
 use chrono::{DateTime, Duration, FixedOffset, Utc};
 use chrono_tz::Asia::Shanghai;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
@@ -518,19 +518,6 @@ fn migrate(conn: &Connection) -> AppResult<()> {
           FOREIGN KEY(shop_id) REFERENCES shops(id)
         );
 
-        CREATE TABLE IF NOT EXISTS external_api_logs (
-          id TEXT PRIMARY KEY,
-          method TEXT NOT NULL,
-          path TEXT NOT NULL,
-          status TEXT NOT NULL,
-          status_code INTEGER NOT NULL,
-          error_code TEXT,
-          request_summary TEXT,
-          response_summary TEXT,
-          duration_ms INTEGER NOT NULL DEFAULT 0,
-          created_at TEXT NOT NULL
-        );
-
         CREATE TABLE IF NOT EXISTS notifications (
           id TEXT PRIMARY KEY,
           severity TEXT NOT NULL,
@@ -968,9 +955,6 @@ fn migrate(conn: &Connection) -> AppResult<()> {
           FOREIGN KEY(shop_id) REFERENCES shops(id)
         );
 
-        CREATE INDEX IF NOT EXISTS idx_external_api_logs_created_at
-          ON external_api_logs(created_at);
-
         CREATE INDEX IF NOT EXISTS idx_notifications_status_updated
           ON notifications(status, updated_at);
 
@@ -1035,7 +1019,62 @@ fn migrate(conn: &Connection) -> AppResult<()> {
           ON pipeline_assets(target_id, status);
         "#,
     )?;
+    // 本机 HTTP API 已整体移除，连带清理其调用日志表（一次性，幂等）
+    conn.execute_batch("DROP TABLE IF EXISTS external_api_logs;")?;
+    migrate_publish_automation_switch(conn)?;
     cleanup_stale_wechat_category_cache(conn)?;
+    Ok(())
+}
+
+/// 一次性迁移：铺货 7 个细粒度自动化开关收敛为单一总开关 automation.publish_enabled。
+/// 新值 = 7 个旧开关的 AND（与前端原聚合语义一致），写入后删除旧键，不保留旧键读取路径。
+fn migrate_publish_automation_switch(conn: &Connection) -> AppResult<()> {
+    const LEGACY_KEYS: [&str; 7] = [
+        "automation.publish_precheck_enabled",
+        "automation.publish_attribute_fill_enabled",
+        "automation.publish_category_precheck_enabled",
+        "automation.publish_asset_upload_enabled",
+        "automation.publish_submit_enabled",
+        "automation.publish_status_sync_enabled",
+        "automation.publish_listing_enabled",
+    ];
+    let new_key_exists: bool = conn
+        .query_row(
+            "SELECT 1 FROM app_settings WHERE key = 'automation.publish_enabled'",
+            [],
+            |_| Ok(true),
+        )
+        .optional()?
+        .unwrap_or(false);
+    if !new_key_exists {
+        let mut all_enabled = true;
+        let mut has_legacy = false;
+        for key in LEGACY_KEYS {
+            let value: Option<String> = conn
+                .query_row(
+                    "SELECT value_json FROM app_settings WHERE key = ?1",
+                    [key],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(raw) = value {
+                has_legacy = true;
+                if serde_json::from_str::<bool>(&raw).ok() == Some(false) {
+                    all_enabled = false;
+                }
+            }
+        }
+        if has_legacy {
+            conn.execute(
+                "INSERT OR REPLACE INTO app_settings (key, value_json, updated_at)
+                 VALUES ('automation.publish_enabled', ?1, ?2)",
+                (if all_enabled { "true" } else { "false" }, now_shanghai()),
+            )?;
+        }
+    }
+    for key in LEGACY_KEYS {
+        conn.execute("DELETE FROM app_settings WHERE key = ?1", [key])?;
+    }
     Ok(())
 }
 

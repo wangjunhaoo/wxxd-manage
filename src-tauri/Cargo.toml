@@ -34,8 +34,6 @@ keyring = { version = "3", features = ["apple-native"] }
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
 sha2 = "0.10"
-axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "process"] }
-tower-http = { version = "0.6", features = ["cors"] }
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 calamine = "0.26"
