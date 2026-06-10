@@ -138,7 +138,7 @@ fn import_rows_into_pipeline(
             "INSERT INTO pipeline_products
              (id, title, source_url, category_path, status, stage, attention, import_batch_id, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, 'pending_collect', 'collect', 'none', ?5, ?6, ?6)",
-            params![row.title, row.source_url, row.category_path, batch_id, now],
+            params![product_id, row.title, row.source_url, row.category_path, batch_id, now],
         )?;
         for shop in target_shops {
             let target_id = format!("tgt_{}", Uuid::new_v4().simple());
@@ -4053,7 +4053,141 @@ fn update_task_status(
 
 #[cfg(test)]
 mod tests {
-    use super::taobao_item_id_from_url;
+    use super::*;
+
+    /// 导入核心依赖的最小表结构（与 storage.rs 建表语句的相关列保持一致）
+    fn open_test_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE pipeline_products (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                source_url TEXT NOT NULL,
+                category_path TEXT,
+                status TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                attention TEXT NOT NULL,
+                import_batch_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE pipeline_shop_targets (
+                id TEXT PRIMARY KEY,
+                product_id TEXT NOT NULL,
+                shop_id TEXT NOT NULL,
+                shop_name TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                status TEXT NOT NULL,
+                retry_count INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE import_batches (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                source TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE notifications (
+                id TEXT PRIMARY KEY,
+                severity TEXT, source_type TEXT, source_id TEXT, shop_id TEXT,
+                title TEXT, body TEXT, status TEXT,
+                dedupe_key TEXT UNIQUE, data_json TEXT, read_at TEXT,
+                created_at TEXT, updated_at TEXT
+            );",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn row(title: &str, url: &str) -> PipelineImportRow {
+        PipelineImportRow {
+            title: title.to_string(),
+            source_url: url.to_string(),
+            category_path: String::new(),
+        }
+    }
+
+    /// 真实执行 SQL 的导入核心测试：rusqlite 参数数量错配只在运行时暴露
+    /// （此前 params 丢 product_id 导致「Got 5, needed 6」，cargo check 抓不到）。
+    #[test]
+    fn import_rows_inserts_products_targets_and_batch() {
+        let mut conn = open_test_conn();
+        let shops = vec![TargetShop {
+            id: "shop_1".to_string(),
+            name: "测试店".to_string(),
+        }];
+        let rows = vec![
+            row("商品A", "https://item.taobao.com/item.htm?id=111"),
+            // 批内重复链接：应被去重跳过
+            row("商品A重复", "https://item.taobao.com/item.htm?id=111"),
+            row("商品B", "https://detail.tmall.com/item.htm?id=222"),
+        ];
+
+        let result = import_rows_into_pipeline(&mut conn, rows, &shops, "manual", "链接导入").unwrap();
+        assert_eq!(result.imported, 2);
+        assert_eq!(result.skipped, 1);
+
+        let products: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pipeline_products", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(products, 2);
+        // 每商品 × 每目标店一个 target，且 product_id 必须指向真实商品（参数错位回归点）
+        let orphan_targets: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pipeline_shop_targets t
+                 LEFT JOIN pipeline_products p ON p.id = t.product_id WHERE p.id IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(orphan_targets, 0);
+        let targets: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pipeline_shop_targets", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(targets, 2);
+        // 批次已建且商品全部归属
+        let batch_products: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pipeline_products p
+                 JOIN import_batches b ON b.id = p.import_batch_id WHERE b.source = 'manual'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(batch_products, 2);
+
+        // 库内已存在的链接再导：全部 skipped、不建新批次
+        let again = vec![row("商品A再来", "https://item.taobao.com/item.htm?id=111")];
+        let result2 =
+            import_rows_into_pipeline(&mut conn, again, &shops, "manual", "链接导入").unwrap();
+        assert_eq!(result2.imported, 0);
+        assert_eq!(result2.skipped, 1);
+        let batches: i64 = conn
+            .query_row("SELECT COUNT(*) FROM import_batches", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(batches, 1);
+    }
+
+    #[test]
+    fn import_rows_rejects_invalid_link_and_rolls_back() {
+        let mut conn = open_test_conn();
+        let rows = vec![
+            row("正常商品", "https://item.taobao.com/item.htm?id=111"),
+            row("坏链接", "https://example.com/not-taobao"),
+        ];
+        let err = import_rows_into_pipeline(&mut conn, rows, &[], "excel", "Excel导入");
+        assert!(err.is_err());
+        // 整批回滚：合法的第一行也不落库，不留半截批次
+        let products: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pipeline_products", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(products, 0);
+        let batches: i64 = conn
+            .query_row("SELECT COUNT(*) FROM import_batches", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(batches, 0);
+    }
 
     #[test]
     fn item_id_parsed_from_standard_link() {

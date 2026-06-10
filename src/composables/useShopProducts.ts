@@ -58,9 +58,10 @@ export function isListed(status: number): boolean {
   return status === 5;
 }
 
-/** 已下架 / 审核成功未上架等可上架的状态。 */
+/** 草稿 / 已下架 / 审核成功未上架等可上架的状态。
+ *  草稿（0）可直接 listing 上架转正（清理草稿的转正路径已真机验证），个别失败会以单品错误返回。 */
 export function canListing(status: number): boolean {
-  return [4, 11, 12, 13, 14, 15].includes(status);
+  return [0, 4, 11, 12, 13, 14, 15].includes(status);
 }
 
 /** 审核中的商品不能编辑/删除（微信 10020047/10020049），上下架删除按钮需禁用。 */
