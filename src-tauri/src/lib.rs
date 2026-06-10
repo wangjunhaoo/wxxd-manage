@@ -107,6 +107,7 @@ pub fn run() {
             commands::run_order_price_adjustment_once,
             commands::run_publish_pipeline_once,
             commands::import_excel_for_collection,
+            commands::import_urls_for_collection,
             commands::open_taobao_login,
             commands::open_cloak_browser,
             commands::get_collection_tasks,
@@ -142,7 +143,10 @@ pub fn run() {
             commands::delisting_shop_product,
             commands::delete_shop_product,
             commands::update_shop_product_stock,
-            commands::refresh_shop_stock
+            commands::refresh_shop_stock,
+            commands::get_shop_product_task_progress,
+            commands::get_shop_product_summary,
+            commands::batch_shop_product_action
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

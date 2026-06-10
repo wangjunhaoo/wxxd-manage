@@ -1,12 +1,13 @@
 /* ============================================================================
    商品管理（products）—— 店铺级微信小店真实商品管理：同步、上下架、删除、库存调整。
-   单页表格：店铺/状态/关键词三筛选 + 5 项 KPI + 主表（展开行懒加载 SKU）+ 改库存对话框。
-   忠实保留原 .vue 的 IA / 交互 / 中文文案，视觉换成 Soft。
+   单页表格：店铺/状态/关键词三筛选（筛选+分页下推数据库）+ 5 项 KPI（SQL 聚合）
+   + 勾选批量操作（上架/下架/删除，跨页选择）+ 同步/批量实时进度条
+   + 主表（展开行懒加载 SKU，带加载态）+ 改库存对话框 + 失败明细弹窗。
    ============================================================================ */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../../runtime/AppContext";
 import { ElMessage, ElMessageBox } from "../../runtime/feedback";
-import { Button, Pill, Select, Modal, Segmented } from "../primitives";
+import { Button, Pill, Select, Modal, Segmented, Pagination } from "../primitives";
 import {
   useShopProducts,
   shopProductStatusLabel,
@@ -14,8 +15,11 @@ import {
   isListed,
   canListing,
   isAuditing,
+  SHOP_PRODUCT_PAGE_SIZE,
+  type BatchProductAction,
 } from "../../composables/useShopProducts";
 import type {
+  ShopProductFailedItem,
   WechatShopProductSkuView,
   WechatShopProductView,
 } from "../../types/app";
@@ -27,6 +31,12 @@ interface StockForm {
   diffType: number;
   num: number;
   currentStock: number;
+}
+
+interface FailureModalData {
+  title: string;
+  /** 失败明细（title 为缓存中的商品标题，可能拿不到则只显示 id）。 */
+  items: Array<ShopProductFailedItem & { title?: string }>;
 }
 
 /** SKU 标签：有属性（且非 "null"）则拼上属性，否则用 sku_code/sku_id。 */
@@ -52,13 +62,33 @@ export default function ProductManagementSection() {
   const syncing = sp.syncing.value;
   const refreshingStock = sp.refreshingStock.value;
   const cleaningDrafts = sp.cleaningDrafts.value;
+  const batching = sp.batching.value;
   const selectedShopId = sp.selectedShopId.value;
   const statusFilter = sp.statusFilter.value;
-  const keyword = sp.keyword.value;
+  const page = sp.page.value;
+  const summary = sp.summary.value;
+  const progress = sp.progress.value;
   const detailSkus = sp.detailSkus.value;
+  const loadingSkuIds = sp.loadingSkuIds.value;
+  const selected = sp.selected.value;
+
+  const busy = syncing || refreshingStock || cleaningDrafts || batching;
 
   // ---- 展开行（记录已展开的 row id）----
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+
+  // ---- 关键词输入（300ms 防抖后下推数据库查询）----
+  const [keywordInput, setKeywordInput] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (sp.keyword.value !== keywordInput) {
+        sp.keyword.value = keywordInput;
+        sp.page.value = 1;
+        void sp.refreshList();
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [keywordInput]);
 
   // ---- 库存调整对话框 ----
   const [stockDialogVisible, setStockDialogVisible] = useState(false);
@@ -72,58 +102,42 @@ export default function ProductManagementSection() {
     currentStock: 0,
   });
 
+  // ---- 失败明细弹窗（同步失败 / 批量操作失败共用）----
+  const [failureModal, setFailureModal] = useState<FailureModalData | null>(null);
+
   // ---- 派生选项 ----
   const shopOptions = useMemo(
     () => ctx.shops.value.map((shop) => ({ value: shop.id, label: shop.name })),
     [ctx.shops.value],
   );
 
-  /** 状态筛选选项：基于全量商品统计各状态数量，保证切换时选项稳定。 */
+  /** 状态筛选选项：基于店铺级 SQL 聚合计数，与当前筛选/分页无关、选项稳定。 */
   const statusOptions = useMemo(() => {
-    const counts = new Map<number, number>();
-    for (const product of shopProducts) {
-      counts.set(product.status, (counts.get(product.status) ?? 0) + 1);
-    }
     const options: Array<{ value: number | "all"; label: string }> = [
-      { value: "all", label: `全部 (${shopProducts.length})` },
+      { value: "all", label: `全部 (${summary?.total ?? 0})` },
     ];
-    for (const [status, count] of [...counts.entries()].sort((a, b) => a[0] - b[0])) {
+    for (const { status, count } of summary?.status_counts ?? []) {
       options.push({ value: status, label: `${shopProductStatusLabel(status)} (${count})` });
     }
     return options;
-  }, [shopProducts]);
+  }, [summary]);
 
-  // ---- KPI 概览 ----
-  const summary = useMemo(
-    () => ({
-      total: shopProducts.length,
-      listed: shopProducts.filter((product) => isListed(product.status)).length,
-      delisted: shopProducts.filter((product) =>
-        [11, 12, 13, 14, 15].includes(product.status),
-      ).length,
-      auditing: shopProducts.filter((product) => isAuditing(product.status)).length,
-      zeroStock: shopProducts.filter((product) => product.total_stock <= 0).length,
-    }),
-    [shopProducts],
+  // ---- 选择集派生：各批量操作的可执行行 ----
+  const selectedRows = useMemo(() => Object.values(selected), [selected]);
+  const listableRows = useMemo(
+    () => selectedRows.filter((row) => canListing(row.status)),
+    [selectedRows],
   );
-
-  /** 前端过滤：状态 + 关键词（标题/微信商品ID/外部商品ID）。 */
-  const displayedProducts = useMemo(() => {
-    let list = shopProducts;
-    if (statusFilter !== "all") {
-      list = list.filter((product) => product.status === statusFilter);
-    }
-    const kw = keyword.trim().toLowerCase();
-    if (kw) {
-      list = list.filter(
-        (product) =>
-          product.title.toLowerCase().includes(kw) ||
-          product.wechat_product_id.toLowerCase().includes(kw) ||
-          (product.out_product_id ?? "").toLowerCase().includes(kw),
-      );
-    }
-    return list;
-  }, [shopProducts, statusFilter, keyword]);
+  const delistableRows = useMemo(
+    () => selectedRows.filter((row) => isListed(row.status)),
+    [selectedRows],
+  );
+  const deletableRows = useMemo(
+    () => selectedRows.filter((row) => !isAuditing(row.status)),
+    [selectedRows],
+  );
+  const pageAllSelected =
+    shopProducts.length > 0 && shopProducts.every((row) => Boolean(selected[row.id]));
 
   /** 调整后库存预览：1 增 / 2 减 / 3 设置。 */
   const stockPreview = useMemo(() => {
@@ -137,12 +151,22 @@ export default function ProductManagementSection() {
     sp.selectedShopId.value = value;
     sp.statusFilter.value = "all";
     sp.keyword.value = "";
+    sp.page.value = 1;
+    sp.clearSelection();
+    setKeywordInput("");
     setExpandedIds(new Set());
-    void sp.refreshList();
+    void sp.refreshAll();
   }
 
   function onStatusChange(value: string) {
     sp.statusFilter.value = value === "all" ? "all" : Number(value);
+    sp.page.value = 1;
+    void sp.refreshList();
+  }
+
+  function onPageChange(next: number) {
+    sp.page.value = next;
+    void sp.refreshList();
   }
 
   /** 展开/收起某行：首次展开且无缓存时懒加载 SKU。 */
@@ -160,6 +184,16 @@ export default function ProductManagementSection() {
     }
   }
 
+  async function onSync() {
+    const result = await sp.syncProducts();
+    if (result && result.failed_items.length > 0) {
+      setFailureModal({
+        title: `同步失败明细（${result.failed_items.length} 个商品）`,
+        items: result.failed_items,
+      });
+    }
+  }
+
   async function onDelete(product: WechatShopProductView) {
     try {
       await ElMessageBox.confirm(
@@ -171,6 +205,48 @@ export default function ProductManagementSection() {
       return;
     }
     await sp.deleteProduct(product);
+  }
+
+  /** 批量操作统一入口：二次确认 → 执行 → 结果提示 + 失败明细弹窗。 */
+  async function runBatch(action: BatchProductAction, rows: WechatShopProductView[]) {
+    if (rows.length === 0) return;
+    const label =
+      action === "listing" ? "批量上架" : action === "delisting" ? "批量下架" : "批量删除";
+    const warning =
+      action === "delete"
+        ? `确定删除选中的 ${rows.length} 个商品？此操作会从微信小店彻底删除，无法恢复。`
+        : `确定对选中的 ${rows.length} 个商品执行${label}？`;
+    try {
+      await ElMessageBox.confirm(warning, label, {
+        type: "warning",
+        confirmButtonText: "确认执行",
+        cancelButtonText: "取消",
+      });
+    } catch {
+      return;
+    }
+    const titleById = new Map(rows.map((row) => [row.wechat_product_id, row.title]));
+    const result = await sp.batchAction(action, rows);
+    if (!result) return;
+    if (result.failed.length > 0) {
+      ElMessage.warning(
+        `${label}完成：成功 ${result.succeeded}/${result.total}，失败 ${result.failed.length}`,
+      );
+      setFailureModal({
+        title: `${label}失败明细（${result.failed.length} 个商品）`,
+        items: result.failed.map((item) => ({
+          ...item,
+          title: titleById.get(item.product_id),
+        })),
+      });
+    } else {
+      ElMessage.success(`${label}完成：成功 ${result.succeeded} 个`);
+    }
+  }
+
+  async function onSelectAllFiltered() {
+    const count = await sp.selectAllFiltered();
+    if (count > 0) ElMessage.success(`已选中筛选结果共 ${count} 个商品`);
   }
 
   function openStockDialog(product: WechatShopProductView, sku: WechatShopProductSkuView) {
@@ -205,14 +281,19 @@ export default function ProductManagementSection() {
     }
   }, [detailSkus]);
 
-  // 主表列数（展开 + 主图 + 商品 + 状态 + 最低价 + 总库存 + SKU数 + 同步时间 + 操作）。
-  const colSpan = 9;
+  // 主表列数（勾选 + 展开 + 主图 + 商品 + 状态 + 最低价 + 总库存 + SKU数 + 同步时间 + 操作）。
+  const colSpan = 10;
+
+  const progressPercent =
+    progress && progress.total > 0
+      ? Math.min(100, Math.round((progress.done / progress.total) * 100))
+      : null;
 
   return (
     <div className="pad">
       <div className="wrap-wide">
         <div className="panel">
-          {/* 头部：标题 + 三个操作按钮 */}
+          {/* 头部：标题 + 操作按钮 */}
           <div className="ph">
             <div>
               <h3>商品管理</h3>
@@ -224,21 +305,21 @@ export default function ProductManagementSection() {
               <Button
                 variant="accent"
                 size="sm"
-                disabled={!selectedShopId || syncing}
-                onClick={() => sp.syncProducts()}
+                disabled={!selectedShopId || busy}
+                onClick={() => void onSync()}
               >
                 {syncing ? "同步中…" : "同步商品"}
               </Button>
               <Button
                 size="sm"
-                disabled={!selectedShopId || refreshingStock}
+                disabled={!selectedShopId || busy}
                 onClick={() => sp.refreshStock()}
               >
                 {refreshingStock ? "刷新中…" : "刷新库存"}
               </Button>
               <Button
                 size="sm"
-                disabled={!selectedShopId || cleaningDrafts}
+                disabled={!selectedShopId || busy}
                 onClick={async () => {
                   try {
                     await ElMessageBox.confirm(
@@ -262,7 +343,7 @@ export default function ProductManagementSection() {
                 size="sm"
                 icon="refresh"
                 disabled={!selectedShopId}
-                onClick={() => sp.refreshList()}
+                onClick={() => sp.refreshAll()}
               >
                 刷新
               </Button>
@@ -291,45 +372,123 @@ export default function ProductManagementSection() {
             <div className="field">
               <input
                 className="inp"
-                value={keyword}
+                value={keywordInput}
                 placeholder="搜索标题、微信商品 ID 或外部商品 ID"
                 disabled={!selectedShopId}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-                  sp.keyword.value = e.target.value;
+                  setKeywordInput(e.target.value);
                 }}
               />
             </div>
           </div>
 
-          {/* KPI 概览 */}
+          {/* KPI 概览（店铺级 SQL 聚合，与筛选无关） */}
           <div className="kpis cols-5" style={{ marginTop: 18 }}>
             <div className="kpi">
               <span>商品总数</span>
-              <strong>{summary.total}</strong>
+              <strong>{summary?.total ?? 0}</strong>
             </div>
             <div className="kpi">
               <span>已上架</span>
-              <strong>{summary.listed}</strong>
+              <strong>{summary?.listed ?? 0}</strong>
             </div>
             <div className="kpi">
               <span>已下架</span>
-              <strong>{summary.delisted}</strong>
+              <strong>{summary?.delisted ?? 0}</strong>
             </div>
             <div className="kpi">
               <span>审核中</span>
-              <strong>{summary.auditing}</strong>
+              <strong>{summary?.auditing ?? 0}</strong>
             </div>
             <div className="kpi">
               <span>零库存</span>
-              <strong>{summary.zeroStock}</strong>
+              <strong>{summary?.zero_stock ?? 0}</strong>
             </div>
           </div>
+
+          {/* 同步 / 批量任务进度条（轮询 get_shop_product_task_progress） */}
+          {busy && progress && (
+            <div className="progress-wrap" style={{ marginTop: 18, marginBottom: 0 }}>
+              <div className="progress-top">
+                <strong>{progressPercent !== null ? `${progressPercent}%` : "…"}</strong>
+                <span>
+                  {progress.message}
+                  {progress.total > 0 ? `（${progress.done}/${progress.total}）` : ""}
+                </span>
+              </div>
+              <div className="bar-track">
+                <div
+                  className="bar-fill"
+                  style={{ width: `${progressPercent ?? (progress.finished ? 100 : 6)}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* 批量操作工具栏（有勾选时出现） */}
+          {selectedRows.length > 0 && (
+            <div
+              className="row-actions"
+              style={{
+                marginTop: 14,
+                padding: "10px 14px",
+                background: "var(--chip)",
+                borderRadius: "var(--r)",
+                alignItems: "center",
+                flexWrap: "wrap",
+              }}
+            >
+              <span style={{ fontSize: 13, color: "var(--ink-2)" }}>
+                已选 <strong>{selectedRows.length}</strong> 个
+              </span>
+              <Button
+                size="sm"
+                disabled={busy || listableRows.length === 0}
+                onClick={() => void runBatch("listing", listableRows)}
+              >
+                批量上架 ({listableRows.length})
+              </Button>
+              <Button
+                size="sm"
+                disabled={busy || delistableRows.length === 0}
+                onClick={() => void runBatch("delisting", delistableRows)}
+              >
+                批量下架 ({delistableRows.length})
+              </Button>
+              <Button
+                size="sm"
+                variant="danger"
+                disabled={busy || deletableRows.length === 0}
+                onClick={() => void runBatch("delete", deletableRows)}
+              >
+                批量删除 ({deletableRows.length})
+              </Button>
+              <Button size="sm" variant="ghost" disabled={busy} onClick={() => void onSelectAllFiltered()}>
+                全选筛选结果（共 {total} 个）
+              </Button>
+              <Button size="sm" variant="ghost" disabled={busy} onClick={() => sp.clearSelection()}>
+                清空选择
+              </Button>
+            </div>
+          )}
 
           {/* 主表 */}
           <div className="tbl-wrap">
             <table className="tbl">
               <thead>
                 <tr>
+                  <th style={{ width: 36 }}>
+                    <input
+                      type="checkbox"
+                      className="cbx"
+                      checked={pageAllSelected}
+                      disabled={shopProducts.length === 0}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                        sp.selectRows(shopProducts, e.target.checked)
+                      }
+                      title="全选本页"
+                    />
+                  </th>
                   <th style={{ width: 40 }} />
                   <th style={{ width: 70 }}>主图</th>
                   <th style={{ minWidth: 280 }}>商品</th>
@@ -342,28 +501,31 @@ export default function ProductManagementSection() {
                 </tr>
               </thead>
               <tbody>
-                {loading && displayedProducts.length === 0 ? (
+                {loading && shopProducts.length === 0 ? (
                   <tr>
                     <td colSpan={colSpan} className="text-muted" style={{ textAlign: "center" }}>
                       加载中…
                     </td>
                   </tr>
-                ) : displayedProducts.length === 0 ? (
+                ) : shopProducts.length === 0 ? (
                   <tr>
                     <td colSpan={colSpan} className="text-muted" style={{ textAlign: "center", padding: "28px" }}>
                       {selectedShopId ? "没有匹配的商品，换个状态或关键词试试。" : "请先选择店铺。"}
                     </td>
                   </tr>
                 ) : (
-                  displayedProducts.map((row) => (
+                  shopProducts.map((row) => (
                     <ProductRow
                       key={row.id}
                       row={row}
+                      checked={Boolean(selected[row.id])}
                       expanded={expandedIds.has(row.id)}
                       skus={detailSkus[row.id]}
+                      skuLoading={Boolean(loadingSkuIds[row.id])}
                       colSpan={colSpan}
                       formatCents={ctx.formatCents}
                       formatDateTime={ctx.formatDateTime}
+                      onToggleSelect={() => sp.toggleSelect(row)}
                       onToggle={() => void toggleExpand(row)}
                       onListing={() => sp.listingProduct(row)}
                       onDelisting={() => sp.delistingProduct(row)}
@@ -376,15 +538,24 @@ export default function ProductManagementSection() {
             </table>
           </div>
 
-          {/* 表格下方提示 */}
+          {/* 分页器 + 表格下方提示 */}
           {!selectedShopId ? (
             <div className="empty" style={{ marginTop: 8 }}>
               请选择店铺后点击「同步商品」拉取微信小店真实商品。
             </div>
           ) : (
-            <p className="hint" style={{ margin: "12px 2px 4px" }}>
-              共 {total} 个商品，当前显示 {displayedProducts.length} 个。
-            </p>
+            <>
+              <Pagination
+                page={page}
+                pageSize={SHOP_PRODUCT_PAGE_SIZE}
+                total={total}
+                onChange={onPageChange}
+              />
+              <p className="hint" style={{ margin: "12px 2px 4px" }}>
+                筛选结果共 {total} 个商品，本页 {shopProducts.length} 个
+                {selectedRows.length > 0 ? `，已选 ${selectedRows.length} 个（跨页保留）` : ""}。
+              </p>
+            </>
           )}
         </div>
       </div>
@@ -451,6 +622,41 @@ export default function ProductManagementSection() {
           </div>
         </div>
       </Modal>
+
+      {/* 失败明细弹窗（同步失败 / 批量操作失败共用） */}
+      <Modal
+        open={Boolean(failureModal)}
+        title={failureModal?.title ?? ""}
+        onClose={() => setFailureModal(null)}
+        footer={<Button onClick={() => setFailureModal(null)}>关闭</Button>}
+      >
+        <div style={{ maxHeight: 380, overflowY: "auto" }}>
+          <table className="subtbl">
+            <thead>
+              <tr>
+                <th style={{ minWidth: 220 }}>商品</th>
+                <th style={{ minWidth: 240 }}>失败原因</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(failureModal?.items ?? []).map((item, index) => (
+                <tr key={`${item.product_id}-${index}`}>
+                  <td>
+                    <div className="cell-main">
+                      {item.title ? <strong>{item.title}</strong> : null}
+                      <span className="mono">{item.product_id || "（未知商品）"}</span>
+                    </div>
+                  </td>
+                  <td>{item.error}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="hint" style={{ margin: "10px 2px 0" }}>
+          失败的商品仍保留在选择集中，可修正后直接重试；同步类失败可再点一次「同步商品」补拉。
+        </p>
+      </Modal>
     </div>
   );
 }
@@ -458,11 +664,14 @@ export default function ProductManagementSection() {
 /** 单行商品 + 其展开的 SKU 子表。 */
 function ProductRow({
   row,
+  checked,
   expanded,
   skus,
+  skuLoading,
   colSpan,
   formatCents,
   formatDateTime,
+  onToggleSelect,
   onToggle,
   onListing,
   onDelisting,
@@ -470,11 +679,14 @@ function ProductRow({
   onOpenStock,
 }: {
   row: WechatShopProductView;
+  checked: boolean;
   expanded: boolean;
   skus: WechatShopProductSkuView[] | undefined;
+  skuLoading: boolean;
   colSpan: number;
   formatCents: (value: number | null) => string;
   formatDateTime: (value: string | null | undefined) => string;
+  onToggleSelect: () => void;
   onToggle: () => void;
   onListing: () => void;
   onDelisting: () => void;
@@ -484,6 +696,9 @@ function ProductRow({
   return (
     <>
       <tr>
+        <td>
+          <input type="checkbox" className="cbx" checked={checked} onChange={onToggleSelect} />
+        </td>
         <td>
           <Button
             size="sm"
@@ -554,7 +769,11 @@ function ProductRow({
       {expanded && (
         <tr>
           <td colSpan={colSpan} style={{ background: "var(--chip)" }}>
-            {skus && skus.length > 0 ? (
+            {skuLoading && !skus ? (
+              <div className="empty" style={{ padding: "20px" }}>
+                正在加载 SKU…
+              </div>
+            ) : skus && skus.length > 0 ? (
               <table className="subtbl">
                 <thead>
                   <tr>

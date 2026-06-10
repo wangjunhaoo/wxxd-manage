@@ -11,7 +11,7 @@ import type {
   PipelineProductDetailView,
   PipelineProductDetailSku,
 } from "../../types/app";
-import { PageHead, Button, Chip, Pill, Field, Empty, Modal, Drawer, Dropdown } from "../primitives";
+import { PageHead, Button, Chip, Pill, Field, Empty, Modal, Drawer, Dropdown, Segmented } from "../primitives";
 
 /** 状态枚举：标签 + Pill 色调（兜底显示原值，色调用 info）。 */
 const STATUS_META: Record<
@@ -387,25 +387,47 @@ export default function PublishWorkbenchSection() {
   const [importDialogVisible, setImportDialogVisible] = useState(false);
   const [importTargetShopIds, setImportTargetShopIds] = useState<string[]>([]);
   const [importing, setImporting] = useState(false);
+  // 导入来源两模式：直接粘贴淘宝链接（默认，免做表格）/ Excel 文件
+  const [importMode, setImportMode] = useState<"excel" | "urls">("urls");
+  const [importUrlsText, setImportUrlsText] = useState("");
 
   const openImport = () => setImportDialogVisible(true);
 
   const onImport = async () => {
-    if (!ctx.collectionFilePath.value.trim()) {
-      ElMessage.warning("请先选择 Excel 文件");
+    // 目标店可选：不选店则只采集不铺货，采集完成后可在列表中补选店铺货
+    if (importMode === "excel") {
+      if (!ctx.collectionFilePath.value.trim()) {
+        ElMessage.warning("请先选择 Excel 文件");
+        return;
+      }
+      setImporting(true);
+      const ok = await pipe.importExcel(
+        ctx.collectionFilePath.value.trim(),
+        importTargetShopIds,
+      );
+      setImporting(false);
+      if (ok) {
+        setImportDialogVisible(false);
+        setImportTargetShopIds([]);
+        ctx.clearCollectionExcelFile();
+      }
       return;
     }
-    // 目标店可选：不选店则只采集不铺货，采集完成后可在列表中补选店铺货
+    const urls = importUrlsText
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (urls.length === 0) {
+      ElMessage.warning("请粘贴至少一个淘宝/天猫商品链接（每行一个）");
+      return;
+    }
     setImporting(true);
-    const ok = await pipe.importExcel(
-      ctx.collectionFilePath.value.trim(),
-      importTargetShopIds,
-    );
+    const ok = await pipe.importUrls(urls, importTargetShopIds);
     setImporting(false);
     if (ok) {
       setImportDialogVisible(false);
       setImportTargetShopIds([]);
-      ctx.clearCollectionExcelFile();
+      setImportUrlsText("");
     }
   };
 
@@ -534,7 +556,7 @@ export default function PublishWorkbenchSection() {
           actions={
             <>
               <Button variant="accent" icon="upload" onClick={openImport}>
-                导入铺货表
+                导入商品
               </Button>
               {selectedAddable.length > 0 && (
                 <Button
@@ -763,7 +785,7 @@ export default function PublishWorkbenchSection() {
               stageFilter ||
               selectedBatchId
                 ? "当前筛选条件下没有商品（试试切换批次 / 状态 / 阶段筛选）。"
-                : "还没有商品。点「导入铺货表」选 Excel 和目标店，导入后自动采集铺货。"}
+                : "还没有商品。点「导入商品」粘贴淘宝链接或选 Excel，导入后自动采集铺货。"}
             </Empty>
           ) : (
             <div className="tbl-wrap">
@@ -942,10 +964,10 @@ export default function PublishWorkbenchSection() {
         </div>
       </Modal>
 
-      {/* 弹窗 2：导入铺货表 */}
+      {/* 弹窗 2：导入铺货表（Excel 文件 / 直接粘贴链接两种来源） */}
       <Modal
         open={importDialogVisible}
-        title="导入铺货表"
+        title="导入商品"
         onClose={() => setImportDialogVisible(false)}
         footer={
           <>
@@ -958,30 +980,60 @@ export default function PublishWorkbenchSection() {
       >
         <div className="stack">
           <div className="stack" style={{ gap: 8 }}>
-            <strong>1. 选择 Excel 文件</strong>
-            <div
-              style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}
-            >
-              <Button
-                variant="accent"
-                icon="upload"
-                onClick={() => ctx.selectCollectionExcelFile()}
-              >
-                选择文件
-              </Button>
-              <Button
-                disabled={!ctx.collectionFilePath.value}
-                onClick={() => ctx.clearCollectionExcelFile()}
-              >
-                清除
-              </Button>
-              <span className="text-muted">
-                {ctx.collectionFileName.value || "尚未选择文件"}
-              </span>
-            </div>
-            <p className="hint">
-              Excel 无表头，三列：商品名 · 淘宝链接 · 微信类目路径（用 &gt; 连接）。
-            </p>
+            <strong>1. 商品来源</strong>
+            <Segmented
+              options={[
+                { label: "粘贴淘宝链接", value: "urls" },
+                { label: "Excel 文件", value: "excel" },
+              ]}
+              value={importMode}
+              onChange={(v) => setImportMode(v as "excel" | "urls")}
+            />
+            {importMode === "excel" ? (
+              <>
+                <div
+                  style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}
+                >
+                  <Button
+                    variant="accent"
+                    icon="upload"
+                    onClick={() => ctx.selectCollectionExcelFile()}
+                  >
+                    选择文件
+                  </Button>
+                  <Button
+                    disabled={!ctx.collectionFilePath.value}
+                    onClick={() => ctx.clearCollectionExcelFile()}
+                  >
+                    清除
+                  </Button>
+                  <span className="text-muted">
+                    {ctx.collectionFileName.value || "尚未选择文件"}
+                  </span>
+                </div>
+                <p className="hint">
+                  Excel 无表头，三列：商品名 · 淘宝链接 · 微信类目路径（用 &gt; 连接）。
+                </p>
+              </>
+            ) : (
+              <>
+                <textarea
+                  className="ta mono"
+                  spellCheck={false}
+                  rows={6}
+                  placeholder={
+                    "每行一个淘宝/天猫商品链接，例如：\nhttps://item.taobao.com/item.htm?id=1031628908697"
+                  }
+                  value={importUrlsText}
+                  onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
+                    setImportUrlsText(e.target.value)
+                  }
+                />
+                <p className="hint">
+                  商品标题与类目由采集自动获取，无需填写；重复链接会自动跳过。
+                </p>
+              </>
+            )}
           </div>
           <div className="stack" style={{ gap: 8 }}>
             <strong>2. 选择本批目标小店（可选）</strong>

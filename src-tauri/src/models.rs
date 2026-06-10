@@ -1050,6 +1050,56 @@ pub struct SyncShopProductsResult {
     pub synced_count: i64,
     pub total_num: i64,
     pub failed_count: i64,
+    /// 拉取详情失败的商品明细（id + 原因），供前端展示并指引重试。
+    pub failed_items: Vec<ShopProductFailedItem>,
+}
+
+/// 商品同步/批量操作中单个商品的失败明细。
+#[derive(Debug, Serialize, Clone)]
+pub struct ShopProductFailedItem {
+    pub product_id: String,
+    pub error: String,
+}
+
+/// 店铺级商品长任务（同步/批量操作）实时进度，前端轮询展示进度条。
+#[derive(Debug, Serialize, Clone)]
+pub struct ShopProductTaskProgress {
+    /// 任务类型：sync / batch_listing / batch_delisting / batch_delete。
+    pub task: String,
+    /// 已完成数。
+    pub done: i64,
+    /// 总数（0 = 尚未确定，如翻页发现阶段）。
+    pub total: i64,
+    /// 当前阶段描述。
+    pub message: String,
+    /// 是否已结束（成功或失败）。
+    pub finished: bool,
+}
+
+/// 店铺缓存商品概要统计（KPI + 各状态计数），SQL 聚合产出，前端 KPI 卡与状态筛选选项共用。
+#[derive(Debug, Serialize)]
+pub struct ShopProductSummaryView {
+    pub total: i64,
+    pub listed: i64,
+    pub delisted: i64,
+    pub auditing: i64,
+    pub zero_stock: i64,
+    pub status_counts: Vec<ShopProductStatusCount>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ShopProductStatusCount {
+    pub status: i64,
+    pub count: i64,
+}
+
+/// 批量上架/下架/删除的执行结果。
+#[derive(Debug, Serialize)]
+pub struct BatchShopProductActionResult {
+    pub action: String,
+    pub total: i64,
+    pub succeeded: i64,
+    pub failed: Vec<ShopProductFailedItem>,
 }
 
 /// 清理孤儿草稿的结果统计。

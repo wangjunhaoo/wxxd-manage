@@ -1354,6 +1354,45 @@ export type SyncShopProductsResult = {
   synced_count: number;
   total_num: number;
   failed_count: number;
+  failed_items: ShopProductFailedItem[];
+};
+
+// 同步/批量操作中单个商品的失败明细
+export type ShopProductFailedItem = {
+  product_id: string;
+  error: string;
+};
+
+// 店铺级商品长任务（同步/批量）实时进度（get_shop_product_task_progress）
+export type ShopProductTaskProgress = {
+  task: string;
+  done: number;
+  total: number;
+  message: string;
+  finished: boolean;
+};
+
+// 店铺缓存商品概要统计（get_shop_product_summary）
+export type ShopProductStatusCount = {
+  status: number;
+  count: number;
+};
+
+export type ShopProductSummaryView = {
+  total: number;
+  listed: number;
+  delisted: number;
+  auditing: number;
+  zero_stock: number;
+  status_counts: ShopProductStatusCount[];
+};
+
+// 批量上架/下架/删除结果（batch_shop_product_action）
+export type BatchShopProductActionResult = {
+  action: string;
+  total: number;
+  succeeded: number;
+  failed: ShopProductFailedItem[];
 };
 
 export type CleanupOrphanDraftsResult = {

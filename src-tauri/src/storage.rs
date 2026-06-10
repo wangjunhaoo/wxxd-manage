@@ -1031,6 +1031,12 @@ fn migrate(conn: &Connection) -> AppResult<()> {
 
         CREATE INDEX IF NOT EXISTS idx_pipeline_assets_target
           ON pipeline_assets(target_id, status);
+
+        CREATE INDEX IF NOT EXISTS idx_wechat_shop_products_shop_status
+          ON wechat_shop_products(shop_id, status);
+
+        CREATE INDEX IF NOT EXISTS idx_wechat_shop_product_skus_product_row
+          ON wechat_shop_product_skus(product_row_id);
         "#,
     )?;
     // 本机 HTTP API 已整体移除，连带清理其调用日志表（一次性，幂等）

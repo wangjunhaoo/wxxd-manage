@@ -7,12 +7,78 @@
 //! `get_product` 拉取，因此同步 = 游标翻页拿全部 id + 有限并发拉详情入缓存。
 
 use super::*;
+use std::collections::HashMap;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use tokio::task::JoinSet;
 
 /// 同步时拉取商品详情的并发度（避免对微信接口瞬时压力过大触发限频）。
 const SYNC_DETAIL_CONCURRENCY: usize = 5;
 /// 列表游标翻页的最大轮数兜底（30/页 × 300 = 9000 个商品上限），防 next_key 异常导致死循环。
 const MAX_LIST_PAGES: usize = 300;
+
+// ===== 店铺级长任务进度（同步 / 批量操作共用，前端轮询展示） =====
+
+/// key = shop_id。任务结束后保留最后一条（finished=true），供前端读到收尾文案。
+static TASK_PROGRESS: OnceLock<Mutex<HashMap<String, ShopProductTaskProgress>>> = OnceLock::new();
+
+fn lock_progress() -> MutexGuard<'static, HashMap<String, ShopProductTaskProgress>> {
+    TASK_PROGRESS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// 占用店铺任务槽：同店已有未完成任务时拒绝，防止同步与批量操作互踩。
+fn begin_shop_task(shop_id: &str, task: &str, message: &str) -> AppResult<()> {
+    let mut map = lock_progress();
+    if map.get(shop_id).is_some_and(|progress| !progress.finished) {
+        return Err(AppError::Validation(
+            "该店铺已有同步或批量操作正在执行，请等待完成后再试".to_string(),
+        ));
+    }
+    map.insert(
+        shop_id.to_string(),
+        ShopProductTaskProgress {
+            task: task.to_string(),
+            done: 0,
+            total: 0,
+            message: message.to_string(),
+            finished: false,
+        },
+    );
+    Ok(())
+}
+
+fn update_shop_task(shop_id: &str, done: i64, total: i64, message: String) {
+    if let Some(progress) = lock_progress().get_mut(shop_id) {
+        progress.done = done;
+        progress.total = total;
+        progress.message = message;
+    }
+}
+
+fn finish_shop_task(shop_id: &str, message: String) {
+    if let Some(progress) = lock_progress().get_mut(shop_id) {
+        progress.finished = true;
+        progress.message = message;
+    }
+}
+
+/// 查询店铺当前任务进度（前端轮询）。
+#[tauri::command]
+pub fn get_shop_product_task_progress(shop_id: String) -> Option<ShopProductTaskProgress> {
+    lock_progress().get(&shop_id).cloned()
+}
+
+/// 把一次微信调用结果归一化为 Ok(()) / Err(可读错误文案)，供批量操作统一处理不同返回类型。
+fn call_outcome<T>(result: WechatCallResult<T>) -> Result<(), String> {
+    match result {
+        WechatCallResult::Success(_) => Ok(()),
+        WechatCallResult::ApiError(error) => {
+            Err(format!("{}（错误码 {}）", error.errmsg, error.errcode))
+        }
+    }
+}
 
 // ===== JSON 取值辅助 =====
 
@@ -311,14 +377,34 @@ fn row_to_sku_view(row: &rusqlite::Row) -> rusqlite::Result<WechatShopProductSku
 // ===== Tauri 命令 =====
 
 /// 同步指定店铺的真实商品到本地缓存：游标翻页拿全部 product_id → 有限并发拉详情 → upsert → 清理陈旧。
+/// 进度经店铺任务槽对外可见（前端轮询 get_shop_product_task_progress），全程独占该店任务槽。
 #[tauri::command]
 pub async fn sync_shop_products(
     app: AppHandle,
     shop_id: String,
 ) -> AppResult<SyncShopProductsResult> {
+    begin_shop_task(&shop_id, "sync", "正在连接微信小店…")?;
+    let result = sync_shop_products_inner(&app, &shop_id).await;
+    match &result {
+        Ok(summary) => finish_shop_task(
+            &shop_id,
+            format!(
+                "同步完成：成功 {} 个，失败 {} 个",
+                summary.synced_count, summary.failed_count
+            ),
+        ),
+        Err(error) => finish_shop_task(&shop_id, format!("同步失败：{error}")),
+    }
+    result
+}
+
+async fn sync_shop_products_inner(
+    app: &AppHandle,
+    shop_id: &str,
+) -> AppResult<SyncShopProductsResult> {
     let client = WechatShopClient::default();
-    let access_token = ensure_access_token(&app, &shop_id, &client).await?;
-    let shop_name = shop_name_of(&app, &shop_id)?;
+    let access_token = ensure_access_token(app, shop_id, &client).await?;
+    let shop_name = shop_name_of(app, shop_id)?;
 
     // 1) 游标翻页拉取全部商品 id。
     // 微信 getproductlist：status 不填默认排除「从未上架的草稿(0)和回收站(6)」，
@@ -352,6 +438,12 @@ pub async fn sync_shop_products(
                         }
                     }
                     next_key = data.next_key;
+                    update_shop_task(
+                        shop_id,
+                        0,
+                        0,
+                        format!("正在拉取商品列表：已发现 {} 个商品", product_ids.len()),
+                    );
                     // 仅依赖微信契约的正常终止信号（空页 / 无 next_key）；不用「含重复计数 >= total_num」
                     // 提前终止，否则边界重复会少翻一页漏拉商品；MAX_LIST_PAGES 兜底防死循环。
                     if got == 0 || next_key.is_none() {
@@ -359,10 +451,10 @@ pub async fn sync_shop_products(
                     }
                 }
                 WechatCallResult::ApiError(error) => {
-                    let conn = open_connection(&app)?;
+                    let conn = open_connection(app)?;
                     insert_api_call_log(
                         &conn,
-                        Some(&shop_id),
+                        Some(shop_id),
                         call.meta.endpoint,
                         call.meta.method,
                         "api_error",
@@ -381,9 +473,17 @@ pub async fn sync_shop_products(
         }
         total_num += round_total;
     }
-    // 2) 有限并发拉详情（分块 spawn，每块 join 完再下一块）。
+    // 2) 有限并发拉详情（分块 spawn，每块 join 完再下一块），逐个上报进度并记录失败明细。
     let mut details: Vec<(String, ProductGetInfo)> = Vec::new();
-    let mut failed_count: i64 = 0;
+    let mut failed_items: Vec<ShopProductFailedItem> = Vec::new();
+    let detail_total = product_ids.len() as i64;
+    let mut detail_done: i64 = 0;
+    update_shop_task(
+        shop_id,
+        0,
+        detail_total,
+        format!("正在拉取商品详情 0/{detail_total}"),
+    );
     for chunk in product_ids.chunks(SYNC_DETAIL_CONCURRENCY) {
         let mut set: JoinSet<(String, AppResult<crate::wechat::ProductGetCall>)> = JoinSet::new();
         for product_id in chunk {
@@ -397,24 +497,47 @@ pub async fn sync_shop_products(
             });
         }
         while let Some(joined) = set.join_next().await {
+            detail_done += 1;
             match joined {
                 Ok((product_id, Ok(call))) => match call.result {
                     WechatCallResult::Success(info) => details.push((product_id, info)),
-                    WechatCallResult::ApiError(_) => failed_count += 1,
+                    WechatCallResult::ApiError(error) => failed_items.push(ShopProductFailedItem {
+                        product_id,
+                        error: format!("{}（错误码 {}）", error.errmsg, error.errcode),
+                    }),
                 },
-                Ok((_, Err(_))) => failed_count += 1,
-                Err(_join_error) => failed_count += 1,
+                Ok((product_id, Err(error))) => failed_items.push(ShopProductFailedItem {
+                    product_id,
+                    error: error.to_string(),
+                }),
+                Err(join_error) => failed_items.push(ShopProductFailedItem {
+                    product_id: String::new(),
+                    error: format!("任务执行异常：{join_error}"),
+                }),
             }
+            update_shop_task(
+                shop_id,
+                detail_done,
+                detail_total,
+                format!("正在拉取商品详情 {detail_done}/{detail_total}"),
+            );
         }
     }
+    let failed_count = failed_items.len() as i64;
 
     // 3) 入库（事务）+ 同步成功时清理本次未出现的陈旧商品。
+    update_shop_task(
+        shop_id,
+        detail_total,
+        detail_total,
+        "正在写入本地缓存…".to_string(),
+    );
     let batch_ts = now_shanghai();
     let synced_count = details.len() as i64;
-    let mut conn = open_connection(&app)?;
+    let mut conn = open_connection(app)?;
     let tx = conn.transaction()?;
     for (product_id, info) in &details {
-        upsert_product(&tx, &shop_id, &shop_name, product_id, info, &batch_ts)?;
+        upsert_product(&tx, shop_id, &shop_name, product_id, info, &batch_ts)?;
     }
     if failed_count == 0 {
         tx.execute(
@@ -432,6 +555,153 @@ pub async fn sync_shop_products(
         synced_count,
         total_num,
         failed_count,
+        failed_items,
+    })
+}
+
+/// 批量上架/下架/删除：微信无批量商品接口，只能有限并发逐个调用；逐项上报进度，返回成功数与失败明细。
+#[tauri::command]
+pub async fn batch_shop_product_action(
+    app: AppHandle,
+    shop_id: String,
+    action: String,
+    wechat_product_ids: Vec<String>,
+) -> AppResult<BatchShopProductActionResult> {
+    let action_label = match action.as_str() {
+        "listing" => "批量上架",
+        "delisting" => "批量下架",
+        "delete" => "批量删除",
+        _ => return Err(AppError::Validation("不支持的批量操作类型".to_string())),
+    };
+    if wechat_product_ids.is_empty() {
+        return Err(AppError::Validation("未选择任何商品".to_string()));
+    }
+    begin_shop_task(
+        &shop_id,
+        &format!("batch_{action}"),
+        &format!("{action_label}准备中…"),
+    )?;
+    let result =
+        batch_shop_product_action_inner(&app, &shop_id, &action, action_label, &wechat_product_ids)
+            .await;
+    match &result {
+        Ok(summary) => finish_shop_task(
+            &shop_id,
+            format!(
+                "{action_label}完成：成功 {} 个，失败 {} 个",
+                summary.succeeded,
+                summary.failed.len()
+            ),
+        ),
+        Err(error) => finish_shop_task(&shop_id, format!("{action_label}失败：{error}")),
+    }
+    result
+}
+
+async fn batch_shop_product_action_inner(
+    app: &AppHandle,
+    shop_id: &str,
+    action: &str,
+    action_label: &str,
+    wechat_product_ids: &[String],
+) -> AppResult<BatchShopProductActionResult> {
+    let client = WechatShopClient::default();
+    let access_token = ensure_access_token(app, shop_id, &client).await?;
+    let total = wechat_product_ids.len() as i64;
+    let mut done: i64 = 0;
+    let mut succeeded_ids: Vec<String> = Vec::new();
+    let mut failed: Vec<ShopProductFailedItem> = Vec::new();
+    update_shop_task(shop_id, 0, total, format!("{action_label} 0/{total}"));
+
+    for chunk in wechat_product_ids.chunks(SYNC_DETAIL_CONCURRENCY) {
+        let mut set: JoinSet<(String, Result<(), String>)> = JoinSet::new();
+        for product_id in chunk {
+            let client = client.clone();
+            let token = access_token.clone();
+            let product_id = product_id.clone();
+            let action = action.to_string();
+            set.spawn(async move {
+                // 三个接口的返回包装类型不同，各分支内就地归一化为 Ok(()) / Err(文案)。
+                let outcome = match action.as_str() {
+                    "listing" => match client.listing_product(&token, &product_id).await {
+                        Ok(call) => call_outcome(call.result),
+                        Err(error) => Err(error.to_string()),
+                    },
+                    "delisting" => match client.delisting_product(&token, &product_id).await {
+                        Ok(call) => call_outcome(call.result),
+                        Err(error) => Err(error.to_string()),
+                    },
+                    _ => match client.delete_product(&token, &product_id).await {
+                        Ok(call) => call_outcome(call.result),
+                        Err(error) => Err(error.to_string()),
+                    },
+                };
+                (product_id, outcome)
+            });
+        }
+        while let Some(joined) = set.join_next().await {
+            done += 1;
+            match joined {
+                Ok((product_id, Ok(()))) => succeeded_ids.push(product_id),
+                Ok((product_id, Err(error))) => {
+                    failed.push(ShopProductFailedItem { product_id, error })
+                }
+                Err(join_error) => failed.push(ShopProductFailedItem {
+                    product_id: String::new(),
+                    error: format!("任务执行异常：{join_error}"),
+                }),
+            }
+            update_shop_task(shop_id, done, total, format!("{action_label} {done}/{total}"));
+        }
+    }
+
+    // 成功项统一回写缓存（事务）：上/下架后的最终状态确定（5/11），直接改缓存行而不逐个重拉详情
+    // （N 个商品省 N 次 get_product），删除直接清行；细节差异留待下次同步整体校正。
+    {
+        let mut conn = open_connection(app)?;
+        let tx = conn.transaction()?;
+        let ts = now_shanghai();
+        for product_id in &succeeded_ids {
+            if action == "delete" {
+                tx.execute(
+                    "DELETE FROM wechat_shop_product_skus WHERE shop_id = ?1 AND wechat_product_id = ?2",
+                    params![shop_id, product_id],
+                )?;
+                tx.execute(
+                    "DELETE FROM wechat_shop_products WHERE shop_id = ?1 AND wechat_product_id = ?2",
+                    params![shop_id, product_id],
+                )?;
+            } else {
+                let status: i64 = if action == "listing" { 5 } else { 11 };
+                tx.execute(
+                    "UPDATE wechat_shop_products SET status = ?1, updated_at = ?2
+                     WHERE shop_id = ?3 AND wechat_product_id = ?4",
+                    params![status, ts, shop_id, product_id],
+                )?;
+            }
+        }
+        insert_api_call_log(
+            &tx,
+            Some(shop_id),
+            "batch_shop_product_action",
+            "LOCAL",
+            if failed.is_empty() { "success" } else { "api_error" },
+            None,
+            None,
+            Some(&format!(
+                "{action_label}：成功 {}/{total}，失败 {}",
+                succeeded_ids.len(),
+                failed.len()
+            )),
+        )?;
+        tx.commit()?;
+    }
+
+    Ok(BatchShopProductActionResult {
+        action: action.to_string(),
+        total,
+        succeeded: succeeded_ids.len() as i64,
+        failed,
     })
 }
 
@@ -594,7 +864,7 @@ fn strip_retry_suffix(out_id: &str) -> String {
     trimmed.to_string()
 }
 
-/// 读缓存商品列表，支持按店铺、状态、关键词筛选。
+/// 读缓存商品列表，支持按店铺、状态、关键词筛选，limit/offset 分页（total 为筛选后总数）。
 #[tauri::command]
 pub fn list_cached_shop_products(
     app: AppHandle,
@@ -602,10 +872,12 @@ pub fn list_cached_shop_products(
     status: Option<i64>,
     keyword: Option<String>,
     limit: Option<i64>,
+    offset: Option<i64>,
 ) -> AppResult<ShopProductListResult> {
     let conn = open_connection(&app)?;
     // 上限与同步能力（MAX_LIST_PAGES × 30 = 9000）对齐，避免大店商品被列表截断而不可见。
     let limit = limit.unwrap_or(10_000).clamp(1, 10_000);
+    let offset = offset.unwrap_or(0).max(0);
     let shop_id = shop_id.filter(|value| !value.trim().is_empty() && value != "all");
     let keyword = keyword
         .map(|value| value.trim().to_string())
@@ -650,7 +922,7 @@ pub fn list_cached_shop_products(
          FROM wechat_shop_products
          {where_clause}
          ORDER BY updated_at DESC
-         LIMIT {limit}"
+         LIMIT {limit} OFFSET {offset}"
     );
     let mut stmt = conn.prepare(&sql)?;
     let items = stmt
@@ -658,6 +930,54 @@ pub fn list_cached_shop_products(
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(ShopProductListResult { items, total })
+}
+
+/// 店铺缓存商品概要统计：一次 SQL 按状态聚合出 KPI 与各状态计数，
+/// 供 KPI 卡和状态筛选选项使用（分页后前端不再持有全量数据，统计必须下推数据库）。
+#[tauri::command]
+pub fn get_shop_product_summary(
+    app: AppHandle,
+    shop_id: String,
+) -> AppResult<ShopProductSummaryView> {
+    let conn = open_connection(&app)?;
+    let mut stmt = conn.prepare(
+        "SELECT status, COUNT(*),
+                SUM(CASE WHEN total_stock <= 0 THEN 1 ELSE 0 END)
+         FROM wechat_shop_products WHERE shop_id = ?1
+         GROUP BY status ORDER BY status",
+    )?;
+    let rows = stmt
+        .query_map([&shop_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut summary = ShopProductSummaryView {
+        total: 0,
+        listed: 0,
+        delisted: 0,
+        auditing: 0,
+        zero_stock: 0,
+        status_counts: Vec::with_capacity(rows.len()),
+    };
+    for (status, count, zero_count) in rows {
+        summary.total += count;
+        summary.zero_stock += zero_count;
+        match status {
+            5 => summary.listed += count,
+            11..=15 => summary.delisted += count,
+            2 | 70 => summary.auditing += count,
+            _ => {}
+        }
+        summary
+            .status_counts
+            .push(ShopProductStatusCount { status, count });
+    }
+    Ok(summary)
 }
 
 /// 读单个缓存商品详情（含 SKU 列表）。

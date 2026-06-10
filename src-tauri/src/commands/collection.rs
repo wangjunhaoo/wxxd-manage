@@ -75,6 +75,130 @@ pub(in crate::commands) fn insert_import_batch(
     Ok(())
 }
 
+/// 一行待导入的流水线商品（来自 Excel 行或手动粘贴的淘宝链接）。
+struct PipelineImportRow {
+    title: String,
+    source_url: String,
+    category_path: String,
+}
+
+/// 共享导入核心：链接校验 + 批内/库内双重去重 + 商品与店级 target 落库 + 批次创建。
+/// 整体一个事务：任一行链接校验失败整批回滚，不留半截批次。
+/// source/source_label 决定批次来源标识与自动命名（如 "excel"/「Excel导入」、"manual"/「链接导入」）。
+fn import_rows_into_pipeline(
+    conn: &mut Connection,
+    rows: Vec<PipelineImportRow>,
+    target_shops: &[TargetShop],
+    source: &str,
+    source_label: &str,
+) -> AppResult<ExcelImportResult> {
+    let now = now_shanghai();
+    let mut imported_count = 0i64;
+    // 导入去重：同一淘宝链接只建一个商品。批内用 seen 去重，跨批查库去重(避免与历史/已上架商品
+    // 重复采集铺货后在 precheck 撞 DUPLICATE_EXTERNAL_PRODUCT_IN_SHOP)。跳过数用通知告知用户，
+    // 返回值仍是去重后的真实导入数，杜绝「静默丢数据」误解。
+    let mut skipped_count = 0i64;
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    // 一次导入 = 一个批次：本批全部商品打同一 batch_id，工作台按批次筛选与批量操作。
+    let batch_id = format!("batch_{}", Uuid::new_v4().simple());
+    let tx = conn.transaction()?;
+
+    for row in rows {
+        // 简单校验链接
+        if !row.source_url.contains("item.taobao.com")
+            && !row.source_url.contains("detail.tmall.com")
+        {
+            return Err(AppError::Validation(format!(
+                "商品 {} 链接格式不正确，仅支持淘宝/天猫商品链接",
+                row.title
+            )));
+        }
+
+        // 去重：同一淘宝链接(批内重复 / 库内已存在)只建一个商品，避免重复铺货撞 DUPLICATE。
+        if !seen.insert(row.source_url.clone()) {
+            skipped_count += 1;
+            continue;
+        }
+        let already_exists = tx
+            .query_row(
+                "SELECT 1 FROM pipeline_products WHERE source_url = ?1 LIMIT 1",
+                [&row.source_url],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if already_exists {
+            skipped_count += 1;
+            continue;
+        }
+
+        let product_id = format!("prod_{}", Uuid::new_v4().simple());
+        tx.execute(
+            "INSERT INTO pipeline_products
+             (id, title, source_url, category_path, status, stage, attention, import_batch_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, 'pending_collect', 'collect', 'none', ?5, ?6, ?6)",
+            params![row.title, row.source_url, row.category_path, batch_id, now],
+        )?;
+        for shop in target_shops {
+            let target_id = format!("tgt_{}", Uuid::new_v4().simple());
+            tx.execute(
+                "INSERT INTO pipeline_shop_targets
+                 (id, product_id, shop_id, shop_name, stage, status, retry_count, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, 'await_review', 'pending', 0, ?5, ?5)",
+                params![target_id, product_id, shop.id, shop.name, now],
+            )?;
+        }
+        imported_count += 1;
+    }
+
+    // 全部去重跳过时不建空批次（批次只在真有商品落库时存在）
+    if imported_count > 0 {
+        insert_import_batch(&tx, &batch_id, source, source_label, imported_count, &now)?;
+    }
+
+    if skipped_count > 0 {
+        // 通知告知用户有重复链接被跳过(返回值是去重后的真实导入数，避免「导入了全部行」的误解)。
+        let _ = upsert_notification(
+            &tx,
+            "info",
+            "import_dedup",
+            source,
+            None,
+            "已跳过重复淘宝链接",
+            &format!(
+                "本次导入跳过 {skipped_count} 条重复淘宝链接(表内重复或库内已存在)，实际导入 {imported_count} 个商品。"
+            ),
+            None,
+        );
+    }
+
+    tx.commit()?;
+
+    Ok(ExcelImportResult {
+        imported: imported_count,
+        skipped: skipped_count,
+    })
+}
+
+/// 目标店可选：不选店则只采集不铺货（采集审查后停在「待铺货」，稍后可补选店）。
+/// 选了店则导入时即为「每个商品 × 每个目标店」建好流水线推进单位。
+fn resolve_import_target_shops(
+    conn: &Connection,
+    target_shop_ids: &[String],
+) -> AppResult<Vec<TargetShop>> {
+    if target_shop_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let shops = resolve_target_shops_for_scope(conn, &[], target_shop_ids)?;
+    if shops.len() != target_shop_ids.len() {
+        return Err(AppError::Validation(
+            "目标微信小店不存在或已被删除，请刷新店铺列表后重试".to_string(),
+        ));
+    }
+    Ok(shops)
+}
+
 // 1. Excel 导入并创建采集任务
 #[tauri::command]
 pub fn import_excel_for_collection(
@@ -94,34 +218,10 @@ pub fn import_excel_for_collection(
         .map_err(|e| AppError::Validation(format!("无法打开 Excel 文件: {}", e)))?;
 
     let mut conn = open_connection(&app)?;
-    let now = now_shanghai();
+    let target_shops = resolve_import_target_shops(&conn, &target_shop_ids)?;
 
-    // 目标店可选：不选店则只采集不铺货（采集审查后停在「待铺货」，稍后可补选店）。
-    // 选了店则导入时即为「每个商品 × 每个目标店」建好流水线推进单位。
-    let target_shops = if target_shop_ids.is_empty() {
-        Vec::new()
-    } else {
-        let shops = resolve_target_shops_for_scope(&conn, &[], &target_shop_ids)?;
-        if shops.len() != target_shop_ids.len() {
-            return Err(AppError::Validation(
-                "目标微信小店不存在或已被删除，请刷新店铺列表后重试".to_string(),
-            ));
-        }
-        shops
-    };
-
-    let mut imported_count = 0i64;
-    // 导入去重：同一淘宝链接只建一个商品。批内用 seen 去重，跨批查库去重(避免与历史/已上架商品
-    // 重复采集铺货后在 precheck 撞 DUPLICATE_EXTERNAL_PRODUCT_IN_SHOP)。跳过数用通知告知用户，
-    // 返回值仍是去重后的真实导入数，杜绝「静默丢数据」误解。
-    let mut skipped_count = 0i64;
-    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-
-    // 一次导入 = 一个批次：本批全部商品打同一 batch_id，工作台按批次筛选与批量操作。
-    // 整个导入套事务：中途校验失败（如链接格式错误）整批回滚，不留半截批次。
-    let batch_id = format!("batch_{}", Uuid::new_v4().simple());
-    let tx = conn.transaction()?;
-
+    // Excel 无表头三列：商品名 · 淘宝链接 · 微信类目路径；行不足两列或标题/链接为空则跳过该行
+    let mut rows: Vec<PipelineImportRow> = Vec::new();
     if let Some(Ok(range)) = excel.worksheet_range_at(0) {
         for row in range.rows() {
             if row.len() < 2 {
@@ -139,89 +239,84 @@ pub fn import_excel_for_collection(
                 .get(2)
                 .map(|d| d.to_string().trim().to_string())
                 .unwrap_or_default();
-
             if title.is_empty() || source_url.is_empty() {
                 continue;
             }
-
-            // 简单校验链接
-            if !source_url.contains("item.taobao.com") && !source_url.contains("detail.tmall.com") {
-                return Err(AppError::Validation(format!(
-                    "商品 {} 链接格式不正确，仅支持淘宝/天猫商品链接",
-                    title
-                )));
-            }
-
-            // 去重：同一淘宝链接(批内重复 / 库内已存在)只建一个商品，避免重复铺货撞 DUPLICATE。
-            if !seen.insert(source_url.clone()) {
-                skipped_count += 1;
-                continue;
-            }
-            let already_exists = tx
-                .query_row(
-                    "SELECT 1 FROM pipeline_products WHERE source_url = ?1 LIMIT 1",
-                    [&source_url],
-                    |_| Ok(()),
-                )
-                .optional()?
-                .is_some();
-            if already_exists {
-                skipped_count += 1;
-                continue;
-            }
-
-            let product_id = format!("prod_{}", Uuid::new_v4().simple());
-            tx.execute(
-                "INSERT INTO pipeline_products
-                 (id, title, source_url, category_path, status, stage, attention, import_batch_id, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, 'pending_collect', 'collect', 'none', ?5, ?6, ?6)",
-                params![product_id, title, source_url, category_path, batch_id, now],
-            )?;
-            for shop in &target_shops {
-                let target_id = format!("tgt_{}", Uuid::new_v4().simple());
-                tx.execute(
-                    "INSERT INTO pipeline_shop_targets
-                     (id, product_id, shop_id, shop_name, stage, status, retry_count, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, 'await_review', 'pending', 0, ?5, ?5)",
-                    params![target_id, product_id, shop.id, shop.name, now],
-                )?;
-            }
-            imported_count += 1;
+            rows.push(PipelineImportRow {
+                title,
+                source_url,
+                category_path,
+            });
         }
     }
 
-    // 全部去重跳过时不建空批次（批次只在真有商品落库时存在）
-    if imported_count > 0 {
-        insert_import_batch(&tx, &batch_id, "excel", "Excel导入", imported_count, &now)?;
-    }
+    let result = import_rows_into_pipeline(&mut conn, rows, &target_shops, "excel", "Excel导入")?;
 
-    if skipped_count > 0 {
-        // 通知告知用户有重复链接被跳过(返回值是去重后的真实导入数，避免「导入了全部行」的误解)。
-        let _ = upsert_notification(
-            &tx,
-            "info",
-            "import_dedup",
-            "import_excel",
-            None,
-            "已跳过重复淘宝链接",
-            &format!(
-                "本次导入跳过 {skipped_count} 条重复淘宝链接(表内重复或库内已存在)，实际导入 {imported_count} 个商品。"
-            ),
-            None,
-        );
-    }
-
-    tx.commit()?;
-
-    if imported_count > 0 {
+    if result.imported > 0 {
         // 导入成功后触发后台采集 Worker
         trigger_collection_worker(app);
     }
 
-    Ok(ExcelImportResult {
-        imported: imported_count,
-        skipped: skipped_count,
+    Ok(result)
+}
+
+/// 从淘宝链接提取商品数字 ID（id= 查询参数），用于生成采集前的占位标题。
+fn taobao_item_id_from_url(url: &str) -> Option<String> {
+    let query = url.split_once('?')?.1;
+    query.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        if key == "id" && !value.is_empty() && value.chars().all(|c| c.is_ascii_digit()) {
+            Some(value.to_string())
+        } else {
+            None
+        }
     })
+}
+
+// 1b. 手动粘贴淘宝链接导入（免 Excel）：每行一个链接，同样建批次走采集→审查→铺货流水线。
+// 标题先用「淘宝商品 {id}」占位，采集成功后由真实商品标题覆盖（见 update_pipeline_collect_status）。
+#[tauri::command]
+pub fn import_urls_for_collection(
+    app: AppHandle,
+    urls: Vec<String>,
+    target_shop_ids: Vec<String>,
+) -> AppResult<ExcelImportResult> {
+    let cleaned: Vec<String> = urls
+        .into_iter()
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty())
+        .collect();
+    if cleaned.is_empty() {
+        return Err(AppError::Validation(
+            "请至少粘贴一个淘宝/天猫商品链接".to_string(),
+        ));
+    }
+
+    let mut conn = open_connection(&app)?;
+    let target_shops = resolve_import_target_shops(&conn, &target_shop_ids)?;
+
+    let rows: Vec<PipelineImportRow> = cleaned
+        .into_iter()
+        .map(|url| {
+            let title = match taobao_item_id_from_url(&url) {
+                Some(id) => format!("淘宝商品 {id}"),
+                None => "待采集商品".to_string(),
+            };
+            PipelineImportRow {
+                title,
+                source_url: url,
+                category_path: String::new(),
+            }
+        })
+        .collect();
+
+    let result = import_rows_into_pipeline(&mut conn, rows, &target_shops, "manual", "链接导入")?;
+
+    if result.imported > 0 {
+        trigger_collection_worker(app);
+    }
+
+    Ok(result)
 }
 
 /// 给已存在的商品补选目标店并铺货（「只采集」后再选店的入口）。
@@ -3902,26 +3997,37 @@ fn update_task_status(
             // 该列此前恒为 NULL，铺货 loader 用 COALESCE(...,'') 会把所有商品归一成空串，
             // 导致第一个商品铺成功后，同店后续商品在 precheck 全部撞空串去重键 → 误判 DUPLICATE。
             // 回填真实唯一值后去重才正确；解析不到则存 NULL（空值不参与去重，见 precheck 防御）。
-            let external_id = collected_data
+            let parsed = collected_data
                 .as_deref()
-                .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
-                .and_then(|value| {
-                    value
-                        .get("external_product_id")
-                        .and_then(|field| field.as_str())
-                        .map(str::trim)
-                        .filter(|text| !text.is_empty())
-                        .map(str::to_string)
-                });
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
+            let external_id = parsed.as_ref().and_then(|value| {
+                value
+                    .get("external_product_id")
+                    .and_then(|field| field.as_str())
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_string)
+            });
+            // 采集到的真实商品标题同步回列：链接导入的占位标题（「淘宝商品 {id}」）靠这里
+            // 换成真实标题；Excel 导入的人工标题也统一对齐采集结果，列表展示与铺货数据一致。
+            let collected_title = parsed.as_ref().and_then(|value| {
+                value
+                    .get("title")
+                    .and_then(|field| field.as_str())
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_string)
+            });
             conn.execute(
                 "UPDATE pipeline_products
                  SET status = 'collecting', stage = 'review', attention = 'none',
                      collected_data = ?1, external_product_id = ?2,
+                     title = COALESCE(?3, title),
                      reviewed_data = NULL, review_result_json = NULL,
                      error_code = NULL, error_reason = NULL, progress_text = '等待审查',
-                     updated_at = ?3
-                 WHERE id = ?4",
-                params![collected_data, external_id, now, task_id],
+                     updated_at = ?4
+                 WHERE id = ?5",
+                params![collected_data, external_id, collected_title, now, task_id],
             )?;
         }
         _ => {
@@ -3943,4 +4049,31 @@ fn update_task_status(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::taobao_item_id_from_url;
+
+    #[test]
+    fn item_id_parsed_from_standard_link() {
+        assert_eq!(
+            taobao_item_id_from_url("https://item.taobao.com/item.htm?id=1031628908697"),
+            Some("1031628908697".to_string())
+        );
+        // id 不在首位、混杂其他参数也能取到
+        assert_eq!(
+            taobao_item_id_from_url("https://detail.tmall.com/item.htm?spm=a21n57.1&id=123456&ns=1"),
+            Some("123456".to_string())
+        );
+    }
+
+    #[test]
+    fn item_id_missing_or_invalid_returns_none() {
+        // 无查询串 / 无 id 参数 / id 非纯数字（防把 skuId 之类误判）
+        assert_eq!(taobao_item_id_from_url("https://item.taobao.com/item.htm"), None);
+        assert_eq!(taobao_item_id_from_url("https://item.taobao.com/item.htm?spm=abc"), None);
+        assert_eq!(taobao_item_id_from_url("https://item.taobao.com/item.htm?id=abc123"), None);
+        assert_eq!(taobao_item_id_from_url("https://item.taobao.com/item.htm?id="), None);
+    }
 }

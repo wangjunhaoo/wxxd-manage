@@ -321,6 +321,23 @@ export function usePipeline(command: CommandFn) {
     }
   }
 
+  /** 导入结果统一提示：按「新增/重复」组合给人话文案，整批被去重时明确告知原因。 */
+  function notifyImportResult(result: ExcelImportResult, emptyHint: string) {
+    if (result.imported > 0 && result.skipped > 0) {
+      ElMessage.success(
+        `已导入 ${result.imported} 个商品（另有 ${result.skipped} 条链接此前已导入过，已跳过），开始采集`,
+      );
+    } else if (result.imported > 0) {
+      ElMessage.success(`已导入 ${result.imported} 个商品，开始采集`);
+    } else if (result.skipped > 0) {
+      ElMessage.warning(
+        `未新增商品：${result.skipped} 条淘宝链接此前都已导入过（可在工作台搜索或切换批次查看）`,
+      );
+    } else {
+      ElMessage.warning(emptyHint);
+    }
+  }
+
   /** 导入 Excel 并指定本批目标店，商品自动开始采集→审查→铺货。 */
   async function importExcel(
     filePath: string,
@@ -331,22 +348,29 @@ export function usePipeline(command: CommandFn) {
         "import_excel_for_collection",
         { filePath, targetShopIds },
       );
-      // 按「新增/重复」组合给人话提示：整批被去重时明确告知原因，而非干巴巴的「导入 0 条」
-      if (result.imported > 0 && result.skipped > 0) {
-        ElMessage.success(
-          `已导入 ${result.imported} 个商品（另有 ${result.skipped} 条链接此前已导入过，已跳过），开始采集`,
-        );
-      } else if (result.imported > 0) {
-        ElMessage.success(`已导入 ${result.imported} 个商品，开始采集`);
-      } else if (result.skipped > 0) {
-        ElMessage.warning(
-          `未新增商品：表中 ${result.skipped} 条淘宝链接此前都已导入过（可在工作台搜索或切换批次查看）`,
-        );
-      } else {
-        ElMessage.warning(
-          "文件中没有可导入的数据行（要求：第 1 列商品标题、第 2 列淘宝/天猫链接，且数据在第一个工作表）",
-        );
-      }
+      notifyImportResult(
+        result,
+        "文件中没有可导入的数据行（要求：第 1 列商品标题、第 2 列淘宝/天猫链接，且数据在第一个工作表）",
+      );
+      await refreshPipeline();
+      return result.imported > 0;
+    } catch (error) {
+      ElMessage.error(`导入失败：${error}`);
+      return false;
+    }
+  }
+
+  /** 粘贴淘宝链接导入（免 Excel）：每行一个链接，同样建批次走采集→审查→铺货。 */
+  async function importUrls(
+    urls: string[],
+    targetShopIds: string[],
+  ): Promise<boolean> {
+    try {
+      const result = await command<ExcelImportResult>(
+        "import_urls_for_collection",
+        { urls, targetShopIds },
+      );
+      notifyImportResult(result, "没有可导入的链接");
       await refreshPipeline();
       return result.imported > 0;
     } catch (error) {
@@ -416,6 +440,7 @@ export function usePipeline(command: CommandFn) {
     categoryOptions,
     categorySearching,
     importExcel,
+    importUrls,
     addPublishTargets,
     loadProductDetail,
   };

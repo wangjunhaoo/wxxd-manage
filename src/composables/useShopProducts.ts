@@ -1,8 +1,11 @@
 import { ref } from "../runtime/reactive";
 import { ElMessage } from "../runtime/feedback";
 import type {
+  BatchShopProductActionResult,
   CleanupOrphanDraftsResult,
   ShopProductListResult,
+  ShopProductSummaryView,
+  ShopProductTaskProgress,
   SyncShopProductsResult,
   WechatShopProductDetailView,
   WechatShopProductSkuView,
@@ -12,6 +15,9 @@ import type {
 type CommandFn = <T>(name: string, args?: Record<string, unknown>) => Promise<T>;
 
 type TagTone = "primary" | "success" | "info" | "warning" | "danger";
+
+/** 列表每页条数：分页下推数据库，前端只渲染一页，大店（2000+ 商品）不再截断/卡顿。 */
+export const SHOP_PRODUCT_PAGE_SIZE = 50;
 
 /** 微信商品 status 枚举 → 中文标签 + Element 标签色调（见 getproduct 文档 status 字段）。 */
 export const PRODUCT_STATUS_META: Record<number, { label: string; tone: TagTone }> = {
@@ -62,9 +68,12 @@ export function isAuditing(status: number): boolean {
   return status === 2 || status === 70;
 }
 
+export type BatchProductAction = "listing" | "delisting" | "delete";
+
 /**
  * 商品管理页前端状态：以本地缓存为列表数据源（list_cached_shop_products），
- * 同步 / 上下架 / 删除 / 库存调整都走后端命令，操作后刷新列表。
+ * 状态/关键词筛选与分页全部下推数据库；KPI 与状态计数走 get_shop_product_summary 聚合。
+ * 同步 / 批量操作期间轮询 get_shop_product_task_progress 展示进度条。
  */
 export function useShopProducts(command: CommandFn) {
   const shopProducts = ref<WechatShopProductView[]>([]);
@@ -73,13 +82,65 @@ export function useShopProducts(command: CommandFn) {
   const syncing = ref(false);
   const refreshingStock = ref(false);
   const cleaningDrafts = ref(false);
+  const batching = ref(false);
   const selectedShopId = ref<string>("");
   const statusFilter = ref<number | "all">("all");
   const keyword = ref("");
+  const page = ref(1);
+  /** 店铺级概要统计（KPI 卡 + 状态筛选选项），与列表筛选无关、基于全集稳定。 */
+  const summary = ref<ShopProductSummaryView | null>(null);
+  /** 同步/批量任务进度（轮询所得），null = 当前无任务展示。 */
+  const progress = ref<ShopProductTaskProgress | null>(null);
   /** row_id → SKU 列表缓存（展开行懒加载）。 */
   const detailSkus = ref<Record<string, WechatShopProductSkuView[]>>({});
+  /** 正在懒加载 SKU 的 row_id 集合（展开行加载态）。 */
+  const loadingSkuIds = ref<Record<string, true>>({});
+  /** 批量操作选择集：row_id → 商品行。跨页保留，切店清空。 */
+  const selected = ref<Record<string, WechatShopProductView>>({});
 
-  /** 从本地缓存读取商品列表（按当前店铺/状态/关键词筛选）。 */
+  // ---- 进度轮询 ----
+  let progressTimer: ReturnType<typeof setInterval> | null = null;
+
+  function startProgressPolling() {
+    stopProgressPolling();
+    const shopId = selectedShopId.value;
+    if (!shopId) return;
+    progressTimer = setInterval(() => {
+      void command<ShopProductTaskProgress | null>("get_shop_product_task_progress", {
+        shopId,
+      })
+        .then((value) => {
+          progress.value = value;
+        })
+        .catch(() => {
+          /* 轮询失败静默忽略，下个周期重试 */
+        });
+    }, 600);
+  }
+
+  function stopProgressPolling() {
+    if (progressTimer) clearInterval(progressTimer);
+    progressTimer = null;
+    progress.value = null;
+  }
+
+  // ---- 列表 / 概要 ----
+
+  /** 列表刷新后用最新行数据更新选择集中的同 id 条目，避免批量按钮按陈旧状态判断可执行性。 */
+  function syncSelectionWith(items: WechatShopProductView[]) {
+    if (Object.keys(selected.value).length === 0) return;
+    let changed = false;
+    const next = { ...selected.value };
+    for (const item of items) {
+      if (next[item.id]) {
+        next[item.id] = item;
+        changed = true;
+      }
+    }
+    if (changed) selected.value = next;
+  }
+
+  /** 从本地缓存读取当前页商品（店铺/状态/关键词筛选全部下推数据库）。 */
   async function refreshList() {
     if (!selectedShopId.value) {
       shopProducts.value = [];
@@ -88,15 +149,31 @@ export function useShopProducts(command: CommandFn) {
     }
     loading.value = true;
     try {
-      // 拉取该店全部商品；状态/关键词由前端过滤，使筛选选项基于全集稳定、切换即时。
       const result = await command<ShopProductListResult>("list_cached_shop_products", {
         shopId: selectedShopId.value,
-        status: null,
-        keyword: null,
-        limit: 2000,
+        status: statusFilter.value === "all" ? null : statusFilter.value,
+        keyword: keyword.value.trim() || null,
+        limit: SHOP_PRODUCT_PAGE_SIZE,
+        offset: (page.value - 1) * SHOP_PRODUCT_PAGE_SIZE,
       });
+      // 筛选变化/删除后页码可能越界（当前页为空但总数非零），回退到最后一页重取一次。
+      if (result.items.length === 0 && result.total > 0 && page.value > 1) {
+        page.value = Math.max(1, Math.ceil(result.total / SHOP_PRODUCT_PAGE_SIZE));
+        const retry = await command<ShopProductListResult>("list_cached_shop_products", {
+          shopId: selectedShopId.value,
+          status: statusFilter.value === "all" ? null : statusFilter.value,
+          keyword: keyword.value.trim() || null,
+          limit: SHOP_PRODUCT_PAGE_SIZE,
+          offset: (page.value - 1) * SHOP_PRODUCT_PAGE_SIZE,
+        });
+        shopProducts.value = retry.items;
+        total.value = retry.total;
+        syncSelectionWith(retry.items);
+        return;
+      }
       shopProducts.value = result.items;
       total.value = result.total;
+      syncSelectionWith(result.items);
     } catch (error) {
       ElMessage.error(`获取商品失败：${error}`);
     } finally {
@@ -104,13 +181,80 @@ export function useShopProducts(command: CommandFn) {
     }
   }
 
-  /** 调微信接口全量同步当前店铺商品到本地缓存（列表+详情+库存）。 */
-  async function syncProducts() {
+  /** 拉取店铺级概要统计（KPI + 各状态计数）。 */
+  async function refreshSummary() {
     if (!selectedShopId.value) {
-      ElMessage.warning("请先选择店铺");
+      summary.value = null;
       return;
     }
+    try {
+      summary.value = await command<ShopProductSummaryView>("get_shop_product_summary", {
+        shopId: selectedShopId.value,
+      });
+    } catch (error) {
+      ElMessage.error(`获取商品统计失败：${error}`);
+    }
+  }
+
+  /** 列表 + 概要一起刷新（任何写操作之后都该调这个，保证 KPI/筛选计数同步更新）。 */
+  async function refreshAll() {
+    await Promise.all([refreshList(), refreshSummary()]);
+  }
+
+  // ---- 选择集 ----
+
+  function toggleSelect(row: WechatShopProductView) {
+    const next = { ...selected.value };
+    if (next[row.id]) delete next[row.id];
+    else next[row.id] = row;
+    selected.value = next;
+  }
+
+  /** 批量勾选/取消当前页的若干行（表头全选用）。 */
+  function selectRows(rows: WechatShopProductView[], on: boolean) {
+    const next = { ...selected.value };
+    for (const row of rows) {
+      if (on) next[row.id] = row;
+      else delete next[row.id];
+    }
+    selected.value = next;
+  }
+
+  function clearSelection() {
+    selected.value = {};
+  }
+
+  /** 把当前筛选条件下的全部商品（跨页）加入选择集，返回选中总数。 */
+  async function selectAllFiltered(): Promise<number> {
+    if (!selectedShopId.value) return 0;
+    try {
+      const result = await command<ShopProductListResult>("list_cached_shop_products", {
+        shopId: selectedShopId.value,
+        status: statusFilter.value === "all" ? null : statusFilter.value,
+        keyword: keyword.value.trim() || null,
+        limit: 10_000,
+        offset: 0,
+      });
+      const next = { ...selected.value };
+      for (const row of result.items) next[row.id] = row;
+      selected.value = next;
+      return Object.keys(next).length;
+    } catch (error) {
+      ElMessage.error(`全选失败：${error}`);
+      return Object.keys(selected.value).length;
+    }
+  }
+
+  // ---- 同步 / 批量 ----
+
+  /** 调微信接口全量同步当前店铺商品到本地缓存（列表+详情+库存），期间轮询进度。 */
+  async function syncProducts(): Promise<SyncShopProductsResult | null> {
+    if (!selectedShopId.value) {
+      ElMessage.warning("请先选择店铺");
+      return null;
+    }
     syncing.value = true;
+    startProgressPolling();
     try {
       const result = await command<SyncShopProductsResult>("sync_shop_products", {
         shopId: selectedShopId.value,
@@ -124,11 +268,49 @@ export function useShopProducts(command: CommandFn) {
       }
       // 同步改动了多个商品，清空展开行 SKU 缓存以便重新懒加载最新数据。
       detailSkus.value = {};
-      await refreshList();
+      await refreshAll();
+      return result;
     } catch (error) {
       ElMessage.error(`同步失败：${error}`);
+      return null;
     } finally {
       syncing.value = false;
+      stopProgressPolling();
+    }
+  }
+
+  /**
+   * 批量上架/下架/删除，期间轮询进度。返回执行结果（含失败明细）供组件层展示；
+   * 成功的商品自动移出选择集，失败的保留以便修正后重试。
+   */
+  async function batchAction(
+    action: BatchProductAction,
+    rows: WechatShopProductView[],
+  ): Promise<BatchShopProductActionResult | null> {
+    if (!selectedShopId.value || rows.length === 0) return null;
+    batching.value = true;
+    startProgressPolling();
+    try {
+      const result = await command<BatchShopProductActionResult>("batch_shop_product_action", {
+        shopId: selectedShopId.value,
+        action,
+        wechatProductIds: rows.map((row) => row.wechat_product_id),
+      });
+      const failedIds = new Set(result.failed.map((item) => item.product_id));
+      const next = { ...selected.value };
+      for (const row of rows) {
+        if (!failedIds.has(row.wechat_product_id)) delete next[row.id];
+      }
+      selected.value = next;
+      detailSkus.value = {};
+      await refreshAll();
+      return result;
+    } catch (error) {
+      ElMessage.error(`批量操作失败：${error}`);
+      return null;
+    } finally {
+      batching.value = false;
+      stopProgressPolling();
     }
   }
 
@@ -146,7 +328,7 @@ export function useShopProducts(command: CommandFn) {
       ElMessage.success(`已刷新 ${updated} 个 SKU 的库存`);
       // 库存已批量变动，清空展开行 SKU 缓存以便重新懒加载最新库存。
       detailSkus.value = {};
-      await refreshList();
+      await refreshAll();
     } catch (error) {
       ElMessage.error(`刷新库存失败：${error}`);
     } finally {
@@ -161,6 +343,8 @@ export function useShopProducts(command: CommandFn) {
       return false;
     }
     cleaningDrafts.value = true;
+    // 清理内部会跑两轮同步，同样有任务进度可看。
+    startProgressPolling();
     try {
       const result = await command<CleanupOrphanDraftsResult>("cleanup_orphan_drafts", {
         shopId: selectedShopId.value,
@@ -169,18 +353,20 @@ export function useShopProducts(command: CommandFn) {
         `清理完成：删除 ${result.deleted} 个重复/无效草稿，${result.listed_promoted} 个独有草稿上架转正，剩余草稿 ${result.remaining_after}`,
       );
       detailSkus.value = {};
-      await refreshList();
+      await refreshAll();
       return true;
     } catch (error) {
       ElMessage.error(`清理草稿失败：${error}`);
       return false;
     } finally {
       cleaningDrafts.value = false;
+      stopProgressPolling();
     }
   }
 
-  /** 懒加载某商品的 SKU 列表（展开行用）。 */
+  /** 懒加载某商品的 SKU 列表（展开行用），带加载态。 */
   async function loadDetail(rowId: string): Promise<WechatShopProductSkuView[]> {
+    loadingSkuIds.value = { ...loadingSkuIds.value, [rowId]: true };
     try {
       const detail = await command<WechatShopProductDetailView>(
         "get_cached_shop_product_detail",
@@ -191,6 +377,10 @@ export function useShopProducts(command: CommandFn) {
     } catch (error) {
       ElMessage.error(`获取 SKU 失败：${error}`);
       return [];
+    } finally {
+      const next = { ...loadingSkuIds.value };
+      delete next[rowId];
+      loadingSkuIds.value = next;
     }
   }
 
@@ -201,7 +391,7 @@ export function useShopProducts(command: CommandFn) {
         wechatProductId: product.wechat_product_id,
       });
       ElMessage.success("已上架");
-      await refreshList();
+      await refreshAll();
       return true;
     } catch (error) {
       ElMessage.error(`上架失败：${error}`);
@@ -216,7 +406,7 @@ export function useShopProducts(command: CommandFn) {
         wechatProductId: product.wechat_product_id,
       });
       ElMessage.success("已下架");
-      await refreshList();
+      await refreshAll();
       return true;
     } catch (error) {
       ElMessage.error(`下架失败：${error}`);
@@ -231,7 +421,11 @@ export function useShopProducts(command: CommandFn) {
         wechatProductId: product.wechat_product_id,
       });
       ElMessage.success("已删除");
-      await refreshList();
+      // 已删除的行不应留在选择集里。
+      const next = { ...selected.value };
+      delete next[product.id];
+      selected.value = next;
+      await refreshAll();
       return true;
     } catch (error) {
       ElMessage.error(`删除失败：${error}`);
@@ -255,7 +449,7 @@ export function useShopProducts(command: CommandFn) {
         num,
       });
       ElMessage.success(`库存已更新为 ${newStock}`);
-      await refreshList();
+      await refreshAll();
       await loadDetail(product.id);
       return true;
     } catch (error) {
@@ -271,12 +465,25 @@ export function useShopProducts(command: CommandFn) {
     syncing,
     refreshingStock,
     cleaningDrafts,
+    batching,
     selectedShopId,
     statusFilter,
     keyword,
+    page,
+    summary,
+    progress,
     detailSkus,
+    loadingSkuIds,
+    selected,
     refreshList,
+    refreshSummary,
+    refreshAll,
+    toggleSelect,
+    selectRows,
+    clearSelection,
+    selectAllFiltered,
     syncProducts,
+    batchAction,
     refreshStock,
     cleanupDrafts,
     loadDetail,
