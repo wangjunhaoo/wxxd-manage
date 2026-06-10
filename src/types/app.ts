@@ -1186,6 +1186,14 @@ export type PipelineStats = {
   archived: number;
 };
 
+// Excel 导入结果：区分真实新增与去重跳过，避免「全是重复」时只显示「导入 0 条」
+export type ExcelImportResult = {
+  /** 实际新增的商品数（去重后） */
+  imported: number;
+  /** 被跳过的重复链接数（表内重复或库内已存在） */
+  skipped: number;
+};
+
 // 导入批次摘要（一次导入操作 = 一个批次，名称可重命名）
 export type ImportBatchView = {
   id: string;

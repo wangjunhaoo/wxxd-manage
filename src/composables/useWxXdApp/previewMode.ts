@@ -513,7 +513,7 @@ export function createPreviewMode(deps: PreviewModeDeps) {
         created_at: "2026-05-22T00:30:00+08:00",
         updated_at: "2026-05-22T00:30:10+08:00",
       });
-      return 1 as T;
+      return { imported: 1, skipped: 0 } as T;
     }
     if (name === "retry_collection_task") {
       const task = previewCollectionTasks.value.find(

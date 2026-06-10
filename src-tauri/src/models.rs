@@ -1717,6 +1717,16 @@ pub struct PipelineProductView {
     pub shops: Vec<PipelineShopTargetView>,
 }
 
+/// Excel 导入结果：区分「真实新增」与「去重跳过」，前端据此给出明确提示
+/// （只返回 imported 数字时，整批被去重会显示「导入 0 条」让用户误以为导入坏了）。
+#[derive(Debug, Serialize)]
+pub struct ExcelImportResult {
+    /// 实际新增的商品数（去重后）
+    pub imported: i64,
+    /// 被跳过的重复链接数（表内重复或库内已存在）
+    pub skipped: i64,
+}
+
 /// 导入批次摘要：一次导入操作的标识与商品计数（工作台批次筛选下拉数据源）。
 #[derive(Debug, Serialize)]
 pub struct ImportBatchView {

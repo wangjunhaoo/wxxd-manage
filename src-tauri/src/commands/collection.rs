@@ -81,7 +81,7 @@ pub fn import_excel_for_collection(
     app: AppHandle,
     file_path: String,
     target_shop_ids: Vec<String>,
-) -> AppResult<i64> {
+) -> AppResult<ExcelImportResult> {
     let path = PathBuf::from(&file_path);
     if !path.exists() {
         return Err(AppError::Validation(format!(
@@ -218,7 +218,10 @@ pub fn import_excel_for_collection(
         trigger_collection_worker(app);
     }
 
-    Ok(imported_count)
+    Ok(ExcelImportResult {
+        imported: imported_count,
+        skipped: skipped_count,
+    })
 }
 
 /// 给已存在的商品补选目标店并铺货（「只采集」后再选店的入口）。
