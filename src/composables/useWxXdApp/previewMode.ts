@@ -467,7 +467,10 @@ export function createPreviewMode(deps: PreviewModeDeps) {
     if (name === "get_collection_tasks") {
       return previewCollectionTasks.value as T;
     }
-    if (name === "import_excel_for_collection") {
+    if (
+      name === "import_excel_for_collection" ||
+      name === "import_urls_for_collection"
+    ) {
       const nextId = `col-preview-${Date.now()}`;
       previewCollectionTasks.value.unshift({
         id: nextId,

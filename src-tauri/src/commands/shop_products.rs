@@ -486,32 +486,40 @@ async fn sync_shop_products_inner(
     );
     for chunk in product_ids.chunks(SYNC_DETAIL_CONCURRENCY) {
         let mut set: JoinSet<(String, AppResult<crate::wechat::ProductGetCall>)> = JoinSet::new();
+        // 任务 ID → 商品 ID：JoinError（任务 panic）分支拿不到闭包返回值，靠映射回填，
+        // 否则失败项 product_id 为空串，前端选择集反查与失败明细都无法定位商品
+        let mut task_products: HashMap<tokio::task::Id, String> = HashMap::new();
         for product_id in chunk {
             let client = client.clone();
             let token = access_token.clone();
             let product_id = product_id.clone();
-            set.spawn(async move {
+            let pid_for_map = product_id.clone();
+            let handle = set.spawn(async move {
                 // data_type=3：同时取线上 product 与草稿 edit_product，覆盖审核中/未上架商品。
                 let result = client.get_product(&token, &product_id, 3).await;
                 (product_id, result)
             });
+            task_products.insert(handle.id(), pid_for_map);
         }
-        while let Some(joined) = set.join_next().await {
+        while let Some(joined) = set.join_next_with_id().await {
             detail_done += 1;
             match joined {
-                Ok((product_id, Ok(call))) => match call.result {
+                Ok((_, (product_id, Ok(call)))) => match call.result {
                     WechatCallResult::Success(info) => details.push((product_id, info)),
                     WechatCallResult::ApiError(error) => failed_items.push(ShopProductFailedItem {
                         product_id,
                         error: format!("{}（错误码 {}）", error.errmsg, error.errcode),
                     }),
                 },
-                Ok((product_id, Err(error))) => failed_items.push(ShopProductFailedItem {
+                Ok((_, (product_id, Err(error)))) => failed_items.push(ShopProductFailedItem {
                     product_id,
                     error: error.to_string(),
                 }),
                 Err(join_error) => failed_items.push(ShopProductFailedItem {
-                    product_id: String::new(),
+                    product_id: task_products
+                        .get(&join_error.id())
+                        .cloned()
+                        .unwrap_or_default(),
                     error: format!("任务执行异常：{join_error}"),
                 }),
             }
@@ -615,12 +623,15 @@ async fn batch_shop_product_action_inner(
 
     for chunk in wechat_product_ids.chunks(SYNC_DETAIL_CONCURRENCY) {
         let mut set: JoinSet<(String, Result<(), String>)> = JoinSet::new();
+        // 任务 ID → 商品 ID：JoinError 分支回填真实商品 ID（同 sync 处，防空串破坏前端反查）
+        let mut task_products: HashMap<tokio::task::Id, String> = HashMap::new();
         for product_id in chunk {
             let client = client.clone();
             let token = access_token.clone();
             let product_id = product_id.clone();
+            let pid_for_map = product_id.clone();
             let action = action.to_string();
-            set.spawn(async move {
+            let handle = set.spawn(async move {
                 // 三个接口的返回包装类型不同，各分支内就地归一化为 Ok(()) / Err(文案)。
                 let outcome = match action.as_str() {
                     "listing" => match client.listing_product(&token, &product_id).await {
@@ -638,16 +649,20 @@ async fn batch_shop_product_action_inner(
                 };
                 (product_id, outcome)
             });
+            task_products.insert(handle.id(), pid_for_map);
         }
-        while let Some(joined) = set.join_next().await {
+        while let Some(joined) = set.join_next_with_id().await {
             done += 1;
             match joined {
-                Ok((product_id, Ok(()))) => succeeded_ids.push(product_id),
-                Ok((product_id, Err(error))) => {
+                Ok((_, (product_id, Ok(())))) => succeeded_ids.push(product_id),
+                Ok((_, (product_id, Err(error)))) => {
                     failed.push(ShopProductFailedItem { product_id, error })
                 }
                 Err(join_error) => failed.push(ShopProductFailedItem {
-                    product_id: String::new(),
+                    product_id: task_products
+                        .get(&join_error.id())
+                        .cloned()
+                        .unwrap_or_default(),
                     error: format!("任务执行异常：{join_error}"),
                 }),
             }

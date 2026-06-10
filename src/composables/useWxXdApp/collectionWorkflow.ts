@@ -11,7 +11,6 @@ import type {
   CollectionReviewBatchResult,
   CollectionReviewConfirmRequest,
   CollectionTaskView,
-  ExcelImportResult,
   PublishJobCreated,
   PublishPricingStrategy,
   ShopListItem,
@@ -88,14 +87,12 @@ export function useCollectionWorkflow({
   selectedSection,
   shops,
 }: CollectionWorkflowDeps) {
-  const collectionImportVisible = ref(false);
   const collectionFilePath = ref("");
   const collectionFileName = computed(() => {
     const path = collectionFilePath.value.trim();
     if (!path) return "";
     return path.split(/[\\/]/).filter(Boolean).pop() || path;
   });
-  const collectionImporting = ref(false);
   const collectionLoggingIn = ref(false);
   const collectionTasks = ref<CollectionTaskView[]>([]);
   const selectedCollectionTasks = ref<CollectionTaskView[]>([]);
@@ -905,43 +902,6 @@ export function useCollectionWorkflow({
   function clearCollectionExcelFile() {
     collectionFilePath.value = "";
   }
-  async function startExcelImport() {
-    if (!collectionFilePath.value.trim()) {
-      ElMessage.warning("请先选择 Excel 文件");
-      return;
-    }
-    collectionImporting.value = true;
-    try {
-      const result = await command<ExcelImportResult>(
-        "import_excel_for_collection",
-        { filePath: collectionFilePath.value.trim() },
-      );
-      // 整批被去重时明确告知原因（仅提示「0 条」会让用户误以为导入坏了）
-      if (result.imported > 0) {
-        ElMessage.success(
-          result.skipped > 0
-            ? `成功导入 ${result.imported} 个商品采集任务（跳过 ${result.skipped} 条重复链接）`
-            : `成功导入 ${result.imported} 个商品采集任务`,
-        );
-        collectionImportVisible.value = false;
-        collectionFilePath.value = "";
-        await refreshCollectionTasks();
-        startCollectionPolling();
-      } else if (result.skipped > 0) {
-        ElMessage.warning(
-          `未新增商品：表中 ${result.skipped} 条淘宝链接此前都已导入过`,
-        );
-      } else {
-        ElMessage.warning(
-          "文件中没有可导入的数据行（要求：第 1 列商品标题、第 2 列淘宝/天猫链接，且数据在第一个工作表）",
-        );
-      }
-    } catch (err: any) {
-      ElMessage.error(`导入失败：${err}`);
-    } finally {
-      collectionImporting.value = false;
-    }
-  }
   async function triggerTaobaoLogin() {
     collectionLoggingIn.value = true;
     try {
@@ -1182,8 +1142,6 @@ export function useCollectionWorkflow({
     collectionDetailVisible,
     collectionFileName,
     collectionFilePath,
-    collectionImporting,
-    collectionImportVisible,
     collectionImageSrc,
     collectionImageUpdating,
     collectionLoggingIn,
@@ -1253,7 +1211,6 @@ export function useCollectionWorkflow({
     selectedReviewCategoryKey,
     setCollectionTaskSelected,
     startCollectionPolling,
-    startExcelImport,
     testCollectHeaded,
     testCollectResult,
     testCollectUrl,

@@ -7,6 +7,10 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
 static COLLECTOR_RUNNING: AtomicBool = AtomicBool::new(false);
+/// 手动采集浏览器（open_cloak_browser）打开期间为 true：它与自动采集共享同一
+/// CloakBrowser profile（文件锁互斥），并发拉起会让对方在锁上长等后报错，
+/// 严重时整批采集任务被标 failed——两个方向都必须在入口拦住。
+static MANUAL_BROWSER_OPEN: AtomicBool = AtomicBool::new(false);
 
 #[tauri::command]
 pub fn get_publish_pricing_strategy(app: AppHandle) -> AppResult<PublishPricingStrategy> {
@@ -260,8 +264,19 @@ pub fn import_excel_for_collection(
     Ok(result)
 }
 
-/// 从淘宝链接提取商品数字 ID（id= 查询参数），用于生成采集前的占位标题。
+/// 链接导入的占位标题：业务置信度低于采集真实标题（与 Excel 人工标题相反），
+/// 采集成功后必须被 collected_data.title 替换，否则占位词会流入审查与铺货 payload。
+const PLACEHOLDER_TITLE_PREFIX: &str = "淘宝商品 ";
+const PLACEHOLDER_TITLE_FALLBACK: &str = "待采集商品";
+
+pub(in crate::commands) fn is_placeholder_import_title(title: &str) -> bool {
+    title == PLACEHOLDER_TITLE_FALLBACK || title.starts_with(PLACEHOLDER_TITLE_PREFIX)
+}
+
+/// 从淘宝链接提取商品数字 ID（id= 查询参数），用于生成占位标题与归一化去重键。
 fn taobao_item_id_from_url(url: &str) -> Option<String> {
+    // 先截断 fragment：浏览器地址栏复制的链接可能带 #detail 等锚点
+    let url = url.split('#').next().unwrap_or(url);
     let query = url.split_once('?')?.1;
     query.split('&').find_map(|pair| {
         let (key, value) = pair.split_once('=')?;
@@ -271,6 +286,23 @@ fn taobao_item_id_from_url(url: &str) -> Option<String> {
             None
         }
     })
+}
+
+/// 链接导入归一化：能提取商品 id 时重建仅含 id 的规范链接——剥离 spm/utparam 等
+/// 每次复制都不同的跟踪参数，否则同一商品的批内/库内 source_url 去重全部失效，
+/// 会重复采集并重复上架（白耗店铺 100 上架配额）。提取不到 id 则保留原串。
+fn normalize_taobao_url(url: &str) -> String {
+    match taobao_item_id_from_url(url) {
+        Some(id) => {
+            let host = if url.contains("detail.tmall.com") {
+                "detail.tmall.com"
+            } else {
+                "item.taobao.com"
+            };
+            format!("https://{host}/item.htm?id={id}")
+        }
+        None => url.to_string(),
+    }
 }
 
 // 1b. 手动粘贴淘宝链接导入（免 Excel）：每行一个链接，同样建批次走采集→审查→铺货流水线。
@@ -298,9 +330,11 @@ pub fn import_urls_for_collection(
     let rows: Vec<PipelineImportRow> = cleaned
         .into_iter()
         .map(|url| {
+            // 归一化后再入库：去重键稳定（同商品多次粘贴必然相同），占位标题也由此生成
+            let url = normalize_taobao_url(&url);
             let title = match taobao_item_id_from_url(&url) {
-                Some(id) => format!("淘宝商品 {id}"),
-                None => "待采集商品".to_string(),
+                Some(id) => format!("{PLACEHOLDER_TITLE_PREFIX}{id}"),
+                None => PLACEHOLDER_TITLE_FALLBACK.to_string(),
             };
             PipelineImportRow {
                 title,
@@ -459,6 +493,18 @@ pub async fn open_taobao_login(app: AppHandle) -> AppResult<()> {
 // 窗口保持到用户自行关闭，本命令阻塞至浏览器进程退出后返回。
 #[tauri::command]
 pub async fn open_cloak_browser(app: AppHandle) -> AppResult<()> {
+    // 与自动采集互斥：采集运行中拒绝拉起（否则在 profile 文件锁上长等约 2 分钟才报错）
+    if COLLECTOR_RUNNING.load(Ordering::SeqCst) {
+        return Err(AppError::Validation(
+            "后台采集正在运行，请等待采集结束后再打开浏览器。".to_string(),
+        ));
+    }
+    if MANUAL_BROWSER_OPEN.swap(true, Ordering::SeqCst) {
+        return Err(AppError::Validation(
+            "采集浏览器已在运行中，请先关闭已打开的窗口。".to_string(),
+        ));
+    }
+
     let app_data_dir = app.path().app_data_dir()?;
     let profile_dir = app_data_dir.join("taobao_profile");
     let profile_dir_str = profile_dir.to_string_lossy().to_string();
@@ -466,14 +512,22 @@ pub async fn open_cloak_browser(app: AppHandle) -> AppResult<()> {
     let script_path = resolve_collector_script(&app);
 
     let mut command = python_command(&app);
-    let output = command
+    // 残锁兜底：万一 profile 锁被异常残留进程持有，3 秒快速失败而非默认 120 秒
+    command.env("WX_XD_TAOBAO_PROFILE_LOCK_TIMEOUT_SECONDS", "3");
+    let output_result = command
         .arg(&script_path)
         .arg("open-browser")
         .arg("--profile-dir")
         .arg(&profile_dir_str)
         .output()
-        .await
-        .map_err(|e| AppError::Validation(format!("无法拉起采集浏览器: {}", e)))?;
+        .await;
+    MANUAL_BROWSER_OPEN.store(false, Ordering::SeqCst);
+
+    // 浏览器开启期间被挡掉的导入/采集触发在此补上（任务一直保持 pending 等待）
+    trigger_collection_worker(app.clone());
+
+    let output =
+        output_result.map_err(|e| AppError::Validation(format!("无法拉起采集浏览器: {}", e)))?;
 
     if !output.status.success() {
         let stdout_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -3254,6 +3308,11 @@ pub async fn test_taobao_collect(
 // ================== 后台 Worker 调度机制 ==================
 
 pub fn trigger_collection_worker(app: AppHandle) {
+    // 手动采集浏览器开着时不启动（共享 profile 锁会撞）：任务保持 pending，
+    // open_cloak_browser 在浏览器关闭后会重新触发本函数补采。
+    if MANUAL_BROWSER_OPEN.load(Ordering::SeqCst) {
+        return;
+    }
     if COLLECTOR_RUNNING.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -3499,7 +3558,11 @@ async fn run_batch_collection_tasks(app: &AppHandle, tasks: &[CollectTask]) -> A
                         }
                     };
 
-                product_input.title = task.title.clone();
+                // Excel 人工标题业务置信度更高，覆盖采集标题进 collected_data；
+                // 链接导入的占位标题相反——必须保留采集真实标题，由 update_task_status 回写替换占位
+                if !is_placeholder_import_title(&task.title) {
+                    product_input.title = task.title.clone();
+                }
                 if !task.category_path.is_empty() {
                     product_input.category_hint = Some(task.category_path.clone());
                 }
@@ -3661,8 +3724,11 @@ async fn run_single_collection_task(app: &AppHandle, task: &CollectTask) -> AppR
         }
     };
 
-    // 覆盖主标题，因为 Excel 导入指定的名称具有更高的业务置信度
-    product_input.title = task.title.clone();
+    // Excel 人工标题业务置信度更高，覆盖采集标题；链接导入的占位标题相反，
+    // 保留采集真实标题（由 update_task_status 的 COALESCE 回写替换占位）
+    if !is_placeholder_import_title(&task.title) {
+        product_input.title = task.title.clone();
+    }
 
     // 如果类目提示字段存在，可以注入
     if !task.category_path.is_empty() {
@@ -4209,5 +4275,45 @@ mod tests {
         assert_eq!(taobao_item_id_from_url("https://item.taobao.com/item.htm?spm=abc"), None);
         assert_eq!(taobao_item_id_from_url("https://item.taobao.com/item.htm?id=abc123"), None);
         assert_eq!(taobao_item_id_from_url("https://item.taobao.com/item.htm?id="), None);
+    }
+
+    #[test]
+    fn item_id_parsed_with_url_fragment() {
+        // 浏览器地址栏复制的链接可能带 #detail 等锚点，须先截断再解析
+        assert_eq!(
+            taobao_item_id_from_url("https://item.taobao.com/item.htm?id=123#detail"),
+            Some("123".to_string())
+        );
+        assert_eq!(
+            taobao_item_id_from_url("https://item.taobao.com/item.htm?spm=a1#?id=999"),
+            None
+        );
+    }
+
+    #[test]
+    fn normalize_strips_tracking_params_keeps_host() {
+        // 跟踪参数剥离后同商品去重键稳定；天猫域名保留
+        assert_eq!(
+            normalize_taobao_url("https://item.taobao.com/item.htm?spm=a21n57.1&id=123&utparam=xx"),
+            "https://item.taobao.com/item.htm?id=123"
+        );
+        assert_eq!(
+            normalize_taobao_url("https://detail.tmall.com/item.htm?id=456&ali_trackid=yy#detail"),
+            "https://detail.tmall.com/item.htm?id=456"
+        );
+        // 提取不到 id 保留原串
+        assert_eq!(
+            normalize_taobao_url("https://item.taobao.com/item.htm?spm=abc"),
+            "https://item.taobao.com/item.htm?spm=abc"
+        );
+    }
+
+    #[test]
+    fn placeholder_title_detection() {
+        // 占位标题（链接导入生成）不得覆盖采集真实标题；人工标题相反
+        assert!(is_placeholder_import_title("淘宝商品 123"));
+        assert!(is_placeholder_import_title("待采集商品"));
+        assert!(!is_placeholder_import_title("2026新款儿童短袖T恤"));
+        assert!(!is_placeholder_import_title(""));
     }
 }
