@@ -2287,8 +2287,12 @@ fn select_collection_review_category_candidate<'a>(
             .then_with(|| left.1.category_path.cmp(&right.1.category_path))
     });
     let (best_score, best) = scored.first().copied()?;
-    let second_score = scored.get(1).map(|item| item.0).unwrap_or(i64::MIN);
-    if best_score >= 130 && best_score - second_score >= 18 {
+    // 唯一候选时没有第二名，领先优势天然成立。此前用 i64::MIN 当第二名哨兵做减法，
+    // release 下溢出回绕成大负数恒判不过——「唯一明确候选」反而 100% 落待确认。
+    let lead_ok = scored
+        .get(1)
+        .is_none_or(|second| best_score - second.0 >= 18);
+    if best_score >= 130 && lead_ok {
         Some(best)
     } else {
         None
@@ -2339,6 +2343,11 @@ fn collection_category_keyword_rules(
         (&["连衣裙", "公主裙"], &["连衣裙"], 100),
         (&["裙子", "半身裙"], &["裙"], 70),
         (&["打底裤", "防蚊裤", "长裤", "裤子", "束脚"], &["裤"], 90),
+        (
+            &["袜子", "棉袜", "短袜", "船袜", "长筒袜", "连裤袜", "童袜"],
+            &["袜"],
+            90,
+        ),
         (
             &["汉服", "唐装", "旗袍", "民族服", "国风", "古装"],
             &["旗袍", "唐装", "民族"],
@@ -4306,6 +4315,52 @@ mod tests {
             normalize_taobao_url("https://item.taobao.com/item.htm?spm=abc"),
             "https://item.taobao.com/item.htm?spm=abc"
         );
+    }
+
+    fn test_product(title: &str) -> ExternalProductInput {
+        serde_json::from_value(serde_json::json!({
+            "external_product_id": "tb-1",
+            "title": title,
+            "source_url": "https://item.taobao.com/item.htm?id=1",
+            "skus": [],
+        }))
+        .unwrap()
+    }
+
+    fn candidate(path: &str, score: i64) -> CollectionReviewCategoryCandidate {
+        CollectionReviewCategoryCandidate {
+            category_ids: vec![1, 2, 3],
+            category_path: path.to_string(),
+            score,
+            source: "local_category_cache_match".to_string(),
+        }
+    }
+
+    /// 唯一候选回归：此前第二名用 i64::MIN 哨兵做减法溢出（debug panic / release
+    /// 回绕负数恒判不过），唯一明确候选（如「袜子」140 分）反而 100% 落「待确认」。
+    #[test]
+    fn single_confident_candidate_is_selected() {
+        let product = test_product("儿童夏季袜子超薄冰丝棉袜男女童网眼透气水晶短袜宝宝船袜");
+        let candidates = vec![candidate("母婴 > 童装 > 袜子", 140)];
+        let best = select_collection_review_category_candidate(&product, &candidates);
+        assert_eq!(
+            best.map(|c| c.category_path.as_str()),
+            Some("母婴 > 童装 > 袜子")
+        );
+    }
+
+    #[test]
+    fn low_score_or_close_race_still_needs_confirm() {
+        let product = test_product("儿童夏季袜子");
+        // 唯一候选但总分不够（30 + 袜类关键词规则 90 = 120 < 130）：仍需人工确认
+        let low = vec![candidate("母婴 > 童装 > 袜子", 30)];
+        assert!(select_collection_review_category_candidate(&product, &low).is_none());
+        // 两个候选咬得太近（差距 < 18）：不敢自动定
+        let race = vec![
+            candidate("母婴 > 童装 > 袜子", 140),
+            candidate("母婴 > 童装 > 连裤袜", 130),
+        ];
+        assert!(select_collection_review_category_candidate(&product, &race).is_none());
     }
 
     #[test]
