@@ -102,7 +102,7 @@ use crate::wechat::{
 use chrono::{DateTime, Duration, Utc};
 use image::{codecs::jpeg::JpegEncoder, DynamicImage, GenericImageView, ImageFormat};
 use reqwest::{
-    header::{ACCEPT, ACCEPT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, USER_AGENT},
+    header::{ACCEPT, ACCEPT_ENCODING, CONTENT_TYPE, USER_AGENT},
     redirect::Policy,
     Url,
 };

@@ -11,13 +11,12 @@
 use super::*;
 
 /// 对外商品状态（人话 6 态）。
+///
+/// 状态机完整词表（按生命周期）：`pending_collect`（待采集）→ `collecting`（采集中）→
+/// `collected` → `publishing` → `listed`，分支态 `need_confirm` / `error`。
+/// 其中 `pending_collect` 与 `collecting` 两个采集入口态的字面量由 collection.rs
+/// 以 SQL 字面量维护（本文件的重试/重采 SQL 同样直接写字面量），不设符号常量。
 pub mod product_status {
-    // 采集/审查入口态：写入侧（collection.rs）目前以 SQL 字面量落库，
-    // 这两个符号常量保留为状态机完整词表，供后续符号化引用与文档对照。
-    #[allow(dead_code)]
-    pub const PENDING_COLLECT: &str = "pending_collect";
-    #[allow(dead_code)]
-    pub const COLLECTING: &str = "collecting";
     /// 已采集审查完成、但还没选店：待选店铺货（解耦采集与铺货）。
     pub const COLLECTED: &str = "collected";
     pub const NEED_CONFIRM: &str = "need_confirm";
@@ -27,13 +26,11 @@ pub mod product_status {
 }
 
 /// 商品级内部阶段。
+///
+/// 阶段完整词表（推进顺序）：`collect` → `review` → `publish` → `done`。
+/// 其中 `collect` / `review` 两个阶段的字面量由 collection.rs 以 SQL 字面量推进
+/// （本文件的重试/重采分流 match 同样直接写字面量），不设符号常量。
 pub mod product_stage {
-    // 采集/审查阶段：collection.rs 以 SQL 字面量推进 stage，
-    // 这两个符号常量保留为阶段完整词表，供后续符号化引用与文档对照。
-    #[allow(dead_code)]
-    pub const COLLECT: &str = "collect";
-    #[allow(dead_code)]
-    pub const REVIEW: &str = "review";
     pub const PUBLISH: &str = "publish";
     pub const DONE: &str = "done";
 }

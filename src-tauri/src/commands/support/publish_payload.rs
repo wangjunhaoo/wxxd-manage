@@ -841,6 +841,11 @@ pub(in crate::commands) fn generate_add_product_payload_draft(
         );
     }
 
+    // SKU 约束收敛单点：动态生成（路径A）同样经 apply_add_product_defaults →
+    // normalize_skus_for_wechat 完成截断；out_product_id/title/spu_code 上方已填，
+    // entry().or_insert 对已填字段为 no-op，不会覆盖。
+    apply_add_product_defaults(&mut payload, product, &mut warnings);
+
     validate_add_product_base_payload_with_options(&payload, require_after_sale)?;
     Ok(AddProductPayloadDraft {
         payload: Value::Object(payload),
@@ -912,6 +917,40 @@ fn truncate_out_sku_id(raw: &str) -> String {
     format!("{}-{}", head, suffix)
 }
 
+/// 微信 addproduct SKU 统一规范化单点：sku_code ≤100 UTF8 字节、out_sku_id ≤128 字符、
+/// 单商品 SKU 上限 500（超出截断保留前 500 并记 warning）。
+/// 新建（动态生成）与固化 payload 两条路径都必须且只经此处理一次。
+fn normalize_skus_for_wechat(skus: &mut Vec<Value>, warnings: &mut Vec<String>) {
+    // 超长 sku_code（淘宝规格串带营销文案 → UTF8 >100 字节）会触发 6600096 整批 SKU 被拒，
+    // 统一截断到 ≤100 字节；out_sku_id 是采购对账映射键（微信原样回传），限 128 字符内保持完整。
+    for sku in skus.iter_mut() {
+        if let Some(obj) = sku.as_object_mut() {
+            if let Some(code) = obj.get("sku_code").and_then(Value::as_str) {
+                if code.len() > WECHAT_SKU_CODE_MAX_BYTES {
+                    let fixed = truncate_sku_code_bytes(code, WECHAT_SKU_CODE_MAX_BYTES);
+                    obj.insert("sku_code".to_string(), Value::String(fixed));
+                }
+            }
+            if let Some(out_id) = obj.get("out_sku_id").and_then(Value::as_str) {
+                if out_id.chars().count() > WECHAT_OUT_SKU_ID_MAX_CHARS {
+                    let fixed = truncate_out_sku_id(out_id);
+                    obj.insert("out_sku_id".to_string(), Value::String(fixed));
+                }
+            }
+        }
+    }
+
+    // 微信 addproduct 单商品 SKU 上限 500，超出整商品被拒。截断保留前 500 个
+    // （有损：丢弃多余规格组合），记 warning 进 task log 留痕，避免整商品发布失败。
+    if skus.len() > ADD_PRODUCT_MAX_SKUS {
+        let dropped = skus.len() - ADD_PRODUCT_MAX_SKUS;
+        warnings.push(format!(
+            "SKU 数超过微信上限 {ADD_PRODUCT_MAX_SKUS}，已截断保留前 {ADD_PRODUCT_MAX_SKUS} 个，丢弃 {dropped} 个规格组合"
+        ));
+        skus.truncate(ADD_PRODUCT_MAX_SKUS);
+    }
+}
+
 pub(in crate::commands) fn apply_add_product_defaults(
     payload: &mut serde_json::Map<String, Value>,
     product: &ExternalProductInput,
@@ -927,36 +966,10 @@ pub(in crate::commands) fn apply_add_product_defaults(
         .entry("spu_code".to_string())
         .or_insert_with(|| Value::String(product.external_product_id.clone()));
 
-    // 兜底：固化的 metadata.wechat_add_product_payload 可能含历史超长 sku_code（淘宝规格串带
-    // 营销文案 → UTF8 >100 字节 → 6600096 整批 SKU 被拒）。此处是「新建 / 固化」两条路径进 submit
-    // 前的统一必经点，统一把超长 sku_code 截断到 ≤100 字节、out_sku_id 限 128 字符，存量重跑即纠正。
+    // SKU 规范化单点：此处是「新建（动态生成）/ 固化」两条路径进 submit 前的统一必经点，
+    // 固化的 metadata.wechat_add_product_payload 含历史超长 sku_code / 超量 SKU 时，存量重跑即纠正。
     if let Some(Value::Array(skus)) = payload.get_mut("skus") {
-        for sku in skus.iter_mut() {
-            if let Some(obj) = sku.as_object_mut() {
-                if let Some(code) = obj.get("sku_code").and_then(Value::as_str) {
-                    if code.len() > WECHAT_SKU_CODE_MAX_BYTES {
-                        let fixed = truncate_sku_code_bytes(code, WECHAT_SKU_CODE_MAX_BYTES);
-                        obj.insert("sku_code".to_string(), Value::String(fixed));
-                    }
-                }
-                if let Some(out_id) = obj.get("out_sku_id").and_then(Value::as_str) {
-                    if out_id.chars().count() > WECHAT_OUT_SKU_ID_MAX_CHARS {
-                        let fixed = truncate_out_sku_id(out_id);
-                        obj.insert("out_sku_id".to_string(), Value::String(fixed));
-                    }
-                }
-            }
-        }
-
-        // 微信 addproduct 单商品 SKU 上限 500，固化 payload（路径B）同样需截断，否则整商品被拒。
-        // 截断保留前 500 个（有损：丢弃多余规格组合），记 warning 留痕。
-        if skus.len() > ADD_PRODUCT_MAX_SKUS {
-            let dropped = skus.len() - ADD_PRODUCT_MAX_SKUS;
-            warnings.push(format!(
-                "SKU 数超过微信上限 {ADD_PRODUCT_MAX_SKUS}，已截断保留前 {ADD_PRODUCT_MAX_SKUS} 个，丢弃 {dropped} 个规格组合"
-            ));
-            skus.truncate(ADD_PRODUCT_MAX_SKUS);
-        }
+        normalize_skus_for_wechat(skus, warnings);
     }
 }
 
@@ -1115,18 +1128,15 @@ pub(in crate::commands) fn build_add_product_skus(
         }
 
         let mut sku_payload = serde_json::Map::new();
-        // out_sku_id 是采购对账映射键(微信原样回传)，限 128 字符内保持完整；
-        // sku_code 限 100 UTF8 字节、微信不做唯一约束、本地不消费，超长安全截断避免 6600096。
+        // out_sku_id / sku_code 此处插原值；长度截断与 500 上限统一由 normalize_skus_for_wechat
+        // 单点处理（generate_add_product_payload_draft 末尾经 apply_add_product_defaults 必经）。
         sku_payload.insert(
             "out_sku_id".to_string(),
-            Value::String(truncate_out_sku_id(&sku.external_sku_id)),
+            Value::String(sku.external_sku_id.clone()),
         );
         sku_payload.insert(
             "sku_code".to_string(),
-            Value::String(truncate_sku_code_bytes(
-                &sku.external_sku_id,
-                WECHAT_SKU_CODE_MAX_BYTES,
-            )),
+            Value::String(sku.external_sku_id.clone()),
         );
         sku_payload.insert(
             "sale_price".to_string(),
@@ -1149,15 +1159,6 @@ pub(in crate::commands) fn build_add_product_skus(
     }
     if skus.is_empty() {
         return Err("没有可发布的有库存 SKU".to_string());
-    }
-    // 微信 addproduct 单商品 SKU 上限 500，超出整商品被拒。截断保留前 500 个（有损：丢弃多余规格组合），
-    // 记 warning 进 task log 留痕，避免整商品发布失败。
-    if skus.len() > ADD_PRODUCT_MAX_SKUS {
-        let dropped = skus.len() - ADD_PRODUCT_MAX_SKUS;
-        warnings.push(format!(
-            "SKU 数超过微信上限 {ADD_PRODUCT_MAX_SKUS}，已截断保留前 {ADD_PRODUCT_MAX_SKUS} 个，丢弃 {dropped} 个规格组合"
-        ));
-        skus.truncate(ADD_PRODUCT_MAX_SKUS);
     }
     Ok(skus)
 }
@@ -1779,10 +1780,11 @@ mod tests {
     }
 
     #[test]
-    fn build_skus_truncates_over_wechat_limit() {
-        // 微信 addproduct 单商品 SKU 上限 500（路径A 动态构建）。构造 501 个有库存 SKU，
-        // 断言截断到 500 且 warning 留痕；截断后恰好 500 个，能通过 validate（>500 才拦截），
-        // 不会让整商品发布失败。
+    fn generate_draft_truncates_skus_over_wechat_limit() {
+        // 微信 addproduct 单商品 SKU 上限 500（路径A 动态生成）。构造 501 个有库存 SKU，
+        // 经 generate_add_product_payload_draft 断言最终 payload 截断到 500 且 warning 留痕——
+        // 截断由 normalize_skus_for_wechat 单点完成（draft 末尾经 apply_add_product_defaults 必经）；
+        // 截断后恰好 500 个，能通过 validate（>500 才拦截），不会让整商品发布失败。
         let skus: Vec<Value> = (0..501)
             .map(|i| {
                 serde_json::json!({
@@ -1797,18 +1799,30 @@ mod tests {
             "external_product_id": "https://item.taobao.com/item.htm?id=1",
             "title": "测试超量 SKU",
             "source_url": "https://item.taobao.com/item.htm?id=1",
-            "skus": skus
+            "skus": skus,
+            "metadata": { "wechat_category_ids": [1, 2, 3] }
         }))
         .expect("构造测试商品");
 
-        let mut warnings = Vec::new();
-        let built = build_add_product_skus(&product, None, &mut warnings).expect("应截断后成功");
-        assert_eq!(built.len(), ADD_PRODUCT_MAX_SKUS, "SKU 应被截断到微信上限");
+        let draft =
+            generate_add_product_payload_draft(&product, product.metadata.as_object(), false)
+                .expect("应截断后通过校验生成草稿");
+        assert_eq!(
+            draft
+                .payload
+                .get("skus")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(ADD_PRODUCT_MAX_SKUS),
+            "最终 payload 的 SKU 应被截断到微信上限"
+        );
         assert!(
-            warnings
+            draft
+                .warnings
                 .iter()
                 .any(|w| w.contains("截断") && w.contains("丢弃 1 个")),
-            "应记录截断 warning，实际={warnings:?}"
+            "应记录截断 warning，实际={:?}",
+            draft.warnings
         );
     }
 
@@ -1998,7 +2012,7 @@ mod tests {
     fn apply_sku_thumb_images_fills_per_color_thumb_and_degrades_gracefully() {
         // 锁死「切换 SKU 换主图」铺货端契约。模拟真实主路径：AI 属性补齐后
         // metadata.wechat_add_product_payload 已固化，其 skus[].out_sku_id == external_sku_id
-        // （build_add_product_skus 既定约定，out_sku_id 是采购对账映射键）。
+        // （≤128 字符时 normalize_skus_for_wechat 保持原值，out_sku_id 是采购对账映射键）。
         // 断言：①同色多尺码共享一张颜色图 → 各 SKU 都填同一 thumb_img；
         //       ②颜色图上传失败 / 无颜色图的 SKU 不填 thumb_img（宁缺勿错，避免微信 10020035）。
         let product: ExternalProductInput = serde_json::from_value(serde_json::json!({

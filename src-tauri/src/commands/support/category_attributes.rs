@@ -985,7 +985,7 @@ fn infer_wechat_category_with_options(
     source: &'static str,
 ) -> AppResult<Option<InferredWechatCategory>> {
     let child_context = has_children_category_context(product);
-    let candidates = load_wechat_category_inference_candidates_with_hint(
+    let candidates = load_wechat_category_inference_candidates(
         conn,
         shop_id,
         product,
@@ -1025,20 +1025,6 @@ fn load_wechat_category_inference_candidates(
     conn: &Connection,
     shop_id: &str,
     product: &ExternalProductInput,
-) -> AppResult<Vec<CategoryInferenceCandidate>> {
-    load_wechat_category_inference_candidates_with_hint(
-        conn,
-        shop_id,
-        product,
-        true,
-        has_children_category_context(product),
-    )
-}
-
-fn load_wechat_category_inference_candidates_with_hint(
-    conn: &Connection,
-    shop_id: &str,
-    product: &ExternalProductInput,
     include_category_hint: bool,
     child_context: bool,
 ) -> AppResult<Vec<CategoryInferenceCandidate>> {
@@ -1052,7 +1038,11 @@ fn load_wechat_category_inference_candidates_with_hint(
         return Ok(Vec::new());
     }
 
-    let candidate_ids = load_category_inference_candidate_ids(conn, shop_id, &terms)?;
+    // 按词条逐个查询候选叶子类目并集（最多取 16 个词条，每词条限 80 条），BTreeSet 去重并保持升序
+    let mut candidate_ids = BTreeSet::new();
+    for term in terms.iter().take(16) {
+        candidate_ids.extend(load_active_leaf_category_ids(conn, shop_id, Some(term))?);
+    }
     let mut candidates = Vec::new();
     for cat_id in candidate_ids {
         let path = load_wechat_category_path(conn, shop_id, cat_id)?;
@@ -1105,7 +1095,13 @@ pub(in crate::commands) fn suggest_wechat_category_candidates_from_cache(
     product: &ExternalProductInput,
     limit: usize,
 ) -> AppResult<Vec<CollectionReviewCategoryCandidate>> {
-    let candidates = load_wechat_category_inference_candidates(conn, shop_id, product)?;
+    let candidates = load_wechat_category_inference_candidates(
+        conn,
+        shop_id,
+        product,
+        true,
+        has_children_category_context(product),
+    )?;
     Ok(candidates
         .into_iter()
         .take(limit)
@@ -1124,7 +1120,7 @@ pub(in crate::commands) fn suggest_wechat_category_broad_candidates_from_cache(
     product: &ExternalProductInput,
     limit: usize,
 ) -> AppResult<Vec<CollectionReviewCategoryCandidate>> {
-    let leaf_ids = load_active_leaf_category_ids(conn, shop_id)?;
+    let leaf_ids = load_active_leaf_category_ids(conn, shop_id, None)?;
     let child_context = has_children_category_context(product);
     let mut candidates = Vec::new();
     for cat_id in leaf_ids {
@@ -1156,34 +1152,14 @@ pub(in crate::commands) fn suggest_wechat_category_broad_candidates_from_cache(
     Ok(candidates.into_iter().take(limit).collect())
 }
 
-fn load_active_leaf_category_ids(conn: &Connection, shop_id: &str) -> AppResult<Vec<i64>> {
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT c.cat_id
-         FROM wechat_categories c
-         JOIN wechat_category_relations relation
-           ON relation.shop_id = c.shop_id
-          AND relation.cat_id = c.cat_id
-          AND relation.status = 1
-         LEFT JOIN wechat_categories child
-           ON child.shop_id = c.shop_id AND child.parent_cat_id = c.cat_id
-         WHERE c.shop_id = ?1
-           AND child.cat_id IS NULL
-         ORDER BY COALESCE(c.level, 0) DESC, c.cat_id ASC",
-    )?;
-    let ids = stmt
-        .query_map([shop_id], |row| row.get::<_, i64>(0))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(AppError::from)?;
-    Ok(ids)
-}
-
-fn load_category_inference_candidate_ids(
+/// 加载已开通（relation.status=1）的叶子类目 ID（无子类目的节点）。
+/// name_term 为 None 时返回全部叶子类目；为 Some 时按类目名与词条互相模糊匹配过滤并限 80 条。
+fn load_active_leaf_category_ids(
     conn: &Connection,
     shop_id: &str,
-    terms: &[String],
+    name_term: Option<&str>,
 ) -> AppResult<Vec<i64>> {
-    let mut candidate_ids = BTreeSet::new();
-    let mut stmt = conn.prepare(
+    let mut sql = String::from(
         "SELECT DISTINCT c.cat_id
          FROM wechat_categories c
          JOIN wechat_category_relations relation
@@ -1193,22 +1169,38 @@ fn load_category_inference_candidate_ids(
          LEFT JOIN wechat_categories child
            ON child.shop_id = c.shop_id AND child.parent_cat_id = c.cat_id
          WHERE c.shop_id = ?1
-           AND child.cat_id IS NULL
+           AND child.cat_id IS NULL",
+    );
+    if name_term.is_some() {
+        sql.push_str(
+            "
            AND (
              c.name = ?2
              OR c.name LIKE '%' || ?2 || '%'
              OR ?2 LIKE '%' || c.name || '%'
-           )
-         ORDER BY COALESCE(c.level, 0) DESC, c.cat_id ASC
-         LIMIT 80",
-    )?;
-    for term in terms.iter().take(16) {
-        let ids = stmt
-            .query_map(params![shop_id, term], |row| row.get::<_, i64>(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        candidate_ids.extend(ids);
+           )",
+        );
     }
-    Ok(candidate_ids.into_iter().collect())
+    sql.push_str(
+        "
+         ORDER BY COALESCE(c.level, 0) DESC, c.cat_id ASC",
+    );
+    if name_term.is_some() {
+        sql.push_str(
+            "
+         LIMIT 80",
+        );
+    }
+    let mut stmt = conn.prepare(&sql)?;
+    let ids = match name_term {
+        Some(term) => stmt
+            .query_map(params![shop_id, term], |row| row.get::<_, i64>(0))?
+            .collect::<Result<Vec<_>, _>>()?,
+        None => stmt
+            .query_map([shop_id], |row| row.get::<_, i64>(0))?
+            .collect::<Result<Vec<_>, _>>()?,
+    };
+    Ok(ids)
 }
 
 fn category_inference_terms(product: &ExternalProductInput) -> Vec<String> {
@@ -1902,7 +1894,6 @@ fn infer_product_attr_from_external_fields(
     })
 }
 
-#[allow(dead_code)]
 fn taobao_item_params(product: &ExternalProductInput) -> Option<&serde_json::Map<String, Value>> {
     let metadata = product.metadata.as_object()?;
     if metadata
@@ -1946,7 +1937,6 @@ fn is_related_attr_key(left: &str, right: &str) -> bool {
         || (right_exact.chars().count() >= 4 && left_exact.contains(&right_exact))
 }
 
-#[allow(dead_code)]
 fn normalize_alias_product_attr_value(attr_key: &str, value: &str) -> Option<String> {
     let _ = attr_key;
     Some(value.trim().to_string())
@@ -1958,7 +1948,6 @@ fn is_trusted_product_attr_value(attr_key: &str, value: &str) -> bool {
     !value.is_empty() && value.chars().count() <= 120
 }
 
-#[allow(dead_code)]
 fn infer_product_attr_from_sku_specs(
     product: &ExternalProductInput,
     attr_key: &str,
@@ -1968,7 +1957,6 @@ fn infer_product_attr_from_sku_specs(
     summarize_product_attr_values(&values)
 }
 
-#[allow(dead_code)]
 fn collect_sku_spec_values_for_attr(product: &ExternalProductInput, attr_key: &str) -> Vec<String> {
     let mut values = Vec::new();
     for sku in &product.skus {
@@ -2083,7 +2071,6 @@ fn product_evidence_texts(product: &ExternalProductInput) -> Vec<String> {
     values
 }
 
-#[allow(dead_code)]
 fn collect_json_evidence_texts(value: &Value, values: &mut Vec<String>) {
     match value {
         Value::String(value) => push_evidence_text(values, value),
@@ -2103,7 +2090,6 @@ fn collect_json_evidence_texts(value: &Value, values: &mut Vec<String>) {
     }
 }
 
-#[allow(dead_code)]
 fn push_evidence_text(values: &mut Vec<String>, value: &str) {
     if let Some(value) = normalize_evidence_text(value) {
         if !values.iter().any(|existing| existing == &value) {
@@ -2112,7 +2098,6 @@ fn push_evidence_text(values: &mut Vec<String>, value: &str) {
     }
 }
 
-#[allow(dead_code)]
 fn normalize_evidence_text(value: &str) -> Option<String> {
     let normalized = value
         .chars()
@@ -2126,12 +2111,10 @@ fn normalize_evidence_text(value: &str) -> Option<String> {
     }
 }
 
-#[allow(dead_code)]
 fn is_low_information_option(value: &str) -> bool {
     matches!(value.trim(), "其他" | "其它" | "通用")
 }
 
-#[allow(dead_code)]
 fn is_select_many_attr(spec: &CategoryRequiredAttr) -> bool {
     spec.attr_type.as_deref() == Some("select_many")
 }
@@ -2179,7 +2162,6 @@ fn attr_key_match_variants(value: &str) -> BTreeSet<String> {
     variants
 }
 
-#[allow(dead_code)]
 fn cleaned_unique_sku_values(values: &[String], attr_key: &str) -> Vec<String> {
     let mut cleaned = Vec::new();
     for value in values {
@@ -2193,7 +2175,6 @@ fn cleaned_unique_sku_values(values: &[String], attr_key: &str) -> Vec<String> {
     cleaned
 }
 
-#[allow(dead_code)]
 fn summarize_product_attr_values(values: &[String]) -> Option<String> {
     if values.is_empty() {
         return None;
@@ -2215,7 +2196,6 @@ fn summarize_product_attr_values(values: &[String]) -> Option<String> {
     (!selected.is_empty()).then(|| selected.join(";"))
 }
 
-#[allow(dead_code)]
 fn infer_percent_attr_from_evidence(
     product: &ExternalProductInput,
     attr_key: &str,
@@ -2233,7 +2213,6 @@ fn infer_percent_attr_from_evidence(
 
 /// 根据已知面料材质推断成分含量百分比
 /// 例如：面料材质="纯棉" → 成分含量="棉100%"
-#[allow(dead_code)]
 fn infer_percent_attr_from_fabric_material(
     product: &ExternalProductInput,
     attr_key: &str,
@@ -2246,7 +2225,6 @@ fn infer_percent_attr_from_fabric_material(
 }
 
 /// 从商品数据中查找已知的面料材质
-#[allow(dead_code)]
 fn find_known_fabric_material(product: &ExternalProductInput) -> Option<String> {
     // 优先从 metadata.ai_attr_suggestions 中查找
     if let Some(metadata) = product.metadata.as_object() {
@@ -2299,7 +2277,6 @@ fn find_known_fabric_material(product: &ExternalProductInput) -> Option<String> 
 }
 
 /// 根据面料材质推断典型成分含量
-#[allow(dead_code)]
 fn infer_composition_from_material(material: &str) -> Option<String> {
     let normalized = material.trim().to_lowercase();
     let result = if normalized.contains("纯棉") || normalized == "棉" {
@@ -2337,7 +2314,6 @@ fn looks_like_percent_attr(attr_key: &str) -> bool {
     attr_key.contains('%') || attr_key.contains('％') || attr_key.contains("含量")
 }
 
-#[allow(dead_code)]
 fn extract_percent_fragment(text: &str) -> Option<String> {
     let chars = text.chars().collect::<Vec<_>>();
     let percent_index = chars.iter().position(|ch| matches!(ch, '%' | '％'))?;

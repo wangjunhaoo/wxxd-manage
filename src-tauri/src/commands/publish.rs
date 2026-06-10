@@ -1554,7 +1554,10 @@ pub async fn run_publish_category_prechecks_once(
             }
         };
 
-        if let Err((code, summary)) = ensure_after_sale_address_for_publish(
+        // 售后地址/运费模板补齐的唯一时机：补齐后固化进 target raw_payload 的
+        // metadata.wechat_add_product_payload，后续 asset_upload/submit 阶段经固化路径
+        // 重建 payload 时天然带上地址/模板，只读不再重复补齐。
+        let address_filled = match ensure_after_sale_address_for_publish(
             &app,
             &client,
             &access_token,
@@ -1564,11 +1567,14 @@ pub async fn run_publish_category_prechecks_once(
         )
         .await?
         {
-            mark_publish_item_failed_for_app(&app, &item, &code, &summary)?;
-            failed_items += 1;
-            continue;
-        }
-        if let Err((code, summary)) = ensure_freight_template_for_publish(
+            Ok(selection) => selection.is_some(),
+            Err((code, summary)) => {
+                mark_publish_item_failed_for_app(&app, &item, &code, &summary)?;
+                failed_items += 1;
+                continue;
+            }
+        };
+        let freight_filled = match ensure_freight_template_for_publish(
             &app,
             &client,
             &access_token,
@@ -1578,10 +1584,13 @@ pub async fn run_publish_category_prechecks_once(
         )
         .await?
         {
-            mark_publish_item_failed_for_app(&app, &item, &code, &summary)?;
-            failed_items += 1;
-            continue;
-        }
+            Ok(selection) => selection.is_some(),
+            Err((code, summary)) => {
+                mark_publish_item_failed_for_app(&app, &item, &code, &summary)?;
+                failed_items += 1;
+                continue;
+            }
+        };
         if let Err(error) = validate_publish_payload_value(&draft.payload) {
             mark_publish_item_failed_for_app(
                 &app,
@@ -1591,6 +1600,10 @@ pub async fn run_publish_category_prechecks_once(
             )?;
             failed_items += 1;
             continue;
+        }
+        if address_filled || freight_filled {
+            let conn = open_connection(&app)?;
+            persist_generated_add_product_payload(&conn, &item, &draft)?;
         }
 
         let raw_detail = match ensure_category_detail_payload_for_publish(
@@ -1874,8 +1887,6 @@ pub async fn run_publish_asset_uploads_once(
     let mut uploaded_assets = 0i64;
     let mut reused_assets = 0i64;
     let mut failed_items = 0i64;
-    let mut after_sale_address_cache = BTreeMap::new();
-    let mut freight_template_cache = BTreeMap::new();
 
     for item in ready_items {
         job_ids.insert(item.job_id.clone());
@@ -1918,7 +1929,9 @@ pub async fn run_publish_asset_uploads_once(
             continue;
         }
 
-        let mut draft = match resolve_add_product_base_payload_relaxed_after_sale(&product) {
+        // 此处仅为取叶子类目 cat_id 构建 payload 草稿；售后地址/运费模板已在
+        // category_precheck 阶段补齐并固化进 raw_payload，本阶段只读、不再补齐与重复校验。
+        let draft = match resolve_add_product_base_payload_relaxed_after_sale(&product) {
             Ok(draft) => draft,
             Err(error) => {
                 mark_publish_item_failed_for_app(
@@ -1955,45 +1968,6 @@ pub async fn run_publish_asset_uploads_once(
                 continue;
             }
         };
-
-        if let Err((code, summary)) = ensure_after_sale_address_for_publish(
-            &app,
-            &client,
-            &access_token,
-            &item,
-            &mut draft.payload,
-            &mut after_sale_address_cache,
-        )
-        .await?
-        {
-            mark_publish_item_failed_for_app(&app, &item, &code, &summary)?;
-            failed_items += 1;
-            continue;
-        }
-        if let Err((code, summary)) = ensure_freight_template_for_publish(
-            &app,
-            &client,
-            &access_token,
-            &item,
-            &mut draft.payload,
-            &mut freight_template_cache,
-        )
-        .await?
-        {
-            mark_publish_item_failed_for_app(&app, &item, &code, &summary)?;
-            failed_items += 1;
-            continue;
-        }
-        if let Err(error) = validate_publish_payload_value(&draft.payload) {
-            mark_publish_item_failed_for_app(
-                &app,
-                &item,
-                add_product_payload_error_code(&error),
-                &error,
-            )?;
-            failed_items += 1;
-            continue;
-        }
 
         let raw_detail = match ensure_category_detail_payload_for_publish(
             &app,
@@ -2107,8 +2081,6 @@ pub async fn run_publish_submits_once(
     let mut job_ids = BTreeSet::new();
     let mut submitted_items = 0i64;
     let mut failed_items = 0i64;
-    let mut after_sale_address_cache = BTreeMap::new();
-    let mut freight_template_cache = BTreeMap::new();
 
     for item in submit_items {
         job_ids.insert(item.job_id.clone());
@@ -2177,34 +2149,8 @@ pub async fn run_publish_submits_once(
             }
         };
 
-        if let Err((code, summary)) = ensure_after_sale_address_for_publish(
-            &app,
-            &client,
-            &access_token,
-            &item,
-            &mut payload,
-            &mut after_sale_address_cache,
-        )
-        .await?
-        {
-            mark_publish_item_failed_for_app(&app, &item, &code, &summary)?;
-            failed_items += 1;
-            continue;
-        }
-        if let Err((code, summary)) = ensure_freight_template_for_publish(
-            &app,
-            &client,
-            &access_token,
-            &item,
-            &mut payload,
-            &mut freight_template_cache,
-        )
-        .await?
-        {
-            mark_publish_item_failed_for_app(&app, &item, &code, &summary)?;
-            failed_items += 1;
-            continue;
-        }
+        // 售后地址/运费模板已在 category_precheck 阶段补齐并固化进 raw_payload，此处不再补齐；
+        // 该校验是提交前最后把关：固化缺失（如人工改库）时按 MISSING_AFTER_SALE_ADDRESS 等明确 block。
         if let Err(error) = validate_publish_payload_value(&payload) {
             mark_publish_item_failed_for_app(
                 &app,

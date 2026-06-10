@@ -1,5 +1,6 @@
 use crate::storage::{AppError, AppResult};
 use reqwest::{multipart, Client, Url};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 const STABLE_TOKEN_URL: &str = "https://api.weixin.qq.com/cgi-bin/stable_token";
@@ -719,14 +720,9 @@ pub struct ProductListCall {
     pub result: WechatCallResult<ProductListResult>,
 }
 
+/// 下架 / 删除 / 改库存这类只回 errcode/errmsg 的写操作统一调用结果。
 #[derive(Debug, Serialize)]
-pub struct ProductDelistingCall {
-    pub meta: WechatCallMeta,
-    pub result: WechatCallResult<ProductMutationResult>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ProductDeleteCall {
+pub struct ProductMutationCall {
     pub meta: WechatCallMeta,
     pub result: WechatCallResult<ProductMutationResult>,
 }
@@ -741,12 +737,6 @@ pub struct StockGetCall {
 pub struct StockBatchGetCall {
     pub meta: WechatCallMeta,
     pub result: WechatCallResult<StockBatchInfo>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct StockUpdateCall {
-    pub meta: WechatCallMeta,
-    pub result: WechatCallResult<ProductMutationResult>,
 }
 
 /// 获取商品列表：游标分页，仅返回商品 id 列表（详情需再调 get_product）。
@@ -861,6 +851,30 @@ impl Default for WechatShopClient {
 }
 
 impl WechatShopClient {
+    /// 统一「endpoint + access_token 挂 query + POST JSON + HTTP 状态校验 + 反序列化」样板。
+    /// 错误语义与原各调用点逐字一致：URL 不合法 → AppError::Validation("微信接口 URL 不合法: …")，
+    /// 网络错误 / 非 2xx 状态 / 响应体解析失败 → reqwest 错误经 `?` 透传包装为 AppError。
+    async fn post_json<Req: Serialize + ?Sized, Resp: DeserializeOwned>(
+        &self,
+        endpoint: &str,
+        access_token: &str,
+        body: &Req,
+    ) -> AppResult<Resp> {
+        let mut url = Url::parse(endpoint)
+            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
+        url.query_pairs_mut()
+            .append_pair("access_token", access_token);
+        Ok(self
+            .http
+            .post(url)
+            .json(body)
+            .send()
+            .await?
+            .error_for_status()?
+            .json::<Resp>()
+            .await?)
+    }
+
     pub async fn get_stable_access_token(
         &self,
         appid: &str,
@@ -952,19 +966,8 @@ impl WechatShopClient {
         access_token: &str,
         cgi_path: &str,
     ) -> AppResult<ApiQuotaCall> {
-        let mut url = Url::parse(API_QUOTA_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&ApiQuotaRequest { cgi_path })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<ApiQuotaResponse>()
+        let response: ApiQuotaResponse = self
+            .post_json(API_QUOTA_URL, access_token, &ApiQuotaRequest { cgi_path })
             .await?;
         let result = if response.errcode == 0 {
             WechatCallResult::Success(ApiQuotaInfo {
@@ -1064,22 +1067,13 @@ impl WechatShopClient {
         access_token: &str,
         file_size: usize,
     ) -> AppResult<WechatCallResult<String>> {
-        let mut url = Url::parse(VIDEO_INIT_UPLOAD_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut().append_pair("access_token", access_token);
         let body = serde_json::json!({
             "scene_type": 162,
             "file_type": "mp4",
             "file_size": file_size,
         });
-        let response = self
-            .http
-            .post(url)
-            .json(&body)
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<VideoInitUploadResponse>()
+        let response: VideoInitUploadResponse = self
+            .post_json(VIDEO_INIT_UPLOAD_URL, access_token, &body)
             .await?;
         if response.errcode == 0 {
             match response.data.and_then(|data| data.video_upload_key) {
@@ -1149,9 +1143,6 @@ impl WechatShopClient {
         video_upload_key: &str,
         finish_parts: &[(u32, String)],
     ) -> AppResult<WechatCallResult<()>> {
-        let mut url = Url::parse(VIDEO_FINISH_UPLOAD_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut().append_pair("access_token", access_token);
         let parts: Vec<serde_json::Value> = finish_parts
             .iter()
             .map(|(partnum, part_sha)| {
@@ -1162,14 +1153,8 @@ impl WechatShopClient {
             "video_upload_key": video_upload_key,
             "finish_parts": parts,
         });
-        let response = self
-            .http
-            .post(url)
-            .json(&body)
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<VideoFinishUploadResponse>()
+        let response: VideoFinishUploadResponse = self
+            .post_json(VIDEO_FINISH_UPLOAD_URL, access_token, &body)
             .await?;
         if response.errcode == 0 {
             Ok(WechatCallResult::Success(()))
@@ -1298,35 +1283,23 @@ impl WechatShopClient {
         access_token: &str,
         payload: &serde_json::Value,
     ) -> AppResult<ProductAddCall> {
-        let mut url = Url::parse(PRODUCT_ADD_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(payload)
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<ProductAddResponse>()
+        let response: ProductAddResponse = self
+            .post_json(PRODUCT_ADD_URL, access_token, payload)
             .await?;
 
         let result = if response.errcode == 0 {
             let product_id = product_add_response_product_id(&response);
             match product_id {
                 Some(product_id) if !product_id.trim().is_empty() => {
-                    let mut raw_payload = serde_json::Map::new();
-                    raw_payload.insert("errcode".to_string(), serde_json::json!(response.errcode));
-                    raw_payload.insert("errmsg".to_string(), serde_json::json!(response.errmsg));
-                    if let Some(value) = response.product_id {
-                        raw_payload.insert("product_id".to_string(), value);
-                    }
-                    raw_payload.extend(response.extra);
+                    let raw_payload = make_raw_payload(
+                        response.errcode,
+                        &response.errmsg,
+                        vec![("product_id", response.product_id)],
+                        response.extra,
+                    );
                     WechatCallResult::Success(ProductAddResult {
                         product_id,
-                        raw_payload: serde_json::Value::Object(raw_payload),
+                        raw_payload,
                     })
                 }
                 _ => WechatCallResult::ApiError(WechatApiError {
@@ -1355,28 +1328,18 @@ impl WechatShopClient {
         access_token: &str,
         payload: &serde_json::Value,
     ) -> AppResult<ProductUpdateCall> {
-        let mut url = Url::parse(PRODUCT_UPDATE_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(payload)
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<ProductUpdateResponse>()
+        let response: ProductUpdateResponse = self
+            .post_json(PRODUCT_UPDATE_URL, access_token, payload)
             .await?;
 
         let result = if response.errcode == 0 {
-            let mut raw_payload = serde_json::Map::new();
-            raw_payload.insert("errcode".to_string(), serde_json::json!(response.errcode));
-            raw_payload.insert("errmsg".to_string(), serde_json::json!(response.errmsg));
-            raw_payload.extend(response.extra);
             WechatCallResult::Success(ProductUpdateResult {
-                raw_payload: serde_json::Value::Object(raw_payload),
+                raw_payload: make_raw_payload(
+                    response.errcode,
+                    &response.errmsg,
+                    vec![],
+                    response.extra,
+                ),
             })
         } else {
             WechatCallResult::ApiError(WechatApiError {
@@ -1400,49 +1363,43 @@ impl WechatShopClient {
         product_id: &str,
         data_type: i64,
     ) -> AppResult<ProductGetCall> {
-        let mut url = Url::parse(PRODUCT_GET_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&ProductGetRequest {
-                product_id,
-                data_type,
-            })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<ProductGetResponse>()
+        let response: ProductGetResponse = self
+            .post_json(
+                PRODUCT_GET_URL,
+                access_token,
+                &ProductGetRequest {
+                    product_id,
+                    data_type,
+                },
+            )
             .await?;
 
         let result = if response.errcode == 0 {
-            let mut raw_payload = serde_json::Map::new();
-            raw_payload.insert("errcode".to_string(), serde_json::json!(response.errcode));
-            raw_payload.insert("errmsg".to_string(), serde_json::json!(response.errmsg));
-            if let Some(product) = &response.product {
-                raw_payload.insert(
-                    "product".to_string(),
-                    serde_json::to_value(product).unwrap_or(serde_json::Value::Null),
-                );
-            }
-            if let Some(edit_product) = &response.edit_product {
-                raw_payload.insert(
-                    "edit_product".to_string(),
-                    serde_json::to_value(edit_product).unwrap_or(serde_json::Value::Null),
-                );
-            }
-            if let Some(audit_info) = &response.audit_info {
-                raw_payload.insert("audit_info".to_string(), audit_info.clone());
-            }
-            raw_payload.extend(response.extra);
+            let raw_payload = make_raw_payload(
+                response.errcode,
+                &response.errmsg,
+                vec![
+                    (
+                        "product",
+                        response.product.as_ref().map(|product| {
+                            serde_json::to_value(product).unwrap_or(serde_json::Value::Null)
+                        }),
+                    ),
+                    (
+                        "edit_product",
+                        response.edit_product.as_ref().map(|edit_product| {
+                            serde_json::to_value(edit_product).unwrap_or(serde_json::Value::Null)
+                        }),
+                    ),
+                    ("audit_info", response.audit_info.clone()),
+                ],
+                response.extra,
+            );
             WechatCallResult::Success(ProductGetInfo {
                 product: response.product,
                 edit_product: response.edit_product,
                 audit_info: response.audit_info,
-                raw_payload: serde_json::Value::Object(raw_payload),
+                raw_payload,
             })
         } else {
             WechatCallResult::ApiError(WechatApiError {
@@ -1465,28 +1422,22 @@ impl WechatShopClient {
         access_token: &str,
         product_id: &str,
     ) -> AppResult<ProductListingCall> {
-        let mut url = Url::parse(PRODUCT_LISTING_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&ProductListingRequest { product_id })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<ProductListingResponse>()
+        let response: ProductListingResponse = self
+            .post_json(
+                PRODUCT_LISTING_URL,
+                access_token,
+                &ProductListingRequest { product_id },
+            )
             .await?;
 
         let result = if response.errcode == 0 {
-            let mut raw_payload = serde_json::Map::new();
-            raw_payload.insert("errcode".to_string(), serde_json::json!(response.errcode));
-            raw_payload.insert("errmsg".to_string(), serde_json::json!(response.errmsg));
-            raw_payload.extend(response.extra);
             WechatCallResult::Success(ProductListingResult {
-                raw_payload: serde_json::Value::Object(raw_payload),
+                raw_payload: make_raw_payload(
+                    response.errcode,
+                    &response.errmsg,
+                    vec![],
+                    response.extra,
+                ),
             })
         } else {
             WechatCallResult::ApiError(WechatApiError {
@@ -1509,19 +1460,12 @@ impl WechatShopClient {
         access_token: &str,
         cat_id: Option<i64>,
     ) -> AppResult<CategoryPrecheckCall> {
-        let mut url = Url::parse(CATEGORY_PRECHECK_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&CategoryPrecheckRequest { cat_id })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<CategoryPrecheckResponse>()
+        let response: CategoryPrecheckResponse = self
+            .post_json(
+                CATEGORY_PRECHECK_URL,
+                access_token,
+                &CategoryPrecheckRequest { cat_id },
+            )
             .await?;
 
         let result = if response.errcode == 0 {
@@ -1532,19 +1476,22 @@ impl WechatShopClient {
                 .filter(|value| !value.trim().is_empty())
                 .collect::<Vec<_>>();
             let all_pass = response.all_pass.unwrap_or_else(|| fail_reasons.is_empty());
-            let mut raw_payload = serde_json::Map::new();
-            raw_payload.insert("errcode".to_string(), serde_json::json!(response.errcode));
-            raw_payload.insert("errmsg".to_string(), serde_json::json!(response.errmsg));
-            raw_payload.insert("all_pass".to_string(), serde_json::json!(all_pass));
-            raw_payload.insert(
-                "fail_reasons".to_string(),
-                serde_json::Value::Array(fail_reason_values),
+            let raw_payload = make_raw_payload(
+                response.errcode,
+                &response.errmsg,
+                vec![
+                    ("all_pass", Some(serde_json::json!(all_pass))),
+                    (
+                        "fail_reasons",
+                        Some(serde_json::Value::Array(fail_reason_values)),
+                    ),
+                ],
+                response.extra,
             );
-            raw_payload.extend(response.extra);
             WechatCallResult::Success(CategoryPrecheckResult {
                 all_pass,
                 fail_reasons,
-                raw_payload: serde_json::Value::Object(raw_payload),
+                raw_payload,
             })
         } else {
             WechatCallResult::ApiError(WechatApiError {
@@ -1571,28 +1518,21 @@ impl WechatShopClient {
         page_size: i64,
         next_key: &str,
     ) -> AppResult<OrderListCall> {
-        let mut url = Url::parse(ORDER_LIST_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&OrderListRequest {
-                create_time_range: TimeRange {
-                    start_time,
-                    end_time,
+        let response: OrderListResponse = self
+            .post_json(
+                ORDER_LIST_URL,
+                access_token,
+                &OrderListRequest {
+                    create_time_range: TimeRange {
+                        start_time,
+                        end_time,
+                    },
+                    update_time_range: None,
+                    status,
+                    page_size,
+                    next_key,
                 },
-                update_time_range: None,
-                status,
-                page_size,
-                next_key,
-            })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<OrderListResponse>()
+            )
             .await?;
 
         let result = if response.errcode == 0 {
@@ -1601,26 +1541,33 @@ impl WechatShopClient {
                 .iter()
                 .filter_map(json_value_to_string)
                 .collect::<Vec<_>>();
-            let mut raw_payload = serde_json::Map::new();
-            raw_payload.insert("errcode".to_string(), serde_json::json!(response.errcode));
-            raw_payload.insert("errmsg".to_string(), serde_json::json!(response.errmsg));
-            raw_payload.insert(
-                "order_id_list".to_string(),
-                serde_json::Value::Array(order_id_values),
+            let raw_payload = make_raw_payload(
+                response.errcode,
+                &response.errmsg,
+                vec![
+                    (
+                        "order_id_list",
+                        Some(serde_json::Value::Array(order_id_values)),
+                    ),
+                    (
+                        "next_key",
+                        response
+                            .next_key
+                            .as_ref()
+                            .map(|next_key| serde_json::json!(next_key)),
+                    ),
+                    (
+                        "has_more",
+                        Some(serde_json::json!(response.has_more.unwrap_or(false))),
+                    ),
+                ],
+                response.extra,
             );
-            if let Some(next_key) = &response.next_key {
-                raw_payload.insert("next_key".to_string(), serde_json::json!(next_key));
-            }
-            raw_payload.insert(
-                "has_more".to_string(),
-                serde_json::json!(response.has_more.unwrap_or(false)),
-            );
-            raw_payload.extend(response.extra);
             WechatCallResult::Success(OrderListResult {
                 order_id_list,
                 next_key: response.next_key,
                 has_more: response.has_more.unwrap_or(false),
-                raw_payload: serde_json::Value::Object(raw_payload),
+                raw_payload,
             })
         } else {
             WechatCallResult::ApiError(WechatApiError {
@@ -1639,33 +1586,20 @@ impl WechatShopClient {
     }
 
     pub async fn get_order(&self, access_token: &str, order_id: &str) -> AppResult<OrderGetCall> {
-        let mut url = Url::parse(ORDER_GET_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&OrderGetRequest { order_id })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<OrderGetResponse>()
+        let response: OrderGetResponse = self
+            .post_json(ORDER_GET_URL, access_token, &OrderGetRequest { order_id })
             .await?;
 
         let result = if response.errcode == 0 {
             match response.order {
                 Some(order) => {
-                    let mut raw_payload = serde_json::Map::new();
-                    raw_payload.insert("errcode".to_string(), serde_json::json!(response.errcode));
-                    raw_payload.insert("errmsg".to_string(), serde_json::json!(response.errmsg));
-                    raw_payload.insert("order".to_string(), order.clone());
-                    raw_payload.extend(response.extra);
-                    WechatCallResult::Success(OrderGetResult {
-                        order,
-                        raw_payload: serde_json::Value::Object(raw_payload),
-                    })
+                    let raw_payload = make_raw_payload(
+                        response.errcode,
+                        &response.errmsg,
+                        vec![("order", Some(order.clone()))],
+                        response.extra,
+                    );
+                    WechatCallResult::Success(OrderGetResult { order, raw_payload })
                 }
                 None => WechatCallResult::ApiError(WechatApiError {
                     errcode: -999_996,
@@ -1696,33 +1630,27 @@ impl WechatShopClient {
         change_express: bool,
         express_fee: Option<i64>,
     ) -> AppResult<OrderPriceUpdateCall> {
-        let mut url = Url::parse(ORDER_PRICE_UPDATE_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&OrderPriceUpdateRequest {
-                order_id,
-                change_order_infos,
-                change_express,
-                express_fee,
-            })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<OrderPriceUpdateResponse>()
+        let response: OrderPriceUpdateResponse = self
+            .post_json(
+                ORDER_PRICE_UPDATE_URL,
+                access_token,
+                &OrderPriceUpdateRequest {
+                    order_id,
+                    change_order_infos,
+                    change_express,
+                    express_fee,
+                },
+            )
             .await?;
 
         let result = if response.errcode == 0 {
-            let mut raw_payload = serde_json::Map::new();
-            raw_payload.insert("errcode".to_string(), serde_json::json!(response.errcode));
-            raw_payload.insert("errmsg".to_string(), serde_json::json!(response.errmsg));
-            raw_payload.extend(response.extra);
             WechatCallResult::Success(OrderPriceUpdateResult {
-                raw_payload: serde_json::Value::Object(raw_payload),
+                raw_payload: make_raw_payload(
+                    response.errcode,
+                    &response.errmsg,
+                    vec![],
+                    response.extra,
+                ),
             })
         } else {
             WechatCallResult::ApiError(WechatApiError {
@@ -1745,28 +1673,18 @@ impl WechatShopClient {
         access_token: &str,
         payload: &serde_json::Value,
     ) -> AppResult<SendDeliveryCall> {
-        let mut url = Url::parse(SEND_DELIVERY_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(payload)
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<SendDeliveryResponse>()
+        let response: SendDeliveryResponse = self
+            .post_json(SEND_DELIVERY_URL, access_token, payload)
             .await?;
 
         let result = if response.errcode == 0 {
-            let mut raw_payload = serde_json::Map::new();
-            raw_payload.insert("errcode".to_string(), serde_json::json!(response.errcode));
-            raw_payload.insert("errmsg".to_string(), serde_json::json!(response.errmsg));
-            raw_payload.extend(response.extra);
             WechatCallResult::Success(SendDeliveryResult {
-                raw_payload: serde_json::Value::Object(raw_payload),
+                raw_payload: make_raw_payload(
+                    response.errcode,
+                    &response.errmsg,
+                    vec![],
+                    response.extra,
+                ),
             })
         } else {
             WechatCallResult::ApiError(WechatApiError {
@@ -1789,19 +1707,12 @@ impl WechatShopClient {
         access_token: &str,
         ewaybill_only: bool,
     ) -> AppResult<WechatRawCall> {
-        let mut url = Url::parse(DELIVERY_COMPANY_LIST_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&DeliveryCompanyListRequest { ewaybill_only })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<RawWechatResponse>()
+        let response: RawWechatResponse = self
+            .post_json(
+                DELIVERY_COMPANY_LIST_URL,
+                access_token,
+                &DeliveryCompanyListRequest { ewaybill_only },
+            )
             .await?;
 
         Ok(WechatRawCall {
@@ -1820,25 +1731,18 @@ impl WechatShopClient {
         end_update_time: i64,
         next_key: &str,
     ) -> AppResult<AftersaleListCall> {
-        let mut url = Url::parse(AFTERSALE_LIST_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&AftersaleListRequest {
-                begin_create_time: None,
-                end_create_time: None,
-                begin_update_time: Some(begin_update_time),
-                end_update_time: Some(end_update_time),
-                next_key,
-            })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<AftersaleListResponse>()
+        let response: AftersaleListResponse = self
+            .post_json(
+                AFTERSALE_LIST_URL,
+                access_token,
+                &AftersaleListRequest {
+                    begin_create_time: None,
+                    end_create_time: None,
+                    begin_update_time: Some(begin_update_time),
+                    end_update_time: Some(end_update_time),
+                    next_key,
+                },
+            )
             .await?;
 
         let result = if response.errcode == 0 {
@@ -1847,26 +1751,33 @@ impl WechatShopClient {
                 .iter()
                 .filter_map(json_value_to_string)
                 .collect::<Vec<_>>();
-            let mut raw_payload = serde_json::Map::new();
-            raw_payload.insert("errcode".to_string(), serde_json::json!(response.errcode));
-            raw_payload.insert("errmsg".to_string(), serde_json::json!(response.errmsg));
-            raw_payload.insert(
-                "after_sale_order_id_list".to_string(),
-                serde_json::Value::Array(aftersale_id_values),
+            let raw_payload = make_raw_payload(
+                response.errcode,
+                &response.errmsg,
+                vec![
+                    (
+                        "after_sale_order_id_list",
+                        Some(serde_json::Value::Array(aftersale_id_values)),
+                    ),
+                    (
+                        "next_key",
+                        response
+                            .next_key
+                            .as_ref()
+                            .map(|next_key| serde_json::json!(next_key)),
+                    ),
+                    (
+                        "has_more",
+                        Some(serde_json::json!(response.has_more.unwrap_or(false))),
+                    ),
+                ],
+                response.extra,
             );
-            if let Some(next_key) = &response.next_key {
-                raw_payload.insert("next_key".to_string(), serde_json::json!(next_key));
-            }
-            raw_payload.insert(
-                "has_more".to_string(),
-                serde_json::json!(response.has_more.unwrap_or(false)),
-            );
-            raw_payload.extend(response.extra);
             WechatCallResult::Success(AftersaleListResult {
                 after_sale_order_id_list,
                 next_key: response.next_key,
                 has_more: response.has_more.unwrap_or(false),
-                raw_payload: serde_json::Value::Object(raw_payload),
+                raw_payload,
             })
         } else {
             WechatCallResult::ApiError(WechatApiError {
@@ -1889,34 +1800,28 @@ impl WechatShopClient {
         access_token: &str,
         after_sale_order_id: &str,
     ) -> AppResult<AftersaleGetCall> {
-        let mut url = Url::parse(AFTERSALE_GET_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&AftersaleGetRequest {
-                after_sale_order_id,
-            })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<AftersaleGetResponse>()
+        let response: AftersaleGetResponse = self
+            .post_json(
+                AFTERSALE_GET_URL,
+                access_token,
+                &AftersaleGetRequest {
+                    after_sale_order_id,
+                },
+            )
             .await?;
 
         let result = if response.errcode == 0 {
             match response.after_sale_order {
                 Some(after_sale_order) => {
-                    let mut raw_payload = serde_json::Map::new();
-                    raw_payload.insert("errcode".to_string(), serde_json::json!(response.errcode));
-                    raw_payload.insert("errmsg".to_string(), serde_json::json!(response.errmsg));
-                    raw_payload.insert("after_sale_order".to_string(), after_sale_order.clone());
-                    raw_payload.extend(response.extra);
+                    let raw_payload = make_raw_payload(
+                        response.errcode,
+                        &response.errmsg,
+                        vec![("after_sale_order", Some(after_sale_order.clone()))],
+                        response.extra,
+                    );
                     WechatCallResult::Success(AftersaleGetResult {
                         after_sale_order,
-                        raw_payload: serde_json::Value::Object(raw_payload),
+                        raw_payload,
                     })
                 }
                 None => WechatCallResult::ApiError(WechatApiError {
@@ -1947,23 +1852,16 @@ impl WechatShopClient {
         address_id: Option<&str>,
         accept_type: Option<i64>,
     ) -> AppResult<WechatRawCall> {
-        let mut url = Url::parse(AFTERSALE_ACCEPT_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&AftersaleAcceptRequest {
-                after_sale_order_id,
-                address_id,
-                accept_type,
-            })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<RawWechatResponse>()
+        let response: RawWechatResponse = self
+            .post_json(
+                AFTERSALE_ACCEPT_URL,
+                access_token,
+                &AftersaleAcceptRequest {
+                    after_sale_order_id,
+                    address_id,
+                    accept_type,
+                },
+            )
             .await?;
 
         Ok(WechatRawCall {
@@ -1982,23 +1880,16 @@ impl WechatShopClient {
         reject_reason_type: i64,
         reject_reason: Option<&str>,
     ) -> AppResult<WechatRawCall> {
-        let mut url = Url::parse(AFTERSALE_REJECT_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&AftersaleRejectRequest {
-                after_sale_order_id,
-                reject_reason,
-                reject_reason_type,
-            })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<RawWechatResponse>()
+        let response: RawWechatResponse = self
+            .post_json(
+                AFTERSALE_REJECT_URL,
+                access_token,
+                &AftersaleRejectRequest {
+                    after_sale_order_id,
+                    reject_reason,
+                    reject_reason_type,
+                },
+            )
             .await?;
 
         Ok(WechatRawCall {
@@ -2014,19 +1905,12 @@ impl WechatShopClient {
         &self,
         access_token: &str,
     ) -> AppResult<WechatRawCall> {
-        let mut url = Url::parse(AFTERSALE_REJECT_REASON_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&serde_json::json!({}))
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<RawWechatResponse>()
+        let response: RawWechatResponse = self
+            .post_json(
+                AFTERSALE_REJECT_REASON_URL,
+                access_token,
+                &serde_json::json!({}),
+            )
             .await?;
 
         Ok(WechatRawCall {
@@ -2046,25 +1930,18 @@ impl WechatShopClient {
         offset: i64,
         limit: i64,
     ) -> AppResult<WechatRawCall> {
-        let mut url = Url::parse(GUARANTEE_SEARCH_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&GuaranteeSearchRequest {
-                begin_time: Some(begin_time),
-                end_time: Some(end_time),
-                r#type: Some(0),
-                offset,
-                limit,
-            })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<RawWechatResponse>()
+        let response: RawWechatResponse = self
+            .post_json(
+                GUARANTEE_SEARCH_URL,
+                access_token,
+                &GuaranteeSearchRequest {
+                    begin_time: Some(begin_time),
+                    end_time: Some(end_time),
+                    r#type: Some(0),
+                    offset,
+                    limit,
+                },
+            )
             .await?;
 
         Ok(WechatRawCall {
@@ -2081,19 +1958,12 @@ impl WechatShopClient {
         access_token: &str,
         guarantee_order_id: &str,
     ) -> AppResult<WechatRawCall> {
-        let mut url = Url::parse(GUARANTEE_GET_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&GuaranteeGetRequest { guarantee_order_id })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<RawWechatResponse>()
+        let response: RawWechatResponse = self
+            .post_json(
+                GUARANTEE_GET_URL,
+                access_token,
+                &GuaranteeGetRequest { guarantee_order_id },
+            )
             .await?;
 
         Ok(WechatRawCall {
@@ -2110,22 +1980,15 @@ impl WechatShopClient {
         access_token: &str,
         status: Option<i64>,
     ) -> AppResult<WechatRawCall> {
-        let mut url = Url::parse(CATEGORY_RELATION_LIST_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&CategoryRelationListRequest {
-                is_filter_status: status.is_some(),
-                status,
-            })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<RawWechatResponse>()
+        let response: RawWechatResponse = self
+            .post_json(
+                CATEGORY_RELATION_LIST_URL,
+                access_token,
+                &CategoryRelationListRequest {
+                    is_filter_status: status.is_some(),
+                    status,
+                },
+            )
             .await?;
 
         Ok(WechatRawCall {
@@ -2142,19 +2005,12 @@ impl WechatShopClient {
         access_token: &str,
         category_id: i64,
     ) -> AppResult<WechatRawCall> {
-        let mut url = Url::parse(CATEGORY_RELATION_DETAIL_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&CategoryRelationDetailRequest { category_id })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<RawWechatResponse>()
+        let response: RawWechatResponse = self
+            .post_json(
+                CATEGORY_RELATION_DETAIL_URL,
+                access_token,
+                &CategoryRelationDetailRequest { category_id },
+            )
             .await?;
 
         Ok(WechatRawCall {
@@ -2195,19 +2051,12 @@ impl WechatShopClient {
         access_token: &str,
         cat_id: i64,
     ) -> AppResult<WechatRawCall> {
-        let mut url = Url::parse(CATEGORY_DETAIL_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&CategoryDetailRequest { cat_id })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<RawWechatResponse>()
+        let response: RawWechatResponse = self
+            .post_json(
+                CATEGORY_DETAIL_URL,
+                access_token,
+                &CategoryDetailRequest { cat_id },
+            )
             .await?;
 
         Ok(WechatRawCall {
@@ -2225,22 +2074,15 @@ impl WechatShopClient {
         cat_id: i64,
         release_mode: i64,
     ) -> AppResult<WechatRawCall> {
-        let mut url = Url::parse(CATEGORY_PRODUCT_RULE_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&CategoryProductRuleRequest {
-                cat_id,
-                release_mode,
-            })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<RawWechatResponse>()
+        let response: RawWechatResponse = self
+            .post_json(
+                CATEGORY_PRODUCT_RULE_URL,
+                access_token,
+                &CategoryProductRuleRequest {
+                    cat_id,
+                    release_mode,
+                },
+            )
             .await?;
 
         Ok(WechatRawCall {
@@ -2288,19 +2130,12 @@ impl WechatShopClient {
         offset: i64,
         limit: i64,
     ) -> AppResult<WechatRawCall> {
-        let mut url = Url::parse(FREIGHT_TEMPLATE_LIST_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&FreightTemplateListRequest { offset, limit })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<RawWechatResponse>()
+        let response: RawWechatResponse = self
+            .post_json(
+                FREIGHT_TEMPLATE_LIST_URL,
+                access_token,
+                &FreightTemplateListRequest { offset, limit },
+            )
             .await?;
 
         Ok(WechatRawCall {
@@ -2319,19 +2154,12 @@ impl WechatShopClient {
         access_token: &str,
         template_id: &str,
     ) -> AppResult<WechatRawCall> {
-        let mut url = Url::parse(FREIGHT_TEMPLATE_DETAIL_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&FreightTemplateDetailRequest { template_id })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<RawWechatResponse>()
+        let response: RawWechatResponse = self
+            .post_json(
+                FREIGHT_TEMPLATE_DETAIL_URL,
+                access_token,
+                &FreightTemplateDetailRequest { template_id },
+            )
             .await?;
 
         Ok(WechatRawCall {
@@ -2349,19 +2177,12 @@ impl WechatShopClient {
         offset: i64,
         limit: i64,
     ) -> AppResult<MerchantAddressListCall> {
-        let mut url = Url::parse(MERCHANT_ADDRESS_LIST_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&MerchantAddressListRequest { offset, limit })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<MerchantAddressListResponse>()
+        let response: MerchantAddressListResponse = self
+            .post_json(
+                MERCHANT_ADDRESS_LIST_URL,
+                access_token,
+                &MerchantAddressListRequest { offset, limit },
+            )
             .await?;
 
         let result = if response.errcode == 0 {
@@ -2395,19 +2216,12 @@ impl WechatShopClient {
         access_token: &str,
         address_id: i64,
     ) -> AppResult<MerchantAddressDetailCall> {
-        let mut url = Url::parse(MERCHANT_ADDRESS_GET_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&MerchantAddressGetRequest { address_id })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<MerchantAddressGetResponse>()
+        let response: MerchantAddressGetResponse = self
+            .post_json(
+                MERCHANT_ADDRESS_GET_URL,
+                access_token,
+                &MerchantAddressGetRequest { address_id },
+            )
             .await?;
 
         let result = if response.errcode == 0 {
@@ -2442,23 +2256,16 @@ impl WechatShopClient {
         page_size: i64,
         next_key: Option<&str>,
     ) -> AppResult<ProductListCall> {
-        let mut url = Url::parse(PRODUCT_LIST_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&ProductListRequest {
-                status,
-                page_size,
-                next_key,
-            })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<ProductListResponse>()
+        let response: ProductListResponse = self
+            .post_json(
+                PRODUCT_LIST_URL,
+                access_token,
+                &ProductListRequest {
+                    status,
+                    page_size,
+                    next_key,
+                },
+            )
             .await?;
 
         let result = if response.errcode == 0 {
@@ -2495,23 +2302,16 @@ impl WechatShopClient {
         &self,
         access_token: &str,
         product_id: &str,
-    ) -> AppResult<ProductDelistingCall> {
-        let mut url = Url::parse(PRODUCT_DELISTING_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&ProductIdRequest { product_id })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<ProductMutationResponse>()
+    ) -> AppResult<ProductMutationCall> {
+        let response: ProductMutationResponse = self
+            .post_json(
+                PRODUCT_DELISTING_URL,
+                access_token,
+                &ProductIdRequest { product_id },
+            )
             .await?;
 
-        Ok(ProductDelistingCall {
+        Ok(ProductMutationCall {
             meta: WechatCallMeta {
                 endpoint: PRODUCT_DELISTING_URL,
                 method: "POST",
@@ -2525,23 +2325,16 @@ impl WechatShopClient {
         &self,
         access_token: &str,
         product_id: &str,
-    ) -> AppResult<ProductDeleteCall> {
-        let mut url = Url::parse(PRODUCT_DELETE_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&ProductIdRequest { product_id })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<ProductMutationResponse>()
+    ) -> AppResult<ProductMutationCall> {
+        let response: ProductMutationResponse = self
+            .post_json(
+                PRODUCT_DELETE_URL,
+                access_token,
+                &ProductIdRequest { product_id },
+            )
             .await?;
 
-        Ok(ProductDeleteCall {
+        Ok(ProductMutationCall {
             meta: WechatCallMeta {
                 endpoint: PRODUCT_DELETE_URL,
                 method: "POST",
@@ -2557,19 +2350,12 @@ impl WechatShopClient {
         product_id: &str,
         sku_id: &str,
     ) -> AppResult<StockGetCall> {
-        let mut url = Url::parse(STOCK_GET_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&StockGetRequest { product_id, sku_id })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<StockGetResponse>()
+        let response: StockGetResponse = self
+            .post_json(
+                STOCK_GET_URL,
+                access_token,
+                &StockGetRequest { product_id, sku_id },
+            )
             .await?;
 
         let result = if response.errcode == 0 {
@@ -2605,22 +2391,15 @@ impl WechatShopClient {
         product_ids: &[String],
         stock_type: Option<i64>,
     ) -> AppResult<StockBatchGetCall> {
-        let mut url = Url::parse(STOCK_BATCHGET_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&StockBatchGetRequest {
-                product_id: product_ids,
-                stock_type,
-            })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<StockBatchGetResponse>()
+        let response: StockBatchGetResponse = self
+            .post_json(
+                STOCK_BATCHGET_URL,
+                access_token,
+                &StockBatchGetRequest {
+                    product_id: product_ids,
+                    stock_type,
+                },
+            )
             .await?;
 
         let result = if response.errcode == 0 {
@@ -2654,28 +2433,21 @@ impl WechatShopClient {
         sku_id: &str,
         diff_type: i64,
         num: i64,
-    ) -> AppResult<StockUpdateCall> {
-        let mut url = Url::parse(STOCK_UPDATE_URL)
-            .map_err(|error| AppError::Validation(format!("微信接口 URL 不合法: {error}")))?;
-        url.query_pairs_mut()
-            .append_pair("access_token", access_token);
-
-        let response = self
-            .http
-            .post(url)
-            .json(&StockUpdateRequest {
-                product_id,
-                sku_id,
-                diff_type,
-                num,
-            })
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<ProductMutationResponse>()
+    ) -> AppResult<ProductMutationCall> {
+        let response: ProductMutationResponse = self
+            .post_json(
+                STOCK_UPDATE_URL,
+                access_token,
+                &StockUpdateRequest {
+                    product_id,
+                    sku_id,
+                    diff_type,
+                    num,
+                },
+            )
             .await?;
 
-        Ok(StockUpdateCall {
+        Ok(ProductMutationCall {
             meta: WechatCallMeta {
                 endpoint: STOCK_UPDATE_URL,
                 method: "POST",
@@ -2685,15 +2457,36 @@ impl WechatShopClient {
     }
 }
 
+/// 构造微信响应 raw_payload 的统一形态：errcode + errmsg → 业务字段（值为 None 的键不写入）→
+/// extend(extra) 透传剩余字段。写入顺序与各调用点原手写逻辑逐一一致，产物字节级不变。
+fn make_raw_payload(
+    errcode: i64,
+    errmsg: &str,
+    fields: Vec<(&'static str, Option<serde_json::Value>)>,
+    extra: serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Value {
+    let mut raw_payload = serde_json::Map::new();
+    raw_payload.insert("errcode".to_string(), serde_json::json!(errcode));
+    raw_payload.insert("errmsg".to_string(), serde_json::json!(errmsg));
+    for (key, value) in fields {
+        if let Some(value) = value {
+            raw_payload.insert(key.to_string(), value);
+        }
+    }
+    raw_payload.extend(extra);
+    serde_json::Value::Object(raw_payload)
+}
+
 /// 下架 / 删除 / 改库存等只回 errcode/errmsg 的写操作统一构造结果。
-fn mutation_result(mut response: ProductMutationResponse) -> WechatCallResult<ProductMutationResult> {
+fn mutation_result(response: ProductMutationResponse) -> WechatCallResult<ProductMutationResult> {
     if response.errcode == 0 {
-        let mut raw_payload = serde_json::Map::new();
-        raw_payload.insert("errcode".to_string(), serde_json::json!(response.errcode));
-        raw_payload.insert("errmsg".to_string(), serde_json::json!(response.errmsg));
-        raw_payload.extend(std::mem::take(&mut response.extra));
         WechatCallResult::Success(ProductMutationResult {
-            raw_payload: serde_json::Value::Object(raw_payload),
+            raw_payload: make_raw_payload(
+                response.errcode,
+                &response.errmsg,
+                vec![],
+                response.extra,
+            ),
         })
     } else {
         WechatCallResult::ApiError(WechatApiError {
@@ -2703,14 +2496,15 @@ fn mutation_result(mut response: ProductMutationResponse) -> WechatCallResult<Pr
     }
 }
 
-fn raw_wechat_result(mut response: RawWechatResponse) -> WechatCallResult<WechatRawResult> {
+fn raw_wechat_result(response: RawWechatResponse) -> WechatCallResult<WechatRawResult> {
     if response.errcode == 0 {
-        let mut raw_payload = serde_json::Map::new();
-        raw_payload.insert("errcode".to_string(), serde_json::json!(response.errcode));
-        raw_payload.insert("errmsg".to_string(), serde_json::json!(response.errmsg));
-        raw_payload.extend(std::mem::take(&mut response.extra));
         WechatCallResult::Success(WechatRawResult {
-            raw_payload: serde_json::Value::Object(raw_payload),
+            raw_payload: make_raw_payload(
+                response.errcode,
+                &response.errmsg,
+                vec![],
+                response.extra,
+            ),
         })
     } else {
         WechatCallResult::ApiError(WechatApiError {

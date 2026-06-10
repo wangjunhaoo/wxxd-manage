@@ -229,56 +229,159 @@ pub(in crate::commands) async fn upload_or_reuse_video_asset(
     }
 }
 
+/// 远程素材下载策略：图片/视频共用一套下载实现，差异收敛到策略字段。
+struct AssetDownloadPolicy {
+    /// 素材中文名（「图片」/「视频」），用于拼接错误文案
+    asset_label: &'static str,
+    /// 请求超时秒数
+    timeout_secs: u64,
+    /// 下载完成后按实际字节数判定的体积上限
+    max_bytes: u64,
+    /// 体积超限文案中的上限语境（「微信上限」/「本地下载上限」）
+    max_bytes_label: &'static str,
+    /// 是否跟随重定向：视频跟随 302（淘宝 CDN 多跳，最多 5 跳）；
+    /// 图片禁止跳转，301/302 直接报错（微信 URL 上传不支持跳转）
+    follow_redirects: bool,
+    /// 下载总尝试次数（含首次）：仅网络发送失败 / 读取内容失败会重试
+    attempts: u32,
+    /// 请求 UA：视频必须用浏览器 UA 过淘宝防盗链
+    user_agent: &'static str,
+    /// 防盗链 Referer：视频必须带淘宝 Referer，图片不需要
+    referer: Option<&'static str>,
+    /// Accept 头：图片声明可接受的图片类型并强制 identity 编码，视频不需要
+    accept: Option<&'static str>,
+    /// 是否拒收 SVG：图片走本地规范化无法处理 SVG，视频无此问题
+    reject_svg: bool,
+}
+
+/// 视频下载策略：跟随 302 + 浏览器 UA + 淘宝防盗链 Referer（裸请求返回 490「非法访问」，
+/// 这是真机踩过的坑），单次尝试不重试，体积上限 500MB（微信 162 场景上限）。
+const VIDEO_DOWNLOAD_POLICY: AssetDownloadPolicy = AssetDownloadPolicy {
+    asset_label: "视频",
+    timeout_secs: VIDEO_DOWNLOAD_TIMEOUT_SECONDS,
+    max_bytes: VIDEO_DOWNLOAD_MAX_BYTES,
+    max_bytes_label: "微信上限",
+    follow_redirects: true,
+    attempts: 1,
+    user_agent: VIDEO_BROWSER_USER_AGENT,
+    referer: Some(VIDEO_DOWNLOAD_REFERER),
+    accept: None,
+    reject_svg: false,
+};
+
+/// 图片下载策略：301/302 视为错误（微信 URL 上传不支持跳转）、拒收 SVG、失败重试共 3 次尝试。
+const IMAGE_DOWNLOAD_POLICY: AssetDownloadPolicy = AssetDownloadPolicy {
+    asset_label: "图片",
+    timeout_secs: IMAGE_DOWNLOAD_TIMEOUT_SECONDS,
+    max_bytes: IMAGE_DOWNLOAD_MAX_BYTES,
+    max_bytes_label: "本地下载上限",
+    follow_redirects: false,
+    attempts: 3,
+    user_agent: IMAGE_USER_AGENT,
+    referer: None,
+    accept: Some(IMAGE_ACCEPT_HEADER),
+    reject_svg: true,
+};
+
+/// 远程素材下载单点实现：按策略组装请求头与重定向行为，下载完成后做空内容与体积终检
+/// （按实际字节数判定，不信任 Content-Length 预检）。仅网络层失败按 attempts 重试；
+/// HTTP 状态错误、跳转被拒、SVG 拒收均为确定性失败，直接返回不重试。
+async fn download_asset_bytes(
+    source_url: &str,
+    policy: &AssetDownloadPolicy,
+) -> Result<Vec<u8>, String> {
+    use reqwest::header::REFERER;
+
+    let label = policy.asset_label;
+    let redirect_policy = if policy.follow_redirects {
+        Policy::limited(5)
+    } else {
+        Policy::none()
+    };
+    let http = reqwest::Client::builder()
+        .redirect(redirect_policy)
+        .timeout(StdDuration::from_secs(policy.timeout_secs))
+        .build()
+        .map_err(|error| format!("初始化{label}下载客户端失败：{error}"))?;
+
+    let mut last_error: Option<String> = None;
+    for _attempt in 1..=policy.attempts {
+        let mut request = http.get(source_url).header(USER_AGENT, policy.user_agent);
+        if let Some(referer) = policy.referer {
+            request = request.header(REFERER, referer);
+        }
+        if let Some(accept) = policy.accept {
+            request = request
+                .header(ACCEPT, accept)
+                .header(ACCEPT_ENCODING, "identity");
+        }
+        let response = match request.send().await {
+            Ok(response) => response,
+            Err(error) => {
+                last_error = Some(format!("下载{label}失败：{error}"));
+                continue;
+            }
+        };
+        let status = response.status();
+        if !policy.follow_redirects && status.is_redirection() {
+            let location = response
+                .headers()
+                .get("location")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("");
+            return Err(if location.is_empty() {
+                format!("{label} URL 返回 {status} 跳转，微信 URL 上传不支持 301/302")
+            } else {
+                format!("{label} URL 返回 {status} 跳转到 {location}，微信 URL 上传不支持 301/302")
+            });
+        }
+        if !status.is_success() {
+            return Err(format!("{label} URL 打开失败：HTTP {status}"));
+        }
+        if policy.reject_svg {
+            let content_type = response
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .map(|value| {
+                    value
+                        .split(';')
+                        .next()
+                        .unwrap_or(value)
+                        .trim()
+                        .to_ascii_lowercase()
+                });
+            if matches!(content_type.as_deref(), Some("text/xml" | "image/svg+xml")) {
+                return Err("SVG 暂不支持本地规范化，请先转为 PNG/JPEG 再铺货".to_string());
+            }
+        }
+        match response.bytes().await {
+            Ok(bytes) => {
+                if bytes.is_empty() {
+                    return Err(format!("{label}内容为空"));
+                }
+                if bytes.len() as u64 > policy.max_bytes {
+                    return Err(format!(
+                        "{label}过大：{}，超过{} {}",
+                        format_bytes_short(bytes.len()),
+                        policy.max_bytes_label,
+                        format_bytes_short(policy.max_bytes as usize)
+                    ));
+                }
+                return Ok(bytes.to_vec());
+            }
+            Err(error) => {
+                last_error = Some(format!("读取{label}内容失败：{error}"));
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| format!("下载{label}失败：未收到{label}内容")))
+}
+
 /// 下载淘宝主图视频到内存，供微信 4 步分块上传。淘宝 cloud.video.taobao.com 有防盗链（裸请求返回
 /// 490「非法访问」），必须带浏览器 UA + Referer 并跟随 302 重定向。校验体积 ≤500MB（微信 162 场景上限）。
 pub(in crate::commands) async fn prepare_video_for_upload(source_url: &str) -> Result<Vec<u8>, String> {
-    use reqwest::header::REFERER;
-
-    let http = reqwest::Client::builder()
-        .redirect(Policy::limited(5))
-        .timeout(StdDuration::from_secs(VIDEO_DOWNLOAD_TIMEOUT_SECONDS))
-        .build()
-        .map_err(|error| format!("初始化视频下载客户端失败：{error}"))?;
-    let response = http
-        .get(source_url)
-        .header(USER_AGENT, VIDEO_BROWSER_USER_AGENT)
-        .header(REFERER, VIDEO_DOWNLOAD_REFERER)
-        .send()
-        .await
-        .map_err(|error| format!("下载视频失败：{error}"))?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(format!("视频 URL 打开失败：HTTP {status}"));
-    }
-    if let Some(content_length) = response
-        .headers()
-        .get(CONTENT_LENGTH)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
-    {
-        if content_length > VIDEO_DOWNLOAD_MAX_BYTES {
-            return Err(format!(
-                "视频过大：{}，超过微信上限 {}",
-                format_bytes_short(content_length as usize),
-                format_bytes_short(VIDEO_DOWNLOAD_MAX_BYTES as usize)
-            ));
-        }
-    }
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|error| format!("读取视频内容失败：{error}"))?;
-    if bytes.is_empty() {
-        return Err("视频内容为空".to_string());
-    }
-    if bytes.len() as u64 > VIDEO_DOWNLOAD_MAX_BYTES {
-        return Err(format!(
-            "视频过大：{}，超过微信上限 {}",
-            format_bytes_short(bytes.len()),
-            format_bytes_short(VIDEO_DOWNLOAD_MAX_BYTES as usize)
-        ));
-    }
-    Ok(bytes.to_vec())
+    download_asset_bytes(source_url, &VIDEO_DOWNLOAD_POLICY).await
 }
 
 pub(in crate::commands) fn validate_image_source_url(
@@ -380,91 +483,8 @@ pub(in crate::commands) async fn prepare_image_for_upload(
         return prepare_image_bytes_for_upload(app, source_url, bytes);
     }
 
-    let http = reqwest::Client::builder()
-        .redirect(Policy::none())
-        .timeout(StdDuration::from_secs(IMAGE_DOWNLOAD_TIMEOUT_SECONDS))
-        .build()
-        .map_err(|error| format!("初始化图片下载客户端失败：{error}"))?;
-    let mut last_error = None;
-    let mut downloaded_bytes = None;
-    for attempt in 1..=3 {
-        let response = match http
-            .get(source_url)
-            .header(USER_AGENT, IMAGE_USER_AGENT)
-            .header(ACCEPT, IMAGE_ACCEPT_HEADER)
-            .header(ACCEPT_ENCODING, "identity")
-            .send()
-            .await
-        {
-            Ok(response) => response,
-            Err(error) => {
-                last_error = Some(format!("下载图片失败：{error}"));
-                continue;
-            }
-        };
-        let status = response.status();
-        if status.is_redirection() {
-            let location = response
-                .headers()
-                .get("location")
-                .and_then(|value| value.to_str().ok())
-                .unwrap_or("");
-            return Err(if location.is_empty() {
-                format!("图片 URL 返回 {status} 跳转，微信 URL 上传不支持 301/302")
-            } else {
-                format!("图片 URL 返回 {status} 跳转到 {location}，微信 URL 上传不支持 301/302")
-            });
-        }
-        if !status.is_success() {
-            return Err(format!("图片 URL 打开失败：HTTP {status}"));
-        }
-
-        let content_type = response
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .map(|value| {
-                value
-                    .split(';')
-                    .next()
-                    .unwrap_or(value)
-                    .trim()
-                    .to_ascii_lowercase()
-            });
-        if matches!(content_type.as_deref(), Some("text/xml" | "image/svg+xml")) {
-            return Err("SVG 暂不支持本地规范化，请先转为 PNG/JPEG 再铺货".to_string());
-        }
-        if let Some(content_length) = response
-            .headers()
-            .get(CONTENT_LENGTH)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse::<u64>().ok())
-        {
-            if content_length > IMAGE_DOWNLOAD_MAX_BYTES {
-                return Err(format!(
-                    "图片过大：{}，超过本地下载上限 {}",
-                    format_bytes_short(content_length as usize),
-                    format_bytes_short(IMAGE_DOWNLOAD_MAX_BYTES as usize)
-                ));
-            }
-        }
-
-        match response.bytes().await {
-            Ok(bytes) => {
-                downloaded_bytes = Some(bytes);
-                break;
-            }
-            Err(error) => {
-                last_error = Some(format!("读取图片内容失败：{error}"));
-                if attempt == 3 {
-                    return Err(last_error.unwrap_or_else(|| "读取图片内容失败".to_string()));
-                }
-            }
-        }
-    }
-    let bytes = downloaded_bytes
-        .ok_or_else(|| last_error.unwrap_or_else(|| "下载图片失败：未收到图片内容".to_string()))?;
-    prepare_image_bytes_for_upload(app, source_url, bytes.to_vec())
+    let bytes = download_asset_bytes(source_url, &IMAGE_DOWNLOAD_POLICY).await?;
+    prepare_image_bytes_for_upload(app, source_url, bytes)
 }
 
 pub(in crate::commands) fn collection_uploaded_image_dir(app: &AppHandle) -> AppResult<PathBuf> {
