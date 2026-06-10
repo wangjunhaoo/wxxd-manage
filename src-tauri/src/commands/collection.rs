@@ -51,6 +51,30 @@ pub fn set_publish_default_freight_template(
     Ok(())
 }
 
+/// 写入导入批次行：每次导入操作一行，名称自动生成「MM-DD HH:mm · 来源 · N个」（可在工作台重命名）。
+/// 商品行通过 import_batch_id 归属批次，须在同一事务内先插商品后插批次（或反之均可，无外键）。
+pub(in crate::commands) fn insert_import_batch(
+    conn: &Connection,
+    batch_id: &str,
+    source: &str,
+    source_label: &str,
+    product_count: i64,
+    now: &str,
+) -> AppResult<()> {
+    // now 为 RFC3339（如 2026-06-10T14:30:00+08:00），截取「06-10 14:30」做显示名
+    let display_time = now.get(5..16).unwrap_or(now).replace('T', " ");
+    conn.execute(
+        "INSERT INTO import_batches (id, name, source, created_at) VALUES (?1, ?2, ?3, ?4)",
+        params![
+            batch_id,
+            format!("{display_time} · {source_label} · {product_count}个"),
+            source,
+            now
+        ],
+    )?;
+    Ok(())
+}
+
 // 1. Excel 导入并创建采集任务
 #[tauri::command]
 pub fn import_excel_for_collection(
@@ -69,7 +93,7 @@ pub fn import_excel_for_collection(
     let mut excel: Xlsx<_> = open_workbook(&path)
         .map_err(|e| AppError::Validation(format!("无法打开 Excel 文件: {}", e)))?;
 
-    let conn = open_connection(&app)?;
+    let mut conn = open_connection(&app)?;
     let now = now_shanghai();
 
     // 目标店可选：不选店则只采集不铺货（采集审查后停在「待铺货」，稍后可补选店）。
@@ -92,6 +116,11 @@ pub fn import_excel_for_collection(
     // 返回值仍是去重后的真实导入数，杜绝「静默丢数据」误解。
     let mut skipped_count = 0i64;
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    // 一次导入 = 一个批次：本批全部商品打同一 batch_id，工作台按批次筛选与批量操作。
+    // 整个导入套事务：中途校验失败（如链接格式错误）整批回滚，不留半截批次。
+    let batch_id = format!("batch_{}", Uuid::new_v4().simple());
+    let tx = conn.transaction()?;
 
     if let Some(Ok(range)) = excel.worksheet_range_at(0) {
         for row in range.rows() {
@@ -128,7 +157,7 @@ pub fn import_excel_for_collection(
                 skipped_count += 1;
                 continue;
             }
-            let already_exists = conn
+            let already_exists = tx
                 .query_row(
                     "SELECT 1 FROM pipeline_products WHERE source_url = ?1 LIMIT 1",
                     [&source_url],
@@ -142,15 +171,15 @@ pub fn import_excel_for_collection(
             }
 
             let product_id = format!("prod_{}", Uuid::new_v4().simple());
-            conn.execute(
+            tx.execute(
                 "INSERT INTO pipeline_products
-                 (id, title, source_url, category_path, status, stage, attention, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, 'pending_collect', 'collect', 'none', ?5, ?5)",
-                params![product_id, title, source_url, category_path, now],
+                 (id, title, source_url, category_path, status, stage, attention, import_batch_id, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, 'pending_collect', 'collect', 'none', ?5, ?6, ?6)",
+                params![product_id, title, source_url, category_path, batch_id, now],
             )?;
             for shop in &target_shops {
                 let target_id = format!("tgt_{}", Uuid::new_v4().simple());
-                conn.execute(
+                tx.execute(
                     "INSERT INTO pipeline_shop_targets
                      (id, product_id, shop_id, shop_name, stage, status, retry_count, created_at, updated_at)
                      VALUES (?1, ?2, ?3, ?4, 'await_review', 'pending', 0, ?5, ?5)",
@@ -161,10 +190,15 @@ pub fn import_excel_for_collection(
         }
     }
 
+    // 全部去重跳过时不建空批次（批次只在真有商品落库时存在）
+    if imported_count > 0 {
+        insert_import_batch(&tx, &batch_id, "excel", "Excel导入", imported_count, &now)?;
+    }
+
     if skipped_count > 0 {
         // 通知告知用户有重复链接被跳过(返回值是去重后的真实导入数，避免「导入了全部行」的误解)。
         let _ = upsert_notification(
-            &conn,
+            &tx,
             "info",
             "import_dedup",
             "import_excel",
@@ -176,6 +210,8 @@ pub fn import_excel_for_collection(
             None,
         );
     }
+
+    tx.commit()?;
 
     if imported_count > 0 {
         // 导入成功后触发后台采集 Worker
@@ -422,6 +458,8 @@ pub fn clear_collection_tasks(app: AppHandle) -> AppResult<()> {
     conn.execute("DELETE FROM pipeline_assets", [])?;
     conn.execute("DELETE FROM pipeline_shop_targets", [])?;
     conn.execute("DELETE FROM pipeline_products", [])?;
+    // 商品清空后批次随之清理，否则计数 0 的孤儿批次会在工作台下拉里无限累积
+    conn.execute("DELETE FROM import_batches", [])?;
     Ok(())
 }
 

@@ -3,6 +3,7 @@ import { ElMessage } from "../runtime/feedback";
 import type {
   CategoryCacheView,
   CategoryCatalogListResult,
+  ImportBatchView,
   PipelineProductDetailView,
   PipelineProductView,
   PipelineStats,
@@ -38,22 +39,40 @@ export function usePipeline(command: CommandFn) {
   });
   /** 当前视图：active=未归档（默认）/ archived=已归档 */
   const pipelineView = ref<"active" | "archived">("active");
+  /** 全部导入批次（含商品计数，批次筛选下拉数据源） */
+  const importBatches = ref<ImportBatchView[]>([]);
+  /** 当前批次筛选：null=全部批次。选中后列表与状态统计都只看该批次 */
+  const selectedBatchId = ref<string | null>(null);
   const pipelineLoading = ref(false);
   let timer: ReturnType<typeof setInterval> | null = null;
+  // 请求序号：切批次/切视图后，仍在途的旧请求（3 秒轮询发出的）返回时直接丢弃，
+  // 避免旧批次数据短暂覆盖新批次列表与统计。
+  let refreshSeq = 0;
 
   async function refreshPipeline() {
+    const seq = ++refreshSeq;
     pipelineLoading.value = true;
     try {
       const result = await command<PipelineWorkbenchView>(
         "list_pipeline_products",
-        { filter: pipelineView.value },
+        { filter: pipelineView.value, batchId: selectedBatchId.value },
       );
+      if (seq !== refreshSeq) return; // 期间筛选条件已变，过期响应作废
       pipelineProducts.value = result.products;
       pipelineStats.value = result.stats;
+      importBatches.value = result.batches;
+      // 选中的批次已不存在（如清库删除）：自动回退到全部批次，避免列表恒空
+      if (
+        selectedBatchId.value &&
+        !result.batches.some((b) => b.id === selectedBatchId.value)
+      ) {
+        selectedBatchId.value = null;
+        void refreshPipeline();
+      }
     } catch (error) {
       ElMessage.error(`获取流水线商品失败：${error}`);
     } finally {
-      pipelineLoading.value = false;
+      if (seq === refreshSeq) pipelineLoading.value = false;
     }
   }
 
@@ -61,6 +80,25 @@ export function usePipeline(command: CommandFn) {
   async function switchPipelineView(view: "active" | "archived") {
     pipelineView.value = view;
     await refreshPipeline();
+  }
+
+  /** 切换批次筛选（null=全部批次）并立即刷新。 */
+  async function selectBatch(batchId: string | null) {
+    selectedBatchId.value = batchId;
+    await refreshPipeline();
+  }
+
+  /** 重命名批次（自动生成的名字改成有业务含义的）。返回是否成功，失败时调用方保留输入框。 */
+  async function renameBatch(batchId: string, name: string): Promise<boolean> {
+    try {
+      await command<void>("rename_import_batch", { batchId, name });
+      ElMessage.success("批次已重命名");
+      await refreshPipeline();
+      return true;
+    } catch (error) {
+      ElMessage.error(`重命名失败：${error}`);
+      return false;
+    }
   }
 
   /** 批量归档已上架商品（从默认视图隐藏；仅 listed 可归档，后端兜底校验）。 */
@@ -324,6 +362,10 @@ export function usePipeline(command: CommandFn) {
     pipelineStats,
     pipelineView,
     switchPipelineView,
+    importBatches,
+    selectedBatchId,
+    selectBatch,
+    renameBatch,
     archiveProducts,
     unarchiveProducts,
     pipelineLoading,

@@ -724,8 +724,9 @@ pub fn get_pipeline_product_detail(
     })
 }
 
-/// 全表状态统计：一条聚合 SQL 算出各状态计数，不受列表 LIMIT 截断影响。
-fn load_pipeline_stats(conn: &Connection) -> AppResult<PipelineStats> {
+/// 状态统计：一条聚合 SQL 算出各状态计数，不受列表 LIMIT 截断影响。
+/// batch_id 非空时只统计该批次内商品（前端 Pill 数字 = 当前批次内各状态数）。
+fn load_pipeline_stats(conn: &Connection, batch_id: Option<&str>) -> AppResult<PipelineStats> {
     conn.query_row(
         "SELECT
            SUM(CASE WHEN archived_at IS NULL AND status IN ('pending_collect','collecting') THEN 1 ELSE 0 END),
@@ -735,8 +736,9 @@ fn load_pipeline_stats(conn: &Connection) -> AppResult<PipelineStats> {
            SUM(CASE WHEN archived_at IS NULL AND status = 'listed' THEN 1 ELSE 0 END),
            SUM(CASE WHEN archived_at IS NULL AND status = 'error' THEN 1 ELSE 0 END),
            SUM(CASE WHEN archived_at IS NOT NULL THEN 1 ELSE 0 END)
-         FROM pipeline_products",
-        [],
+         FROM pipeline_products
+         WHERE (?1 IS NULL OR import_batch_id = ?1)",
+        params![batch_id],
         |row| {
             Ok(PipelineStats {
                 collecting: row.get::<_, Option<i64>>(0)?.unwrap_or(0),
@@ -750,6 +752,29 @@ fn load_pipeline_stats(conn: &Connection) -> AppResult<PipelineStats> {
         },
     )
     .map_err(Into::into)
+}
+
+/// 全部导入批次（含商品计数），新批次在前，「历史数据」等旧批次靠后。
+fn load_import_batches(conn: &Connection) -> AppResult<Vec<ImportBatchView>> {
+    let mut stmt = conn.prepare(
+        "SELECT b.id, b.name, b.source, b.created_at, COUNT(p.id)
+         FROM import_batches b
+         LEFT JOIN pipeline_products p ON p.import_batch_id = b.id
+         GROUP BY b.id, b.name, b.source, b.created_at
+         ORDER BY b.created_at DESC, b.id DESC",
+    )?;
+    let batches = stmt
+        .query_map([], |row| {
+            Ok(ImportBatchView {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                source: row.get(2)?,
+                created_at: row.get(3)?,
+                product_count: row.get(4)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(batches)
 }
 
 /// 一次性批量加载多个商品的 targets（消除每商品一查的 N+1），按 product_id 分组返回。
@@ -795,15 +820,18 @@ fn load_targets_grouped(
     Ok(grouped)
 }
 
-/// 统一流水线视图查询：前端工作台数据源（全表统计 + 当前视图商品列表）。
+/// 统一流水线视图查询：前端工作台数据源（状态统计 + 当前视图商品列表 + 批次列表）。
 /// filter：None/"active"=未归档全部（默认），"archived"=仅已归档。
+/// batch_id：非空时列表与统计都只看该导入批次（批量操作随筛选天然限定在批次内）。
 #[tauri::command]
 pub fn list_pipeline_products(
     app: AppHandle,
     filter: Option<String>,
+    batch_id: Option<String>,
 ) -> AppResult<PipelineWorkbenchView> {
     let conn = open_connection(&app)?;
-    let stats = load_pipeline_stats(&conn)?;
+    let stats = load_pipeline_stats(&conn, batch_id.as_deref())?;
+    let batches = load_import_batches(&conn)?;
 
     struct ProductRow {
         id: String,
@@ -817,6 +845,7 @@ pub fn list_pipeline_products(
         progress_text: Option<String>,
         error_code: Option<String>,
         error_reason: Option<String>,
+        import_batch_id: Option<String>,
         updated_at: String,
     }
 
@@ -828,14 +857,16 @@ pub fn list_pipeline_products(
     };
     let mut stmt = conn.prepare(&format!(
         "SELECT id, external_product_id, title, source_url, category_path,
-                stage, status, attention, progress_text, error_code, error_reason, updated_at
+                stage, status, attention, progress_text, error_code, error_reason,
+                import_batch_id, updated_at
          FROM pipeline_products
          WHERE {archived_clause}
+           AND (?1 IS NULL OR import_batch_id = ?1)
          ORDER BY updated_at DESC, created_at DESC
          LIMIT 300"
     ))?;
     let products = stmt
-        .query_map([], |row| {
+        .query_map(params![batch_id], |row| {
             Ok(ProductRow {
                 id: row.get(0)?,
                 external_product_id: row.get(1)?,
@@ -848,7 +879,8 @@ pub fn list_pipeline_products(
                 progress_text: row.get(8)?,
                 error_code: row.get(9)?,
                 error_reason: row.get(10)?,
-                updated_at: row.get(11)?,
+                import_batch_id: row.get(11)?,
+                updated_at: row.get(12)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -950,6 +982,7 @@ pub fn list_pipeline_products(
             can_retry,
             can_confirm,
             confirm_kind,
+            import_batch_id: product.import_batch_id,
             updated_at: product.updated_at,
             shops,
         });
@@ -957,7 +990,26 @@ pub fn list_pipeline_products(
     Ok(PipelineWorkbenchView {
         stats,
         products: views,
+        batches,
     })
+}
+
+/// 重命名导入批次（名称由导入时自动生成，此处允许用户改成有业务含义的名字）。
+#[tauri::command]
+pub fn rename_import_batch(app: AppHandle, batch_id: String, name: String) -> AppResult<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(AppError::Validation("批次名称不能为空".to_string()));
+    }
+    let conn = open_connection(&app)?;
+    let updated = conn.execute(
+        "UPDATE import_batches SET name = ?1 WHERE id = ?2",
+        params![name, batch_id],
+    )?;
+    if updated == 0 {
+        return Err(AppError::Validation("批次不存在或已被删除".to_string()));
+    }
+    Ok(())
 }
 
 /// 批量归档已上架商品：从工作台默认视图隐藏（仅 status=listed 可归档，防误归进行中商品）。

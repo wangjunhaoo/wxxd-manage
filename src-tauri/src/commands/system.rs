@@ -203,6 +203,7 @@ pub fn reset_collection_publish_workspace(
             DELETE FROM pipeline_assets;
             DELETE FROM pipeline_shop_targets;
             DELETE FROM pipeline_products;
+            DELETE FROM import_batches;
             "#,
         )?;
         tx.commit()?;
@@ -246,6 +247,16 @@ fn collection_publish_workspace_counts(
     conn: &Connection,
 ) -> AppResult<Vec<WorkspaceResetCountSnapshot>> {
     let queries = [
+        (
+            "pipeline_products",
+            "SELECT COUNT(*) FROM pipeline_products",
+        ),
+        (
+            "pipeline_shop_targets",
+            "SELECT COUNT(*) FROM pipeline_shop_targets",
+        ),
+        ("pipeline_assets", "SELECT COUNT(*) FROM pipeline_assets"),
+        ("import_batches", "SELECT COUNT(*) FROM import_batches"),
         ("collection_tasks", "SELECT COUNT(*) FROM collection_tasks"),
         ("publish_jobs", "SELECT COUNT(*) FROM publish_jobs"),
         ("publish_products", "SELECT COUNT(*) FROM publish_products"),

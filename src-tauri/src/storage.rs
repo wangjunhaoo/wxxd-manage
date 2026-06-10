@@ -764,6 +764,16 @@ fn migrate(conn: &Connection) -> AppResult<()> {
           FOREIGN KEY(target_id) REFERENCES pipeline_shop_targets(id),
           FOREIGN KEY(product_id) REFERENCES pipeline_products(id)
         );
+
+        -- 导入批次：一行 = 一次导入操作（Excel 导入 / 采集任务转铺货）。
+        -- 商品通过 pipeline_products.import_batch_id 归属批次（无外键，批次行后插）；
+        -- 工作台按批次筛选查看与批量操作，名称自动生成、可重命名。
+        CREATE TABLE IF NOT EXISTS import_batches (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          source TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
         "#,
     )?;
 
@@ -818,6 +828,8 @@ fn migrate(conn: &Connection) -> AppResult<()> {
     ensure_column(conn, "collection_tasks", "reviewed_at", "TEXT")?;
     // 已上架商品归档时间：非空=已从铺货工作台默认视图隐藏（仅 status=listed 可归档）
     ensure_column(conn, "pipeline_products", "archived_at", "TEXT")?;
+    // 导入批次归属：每次导入操作打同一批次标，工作台按批次筛选与批量操作
+    ensure_column(conn, "pipeline_products", "import_batch_id", "TEXT")?;
     ensure_column(conn, "publish_job_items", "wechat_status", "INTEGER")?;
     ensure_column(conn, "publish_job_items", "wechat_edit_status", "INTEGER")?;
     ensure_column(conn, "publish_job_items", "last_status_sync_at", "TEXT")?;
@@ -1024,7 +1036,35 @@ fn migrate(conn: &Connection) -> AppResult<()> {
     // 本机 HTTP API 已整体移除，连带清理其调用日志表（一次性，幂等）
     conn.execute_batch("DROP TABLE IF EXISTS external_api_logs;")?;
     migrate_publish_automation_switch(conn)?;
+    migrate_legacy_import_batch(conn)?;
     cleanup_stale_wechat_category_cache(conn)?;
+    Ok(())
+}
+
+/// 批次维度上线前导入的存量商品统一归入固定的「历史数据」批次（幂等：
+/// 仅当存在未归批商品时补建批次行并回填，新导入的商品入口处必带批次不会再触发）。
+fn migrate_legacy_import_batch(conn: &Connection) -> AppResult<()> {
+    let has_unbatched: bool = conn
+        .query_row(
+            "SELECT 1 FROM pipeline_products WHERE import_batch_id IS NULL LIMIT 1",
+            [],
+            |_| Ok(true),
+        )
+        .optional()?
+        .unwrap_or(false);
+    if !has_unbatched {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO import_batches (id, name, source, created_at)
+         VALUES ('batch_legacy', '历史数据', 'legacy', ?1)",
+        [now_shanghai()],
+    )?;
+    conn.execute(
+        "UPDATE pipeline_products SET import_batch_id = 'batch_legacy'
+         WHERE import_batch_id IS NULL",
+        [],
+    )?;
     Ok(())
 }
 

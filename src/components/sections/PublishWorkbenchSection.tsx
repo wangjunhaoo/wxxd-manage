@@ -138,7 +138,22 @@ export default function PublishWorkbenchSection() {
   // ---- 概览过滤 ----
   const [statusFilter, setStatusFilter] = useState<string>("all");
 
-  // 全表统计来自服务端聚合（不受列表 300 条截断影响）；归档是独立的服务端视图
+  // ---- 批次筛选：选中后列表与状态统计都只看该批次，批量操作天然限定在批次内 ----
+  const batches = pipe.importBatches.value;
+  const selectedBatchId = pipe.selectedBatchId.value;
+  const selectedBatch = batches.find((b) => b.id === selectedBatchId) ?? null;
+  const [renamingBatch, setRenamingBatch] = useState(false);
+  const [renameDraft, setRenameDraft] = useState("");
+  const confirmRenameBatch = async () => {
+    const name = renameDraft.trim();
+    if (!selectedBatch || !name) return;
+    // 失败时保持输入框打开，用户草稿不丢
+    if (await pipe.renameBatch(selectedBatch.id, name)) {
+      setRenamingBatch(false);
+    }
+  };
+
+  // 统计来自服务端聚合（不受列表 300 条截断影响；选了批次时为批次内统计）；归档是独立的服务端视图
   const stats = pipe.pipelineStats.value;
   const archivedView = pipe.pipelineView.value === "archived";
   const statsAll =
@@ -481,6 +496,63 @@ export default function PublishWorkbenchSection() {
             </>
           }
         />
+
+        {/* 批次筛选：每次导入 = 一个批次；选中后下方状态计数与列表只看该批次 */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            marginBottom: 12,
+          }}
+        >
+          <select
+            className="sel"
+            style={{ width: 280 }}
+            aria-label="按导入批次筛选"
+            value={selectedBatchId ?? ""}
+            onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
+              setRenamingBatch(false);
+              void pipe.selectBatch(e.target.value || null);
+            }}
+          >
+            <option value="">全部批次</option>
+            {batches.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.name}（{b.product_count}）
+              </option>
+            ))}
+          </select>
+          {selectedBatch && !renamingBatch && (
+            <Button
+              onClick={() => {
+                setRenameDraft(selectedBatch.name);
+                setRenamingBatch(true);
+              }}
+            >
+              重命名
+            </Button>
+          )}
+          {selectedBatch && renamingBatch && (
+            <>
+              <input
+                className="inp"
+                style={{ width: 220 }}
+                value={renameDraft}
+                placeholder="批次名称"
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                  setRenameDraft(e.target.value)
+                }
+                onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
+                  if (e.key === "Enter") void confirmRenameBatch();
+                  if (e.key === "Escape") setRenamingBatch(false);
+                }}
+              />
+              <Button onClick={() => void confirmRenameBatch()}>保存</Button>
+              <Button onClick={() => setRenamingBatch(false)}>取消</Button>
+            </>
+          )}
+        </div>
 
         {/* 概览过滤 chips（「已归档」切服务端归档视图，其余在默认视图内过滤） */}
         <div className="chips" style={{ marginBottom: 16 }}>

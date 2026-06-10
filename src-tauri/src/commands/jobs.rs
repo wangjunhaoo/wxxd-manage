@@ -19,6 +19,9 @@ pub(in crate::commands) fn create_external_publish_job(
     let created_at = now_shanghai();
     let mut failed_items = 0usize;
     let total_items = request.products.len() * targets.len();
+    // 一次铺货任务 = 一个导入批次（幂等跳过的在途商品不计入，全部跳过则不建批次）
+    let batch_id = format!("batch_{}", Uuid::new_v4().simple());
+    let mut created_products = 0i64;
 
     for product in &request.products {
         // 幂等：同一 external_product_id 已有在途流水线（未上架且未异常）则跳过，
@@ -41,8 +44,8 @@ pub(in crate::commands) fn create_external_publish_job(
         tx.execute(
             "INSERT INTO pipeline_products
              (id, external_product_id, title, source_url, category_path,
-              status, stage, attention, collected_data, reviewed_data, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'publishing', 'publish', 'none', ?6, ?6, ?7, ?7)",
+              status, stage, attention, collected_data, reviewed_data, import_batch_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'publishing', 'publish', 'none', ?6, ?6, ?7, ?8, ?8)",
             params![
                 product_id,
                 product.external_product_id,
@@ -50,9 +53,11 @@ pub(in crate::commands) fn create_external_publish_job(
                 product.source_url,
                 product.category_hint.clone().unwrap_or_default(),
                 reviewed_data,
+                batch_id,
                 created_at
             ],
         )?;
+        created_products += 1;
 
         for target in &targets {
             let duplicate = tx
@@ -103,6 +108,16 @@ pub(in crate::commands) fn create_external_publish_job(
         }
     }
 
+    if created_products > 0 {
+        insert_import_batch(
+            &tx,
+            &batch_id,
+            "collection",
+            "采集转铺货",
+            created_products,
+            &created_at,
+        )?;
+    }
     tx.commit()?;
 
     let job_status = if failed_items == total_items {

@@ -1186,10 +1186,21 @@ export type PipelineStats = {
   archived: number;
 };
 
-// 铺货工作台数据包（后端 list_pipeline_products 返回）
+// 导入批次摘要（一次导入操作 = 一个批次，名称可重命名）
+export type ImportBatchView = {
+  id: string;
+  name: string;
+  /** excel / collection / legacy */
+  source: string;
+  created_at: string;
+  product_count: number;
+};
+
+// 铺货工作台数据包（后端 list_pipeline_products 返回；选了批次时 stats 为批次内统计）
 export type PipelineWorkbenchView = {
   stats: PipelineStats;
   products: PipelineProductView[];
+  batches: ImportBatchView[];
 };
 
 // 统一流水线商品视图（后端 list_pipeline_products 返回，字段 snake_case）
@@ -1237,6 +1248,8 @@ export type PipelineProductView = {
   can_retry: boolean;
   can_confirm: boolean;
   confirm_kind: string | null;
+  /** 所属导入批次 id（批次名从 PipelineWorkbenchView.batches 映射） */
+  import_batch_id: string | null;
   updated_at: string;
   shops: PipelineShopTargetView[];
 };

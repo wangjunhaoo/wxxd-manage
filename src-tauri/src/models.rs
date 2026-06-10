@@ -1711,8 +1711,22 @@ pub struct PipelineProductView {
     pub can_confirm: bool,
     /// 待确认子类型（CATEGORY/ATTR/IMAGE/SHOP_SETTING/REVIEW/GENERIC），决定前端弹哪种确认 UI
     pub confirm_kind: Option<String>,
+    /// 所属导入批次（批次名由 PipelineWorkbenchView.batches 映射）
+    pub import_batch_id: Option<String>,
     pub updated_at: String,
     pub shops: Vec<PipelineShopTargetView>,
+}
+
+/// 导入批次摘要：一次导入操作的标识与商品计数（工作台批次筛选下拉数据源）。
+#[derive(Debug, Serialize)]
+pub struct ImportBatchView {
+    pub id: String,
+    /// 自动生成（如「06-10 14:30 · Excel · 28个」），可重命名
+    pub name: String,
+    /// excel / collection / legacy
+    pub source: String,
+    pub created_at: String,
+    pub product_count: i64,
 }
 
 /// 铺货工作台全表状态统计（服务端聚合，不受列表 LIMIT 截断影响）。
@@ -1731,11 +1745,13 @@ pub struct PipelineStats {
     pub archived: i64,
 }
 
-/// 铺货工作台数据包：全表统计 + 当前视图商品列表。
+/// 铺货工作台数据包：状态统计 + 当前视图商品列表 + 全部导入批次。
+/// 选了批次时 stats 按该批次内聚合（Pill 数字 = 批次内各状态数）。
 #[derive(Debug, Serialize)]
 pub struct PipelineWorkbenchView {
     pub stats: PipelineStats,
     pub products: Vec<PipelineProductView>,
+    pub batches: Vec<ImportBatchView>,
 }
 
 /// 流水线商品在单个目标店的推进视图（主行展开）。
