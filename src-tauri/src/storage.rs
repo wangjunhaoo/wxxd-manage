@@ -43,6 +43,9 @@ pub fn now_shanghai() -> String {
     format_shanghai(Utc::now())
 }
 
+/// 全库时间文本的唯一格式来源（固定宽度 RFC3339 +08:00）。
+/// 注意：多处 SQL 直接对该格式做字典序比较（详情回刷分档、解密重试退避、
+/// submitting 回收、明文 GC 等），格式一旦变更这些 WHERE 会静默失配——不得改动。
 pub fn format_shanghai(value: DateTime<Utc>) -> String {
     value
         .with_timezone(&Shanghai)
@@ -88,7 +91,7 @@ pub fn initialize(app: &AppHandle) -> AppResult<()> {
     Ok(())
 }
 
-fn migrate(conn: &Connection) -> AppResult<()> {
+pub(crate) fn migrate(conn: &Connection) -> AppResult<()> {
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS shop_groups (
@@ -857,6 +860,149 @@ fn migrate(conn: &Connection) -> AppResult<()> {
     ensure_column(conn, "orders", "order_updated_at", "INTEGER")?;
     ensure_column(conn, "orders", "detail_synced_at", "TEXT")?;
     ensure_column(conn, "orders", "detail_error", "TEXT")?;
+    // ===== 订单履约重设计一期（docs/order-fulfillment-redesign.md §9）=====
+    // 详情回刷脏标 + 售后活跃标志（双轴状态机的横向标志列，不再吞履约主状态）
+    ensure_column(conn, "orders", "detail_dirty", "INTEGER NOT NULL DEFAULT 0")?;
+    ensure_column(
+        conn,
+        "orders",
+        "has_active_aftersale",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    // 金额镜像：改价/退款后由详情回刷保持新鲜（merchant_receive 对应官方 merchant_receieve_price 原拼写）
+    ensure_column(conn, "orders", "order_price_cents", "INTEGER")?;
+    ensure_column(conn, "orders", "merchant_receive_cents", "INTEGER")?;
+    ensure_column(conn, "orders", "freight_cents", "INTEGER")?;
+    ensure_column(conn, "orders", "is_change_price", "INTEGER")?;
+    // 协商镜像：买家改址申请（12h 超时=自动同意）/ 发货前换SKU（超时=自动拒绝）/ 发货时效
+    ensure_column(
+        conn,
+        "orders",
+        "address_under_review",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(conn, "orders", "address_apply_time", "INTEGER")?;
+    ensure_column(conn, "orders", "change_sku_state", "INTEGER")?;
+    ensure_column(conn, "orders", "change_sku_ddl", "INTEGER")?;
+    ensure_column(conn, "orders", "delivery_deadline", "INTEGER")?;
+    ensure_column(conn, "orders", "predict_delivery_time", "INTEGER")?;
+    ensure_column(conn, "orders", "delivery_time_type", "INTEGER")?;
+    ensure_column(conn, "orders", "merchant_notes", "TEXT")?;
+    ensure_column(conn, "orders", "customer_notes", "TEXT")?;
+    // 虚拟号镜像：联系买家与到期巡检用
+    ensure_column(conn, "orders", "use_tel_number", "INTEGER")?;
+    ensure_column(conn, "orders", "virtual_tel_expire_time", "INTEGER")?;
+    // 订单项金额与身份锚点（product_unique_id 官方注明下单后不变，换SKU 对照锚点）
+    ensure_column(conn, "order_items", "estimate_price", "INTEGER")?;
+    ensure_column(conn, "order_items", "change_price", "INTEGER")?;
+    ensure_column(conn, "order_items", "product_unique_id", "TEXT")?;
+    // ===== 订单履约重设计二期 =====
+    // 采购双节点：purchased_at 把 pending_purchase 拆成「待采购」与「待回运单」两条队列
+    ensure_column(conn, "purchase_tasks", "purchased_at", "TEXT")?;
+    // 换SKU 同意后旧任务的审计链指针
+    ensure_column(conn, "purchase_tasks", "superseded_by", "TEXT")?;
+    // 发货前置守卫拦截原因（守卫把官方错误码前移，避免盲调 API）
+    ensure_column(conn, "shipments", "blocked_reason", "TEXT")?;
+    // ===== 订单履约重设计三期 =====
+    // 改运单（官方上限 3 次）与补发（官方上限 10 个包裹）的本地计数，超限前置禁用
+    ensure_column(
+        conn,
+        "orders",
+        "delivery_change_count",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_column(
+        conn,
+        "orders",
+        "compensation_count",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    // 虚拟号已延期次数镜像（virtualnumber/delay 必须回传该值）
+    ensure_column(conn, "orders", "virtual_tel_delay_times", "INTEGER")?;
+    conn.execute_batch(
+        r#"
+        -- 解密收货信息专表（与脱敏 raw_payload 隔离）：
+        -- 姓名/电话/详址为 AES-256-GCM 密文 JSON（{"ciphertext","nonce"}），省市区留明文供展示分组；
+        -- 备份/导出默认排除本表，订单终态 30 天后 GC 置空密文字段。
+        CREATE TABLE IF NOT EXISTS order_decoded_addresses (
+          order_id TEXT PRIMARY KEY,
+          shop_id TEXT NOT NULL,
+          wechat_order_id TEXT NOT NULL,
+          user_name_enc TEXT,
+          tel_number_enc TEXT,
+          detail_info_enc TEXT,
+          province TEXT,
+          city TEXT,
+          county TEXT,
+          virtual_number TEXT,
+          virtual_extension TEXT,
+          virtual_expiration INTEGER,
+          hash_code TEXT,
+          decode_error TEXT,
+          decode_skip_reason TEXT,
+          decoded_at TEXT,
+          purged_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        -- 包裹一等实体（订单履约三期）：官方 delivery_product_info 天然是数组（一单多包裹），
+        -- source: local_send=本系统提交 / wechat_mirror=详情回刷镜像 / compensation=补发
+        CREATE TABLE IF NOT EXISTS order_packages (
+          id TEXT PRIMARY KEY,
+          order_id TEXT NOT NULL,
+          shop_id TEXT NOT NULL,
+          wechat_order_id TEXT NOT NULL,
+          delivery_id TEXT,
+          delivery_name TEXT,
+          waybill_id TEXT,
+          deliver_type INTEGER NOT NULL DEFAULT 1,
+          source TEXT NOT NULL,
+          status TEXT NOT NULL,
+          delivery_time INTEGER,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(order_id, delivery_id, waybill_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS order_package_items (
+          id TEXT PRIMARY KEY,
+          package_id TEXT NOT NULL,
+          order_item_id TEXT,
+          wechat_product_id TEXT,
+          wechat_sku_id TEXT,
+          product_cnt INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY(package_id) REFERENCES order_packages(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_order_packages_order
+          ON order_packages(order_id);
+
+        CREATE INDEX IF NOT EXISTS idx_order_package_items_package
+          ON order_package_items(package_id);
+
+        -- 申请收件箱：改址/换SKU/发货协商等待办一等实体（镜像列做发货守卫，收件箱做待办与审计）
+        CREATE TABLE IF NOT EXISTS order_requests (
+          id TEXT PRIMARY KEY,
+          shop_id TEXT NOT NULL,
+          order_id TEXT,
+          wechat_order_id TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          state TEXT NOT NULL,
+          deadline_at INTEGER,
+          payload_json TEXT,
+          resolution TEXT,
+          resolved_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(shop_id, wechat_order_id, kind)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_order_requests_state
+          ON order_requests(state, deadline_at);
+        "#,
+    )?;
     ensure_column(conn, "purchase_tasks", "supplier_delivery_id", "TEXT")?;
     ensure_column(conn, "purchase_tasks", "supplier_delivery_name", "TEXT")?;
     ensure_column(conn, "purchase_tasks", "supplier_waybill_id", "TEXT")?;
@@ -1041,9 +1187,44 @@ fn migrate(conn: &Connection) -> AppResult<()> {
     )?;
     // 本机 HTTP API 已整体移除，连带清理其调用日志表（一次性，幂等）
     conn.execute_batch("DROP TABLE IF EXISTS external_api_logs;")?;
+    // 订单履约重设计一期：详情回刷与队列索引
+    conn.execute_batch(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_orders_detail_dirty
+          ON orders(detail_dirty, status);
+
+        CREATE INDEX IF NOT EXISTS idx_orders_fulfillment
+          ON orders(shop_id, status);
+        "#,
+    )?;
     migrate_publish_automation_switch(conn)?;
     migrate_legacy_import_batch(conn)?;
+    migrate_order_fulfillment_status(conn)?;
     cleanup_stale_wechat_category_cache(conn)?;
+    Ok(())
+}
+
+/// 一次性幂等迁移（订单履约重设计一期）：旧实现把售后激活写成 status='aftersale_active'，
+/// 吞掉了订单的履约位置。迁移为：标志位 has_active_aftersale=1 + status 按微信状态重算 +
+/// detail_dirty=1 强制详情回刷校准（老单的 wechat_status 可能是列表同步写的过滤值，不准）。
+/// 迁移后不再有 aftersale_active 行，后续每次空跑 0 行，开销可忽略。
+fn migrate_order_fulfillment_status(conn: &Connection) -> AppResult<()> {
+    conn.execute(
+        "UPDATE orders
+         SET has_active_aftersale = 1,
+             detail_dirty = 1,
+             status = CASE
+               WHEN wechat_status IN (10, 12, 13) THEN 'unpaid'
+               WHEN wechat_status = 20 THEN 'pending_shipment'
+               WHEN wechat_status = 21 THEN 'partially_shipped'
+               WHEN wechat_status = 30 THEN 'wechat_shipped'
+               WHEN wechat_status = 100 THEN 'completed'
+               WHEN wechat_status IN (200, 250) THEN 'cancelled'
+               ELSE 'synced'
+             END
+         WHERE status = 'aftersale_active'",
+        [],
+    )?;
     Ok(())
 }
 

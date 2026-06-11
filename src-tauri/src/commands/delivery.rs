@@ -5,6 +5,17 @@ pub fn get_delivery_settings(app: AppHandle) -> AppResult<DeliverySettings> {
     let conn = open_connection(&app)?;
     Ok(DeliverySettings {
         auto_send_delivery: get_bool_setting(&conn, AUTO_SEND_DELIVERY_SETTING, false)?,
+        multi_package_enabled: get_bool_setting(&conn, MULTI_PACKAGE_SETTING, false)?,
+    })
+}
+
+#[tauri::command]
+pub fn set_multi_package_enabled(app: AppHandle, enabled: bool) -> AppResult<DeliverySettings> {
+    let conn = open_connection(&app)?;
+    set_bool_setting(&conn, MULTI_PACKAGE_SETTING, enabled)?;
+    Ok(DeliverySettings {
+        auto_send_delivery: get_bool_setting(&conn, AUTO_SEND_DELIVERY_SETTING, false)?,
+        multi_package_enabled: enabled,
     })
 }
 
@@ -109,6 +120,7 @@ pub fn set_auto_send_delivery(app: AppHandle, enabled: bool) -> AppResult<Delive
     }
     Ok(DeliverySettings {
         auto_send_delivery: enabled,
+        multi_package_enabled: get_bool_setting(&conn, MULTI_PACKAGE_SETTING, false)?,
     })
 }
 
@@ -119,6 +131,23 @@ pub fn record_order_shipment(
 ) -> AppResult<ShipmentRecordResult> {
     let conn = open_connection(&app)?;
     let order = resolve_shipment_order(&conn, &request)?;
+    // 审查修复：与采购侧回填同款守卫——已提交/已发货订单拒绝重复回填
+    let order_status: String = conn.query_row(
+        "SELECT status FROM orders WHERE id = ?1",
+        [order.order_id.as_str()],
+        |row| row.get(0),
+    )?;
+    match order_status.as_str() {
+        "shipping_submitted" | "wechat_shipped" | "completed" => {
+            return Err(AppError::Validation(
+                "订单已提交微信发货，不能重复回填物流；修改运单请使用「改运单」，漏发补寄请使用「补发」".to_string(),
+            ));
+        }
+        "cancelled" => {
+            return Err(AppError::Validation("订单已取消，无需回填物流".to_string()));
+        }
+        _ => {}
+    }
     let fields = normalize_shipment_fields(
         request.deliver_type,
         request.delivery_id.as_deref(),
@@ -160,11 +189,13 @@ pub fn retry_delivery_shipment(
     }
 
     let conn = open_connection(&app)?;
-    let current_status = conn
+    let (current_status, order_status) = conn
         .query_row(
-            "SELECT status FROM shipments WHERE id = ?1",
+            "SELECT sh.status, o.status
+             FROM shipments sh JOIN orders o ON o.id = sh.order_id
+             WHERE sh.id = ?1",
             [shipment_id],
-            |row| row.get::<_, String>(0),
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )
         .optional()?
         .ok_or_else(|| AppError::Validation("物流单不存在".to_string()))?;
@@ -172,6 +203,12 @@ pub fn retry_delivery_shipment(
         return Err(AppError::Validation(
             "已发货成功的物流单不能重试".to_string(),
         ));
+    }
+    // 审查修复：官方已发货/已完成的订单不得把物流单重新入队（重复 send 必被拒）
+    if matches!(order_status.as_str(), "wechat_shipped" | "completed" | "cancelled") {
+        return Err(AppError::Validation(format!(
+            "订单当前状态为 {order_status}，微信侧已是终局，不能重新提交发货"
+        )));
     }
 
     let auto_send_enabled = get_bool_setting(&conn, AUTO_SEND_DELIVERY_SETTING, false)?;
@@ -186,14 +223,16 @@ pub fn retry_delivery_shipment(
          SET status = ?1,
              error_code = NULL,
              error_summary = NULL,
+             blocked_reason = NULL,
              updated_at = ?2
          WHERE id = ?3",
         params![next_status, now, shipment_id],
     )?;
+    // shipping_submitted（同单其它包裹已提交）不回退，避免双轴降级
     conn.execute(
         "UPDATE orders
          SET status = CASE
-           WHEN status IN ('completed', 'cancelled', 'wechat_shipped') THEN status
+           WHEN status IN ('completed', 'cancelled', 'wechat_shipped', 'shipping_submitted') THEN status
            ELSE 'supplier_shipped'
          END,
          updated_at = ?1
@@ -247,6 +286,7 @@ pub async fn run_delivery_submission_once(
                 processed_shipments: 0,
                 submitted_shipments: 0,
                 failed_shipments: 0,
+                blocked_shipments: 0,
             });
         }
     }
@@ -274,6 +314,7 @@ pub async fn run_delivery_submission_once(
             processed_shipments: 0,
             submitted_shipments: 0,
             failed_shipments: 0,
+            blocked_shipments: 0,
         });
     }
 
@@ -281,26 +322,156 @@ pub async fn run_delivery_submission_once(
     let processed_shipments = shipments.len() as i64;
     let mut submitted_shipments = 0i64;
     let mut failed_shipments = 0i64;
+    let mut blocked_shipments = 0i64;
 
-    for shipment in shipments {
+    // 三期 §8：按订单聚合候选，多包裹合成一次 send 的多元素 delivery_list（官方拆单发货语义）
+    let mut groups: Vec<Vec<ShipmentCandidate>> = Vec::new();
+    {
+        let mut index: BTreeMap<String, usize> = BTreeMap::new();
+        for shipment in shipments {
+            match index.get(&shipment.order_id) {
+                Some(&position) => groups[position].push(shipment),
+                None => {
+                    index.insert(shipment.order_id.clone(), groups.len());
+                    groups.push(vec![shipment]);
+                }
+            }
+        }
+    }
+
+    for group in groups {
+        let first = &group[0];
+        {
+            let conn = open_connection(&app)?;
+            // 审查修复：官方侧已发货/已完成（外部工具或商家后台先行发货，详情镜像已确认）——
+            // 不再盲调 send，把组内未提交行直接对齐为已发货
+            let order_status: String = conn.query_row(
+                "SELECT status FROM orders WHERE id = ?1",
+                [first.order_id.as_str()],
+                |row| row.get(0),
+            )?;
+            if matches!(order_status.as_str(), "wechat_shipped" | "completed") {
+                for shipment in &group {
+                    conn.execute(
+                        "UPDATE shipments
+                         SET status = 'wechat_shipped',
+                             error_code = NULL,
+                             error_summary = NULL,
+                             blocked_reason = NULL,
+                             submitted_at = COALESCE(submitted_at, ?1),
+                             updated_at = ?1
+                         WHERE id = ?2 AND status != 'wechat_shipped'",
+                        params![now_shanghai(), shipment.shipment_id],
+                    )?;
+                }
+                insert_task_log(
+                    &conn,
+                    &task_id,
+                    Some(&first.shipment_id),
+                    "info",
+                    &format!(
+                        "订单 {} 微信侧已发货（外部发货），物流单已对齐为已发货，未重复提交",
+                        first.wechat_order_id
+                    ),
+                    None,
+                )?;
+                continue;
+            }
+            // 同订单还有组外未就绪的兄弟物流单（待确认/发货失败）：本轮整组跳过——
+            // 部分提交后官方对剩余包裹可能永久拒收（设计 §13 V2 未经真机验证前不冒险）
+            let unready_siblings: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM shipments
+                 WHERE order_id = ?1 AND status IN ('waiting_confirmation', 'send_failed')",
+                [first.order_id.as_str()],
+                |row| row.get(0),
+            )?;
+            if unready_siblings > 0 {
+                insert_task_log(
+                    &conn,
+                    &task_id,
+                    Some(&first.shipment_id),
+                    "info",
+                    &format!(
+                        "订单 {} 还有 {unready_siblings} 个待确认/发货失败的兄弟物流单，本轮整组暂不提交（失败的请全部重试后一并提交）",
+                        first.wechat_order_id
+                    ),
+                    None,
+                )?;
+                continue;
+            }
+
+            // 发货前置守卫（订单级）：改址/换SKU/售后在途 → 整组拦截进 blocked（条件解除自动恢复）
+            match check_shipment_send_guard(&conn, first)? {
+                Some(reason) => {
+                    for shipment in &group {
+                        blocked_shipments += 1;
+                        let was_blocked = shipment.status == "blocked";
+                        mark_shipment_blocked(&conn, shipment, &reason, was_blocked)?;
+                        if !was_blocked {
+                            insert_task_log(
+                                &conn,
+                                &task_id,
+                                Some(&shipment.shipment_id),
+                                "warning",
+                                &format!(
+                                    "订单 {} 发货被守卫拦截：{reason}",
+                                    shipment.wechat_order_id
+                                ),
+                                None,
+                            )?;
+                        }
+                    }
+                    continue;
+                }
+                None => {
+                    for shipment in &group {
+                        if shipment.status == "blocked" {
+                            // 拦截条件已解除：恢复为待提交并继续走本轮提交
+                            conn.execute(
+                                "UPDATE shipments
+                                 SET status = 'ready_to_send', blocked_reason = NULL, updated_at = ?1
+                                 WHERE id = ?2",
+                                params![now_shanghai(), shipment.shipment_id],
+                            )?;
+                            insert_task_log(
+                                &conn,
+                                &task_id,
+                                Some(&shipment.shipment_id),
+                                "info",
+                                &format!(
+                                    "订单 {} 守卫拦截条件已解除，恢复提交",
+                                    shipment.wechat_order_id
+                                ),
+                                None,
+                            )?;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 组级失败统一落库：组内每个物流单都标失败（一次 send 整组成败一体）
+        let mark_group_failed =
+            |conn: &Connection, code: &str, summary: &str| -> AppResult<()> {
+                for shipment in &group {
+                    mark_shipment_failed(conn, shipment, code, summary)?;
+                }
+                Ok(())
+            };
+
         let payload = {
             let conn = open_connection(&app)?;
-            match build_send_delivery_payload(&conn, &shipment) {
+            match build_group_send_delivery_payload(&conn, &group) {
                 Ok(payload) => payload,
                 Err(error) => {
-                    failed_shipments += 1;
-                    mark_shipment_failed(
-                        &conn,
-                        &shipment,
-                        "DELIVERY_PAYLOAD_INVALID",
-                        &error.to_string(),
-                    )?;
+                    failed_shipments += group.len() as i64;
+                    mark_group_failed(&conn, "DELIVERY_PAYLOAD_INVALID", &error.to_string())?;
                     insert_task_log(
                         &conn,
                         &task_id,
-                        Some(&shipment.shipment_id),
+                        Some(&first.shipment_id),
                         "error",
-                        &format!("物流单 {} 发货参数无效：{error}", shipment.shipment_id),
+                        &format!("订单 {} 发货参数无效：{error}", first.wechat_order_id),
                         None,
                     )?;
                     continue;
@@ -308,25 +479,37 @@ pub async fn run_delivery_submission_once(
             }
         };
 
-        let access_token = match ensure_access_token(&app, &shipment.shop_id, &client).await {
+        // 审查修复（发货幂等护栏）：send 在途期间把整组置 submitting，候选查询不再捞取，
+        // 防止僵尸 tick 与新 tick 并发时对同一订单重复 senddelivery；
+        // 若本 tick 中途死亡，候选查询会在 10 分钟后把 submitting 行回收重查守卫
+        {
+            let conn = open_connection(&app)?;
+            for shipment in &group {
+                conn.execute(
+                    "UPDATE shipments SET status = 'submitting', updated_at = ?1 WHERE id = ?2",
+                    params![now_shanghai(), shipment.shipment_id],
+                )?;
+            }
+        }
+
+        let access_token = match ensure_access_token(&app, &first.shop_id, &client).await {
             Ok(access_token) => access_token,
             Err(error) => {
-                failed_shipments += 1;
+                failed_shipments += group.len() as i64;
                 let conn = open_connection(&app)?;
-                mark_shipment_failed(
+                mark_group_failed(
                     &conn,
-                    &shipment,
                     "ACCESS_TOKEN_FAILED",
                     &format!("获取 access_token 失败：{error}"),
                 )?;
                 insert_task_log(
                     &conn,
                     &task_id,
-                    Some(&shipment.shipment_id),
+                    Some(&first.shipment_id),
                     "error",
                     &format!(
-                        "物流单 {} 获取 access_token 失败：{error}",
-                        shipment.shipment_id
+                        "订单 {} 获取 access_token 失败：{error}",
+                        first.wechat_order_id
                     ),
                     None,
                 )?;
@@ -337,76 +520,131 @@ pub async fn run_delivery_submission_once(
         let call = match client.send_delivery(&access_token, &payload).await {
             Ok(call) => call,
             Err(error) => {
-                failed_shipments += 1;
+                failed_shipments += group.len() as i64;
                 let conn = open_connection(&app)?;
-                mark_shipment_failed(
+                mark_group_failed(
                     &conn,
-                    &shipment,
                     "SEND_DELIVERY_REQUEST_FAILED",
                     &format!("微信发货请求失败：{error}"),
                 )?;
                 insert_task_log(
                     &conn,
                     &task_id,
-                    Some(&shipment.shipment_id),
+                    Some(&first.shipment_id),
                     "error",
-                    &format!("物流单 {} 微信发货请求失败：{error}", shipment.shipment_id),
+                    &format!(
+                        "订单 {} 微信发货请求失败：{error}",
+                        first.wechat_order_id
+                    ),
                     None,
                 )?;
                 continue;
             }
         };
 
-        let conn = open_connection(&app)?;
-        match &call.result {
-            WechatCallResult::Success(result) => {
-                insert_api_call_log(
-                    &conn,
-                    Some(&shipment.shop_id),
-                    call.meta.endpoint,
-                    call.meta.method,
-                    "success",
-                    None,
-                    None,
-                    Some("senddelivery ok"),
-                )?;
-                mark_shipment_submitted(&conn, &shipment, &payload, &result.raw_payload)?;
-                insert_task_log(
-                    &conn,
-                    &task_id,
-                    Some(&shipment.shipment_id),
-                    "info",
-                    &format!("订单 {} 已提交微信发货", shipment.wechat_order_id),
-                    None,
-                )?;
-                submitted_shipments += 1;
+        let group_submitted = {
+            let conn = open_connection(&app)?;
+            match &call.result {
+                WechatCallResult::Success(result) => {
+                    insert_api_call_log(
+                        &conn,
+                        Some(&first.shop_id),
+                        call.meta.endpoint,
+                        call.meta.method,
+                        "success",
+                        None,
+                        None,
+                        Some("senddelivery ok"),
+                    )?;
+                    for shipment in &group {
+                        mark_shipment_submitted(&conn, shipment, &payload, &result.raw_payload)?;
+                    }
+                    insert_task_log(
+                        &conn,
+                        &task_id,
+                        Some(&first.shipment_id),
+                        "info",
+                        &format!(
+                            "订单 {} 已提交微信发货（{} 个包裹）",
+                            first.wechat_order_id,
+                            group.len()
+                        ),
+                        None,
+                    )?;
+                    submitted_shipments += group.len() as i64;
+                    true
+                }
+                WechatCallResult::ApiError(error) => {
+                    insert_api_call_log(
+                        &conn,
+                        Some(&first.shop_id),
+                        call.meta.endpoint,
+                        call.meta.method,
+                        "api_error",
+                        Some(error.errcode),
+                        Some(&error.errmsg),
+                        Some("senddelivery api error"),
+                    )?;
+                    mark_group_failed(&conn, &error.errcode.to_string(), &error.errmsg)?;
+                    insert_task_log(
+                        &conn,
+                        &task_id,
+                        Some(&first.shipment_id),
+                        "error",
+                        &format!(
+                            "订单 {} 微信发货失败：{}",
+                            first.wechat_order_id, error.errmsg
+                        ),
+                        Some(&serde_json::json!({
+                            "errcode": error.errcode
+                        })),
+                    )?;
+                    failed_shipments += group.len() as i64;
+                    false
+                }
             }
-            WechatCallResult::ApiError(error) => {
-                insert_api_call_log(
-                    &conn,
-                    Some(&shipment.shop_id),
-                    call.meta.endpoint,
-                    call.meta.method,
-                    "api_error",
-                    Some(error.errcode),
-                    Some(&error.errmsg),
-                    Some("senddelivery api error"),
-                )?;
-                mark_shipment_failed(&conn, &shipment, &error.errcode.to_string(), &error.errmsg)?;
-                insert_task_log(
-                    &conn,
-                    &task_id,
-                    Some(&shipment.shipment_id),
-                    "error",
-                    &format!(
-                        "订单 {} 微信发货失败：{}",
-                        shipment.wechat_order_id, error.errmsg
-                    ),
-                    Some(&serde_json::json!({
-                        "errcode": error.errcode
-                    })),
-                )?;
-                failed_shipments += 1;
+        };
+
+        // 发货成功后把采购货源+运单摘要镜像进微信商家备注（best-effort，失败只记日志）
+        if group_submitted {
+            let notes = {
+                let conn = open_connection(&app)?;
+                build_merchant_notes_summary(&conn, &first.order_id, &group)?
+            };
+            match client
+                .update_merchant_notes(&access_token, &first.wechat_order_id, &notes)
+                .await
+            {
+                Ok(call) => {
+                    if let WechatCallResult::ApiError(error) = &call.result {
+                        let conn = open_connection(&app)?;
+                        insert_task_log(
+                            &conn,
+                            &task_id,
+                            Some(&first.shipment_id),
+                            "info",
+                            &format!(
+                                "订单 {} 商家备注镜像未成功（不影响发货）：{}",
+                                first.wechat_order_id, error.errmsg
+                            ),
+                            None,
+                        )?;
+                    }
+                }
+                Err(error) => {
+                    let conn = open_connection(&app)?;
+                    insert_task_log(
+                        &conn,
+                        &task_id,
+                        Some(&first.shipment_id),
+                        "info",
+                        &format!(
+                            "订单 {} 商家备注镜像请求失败（不影响发货）：{error}",
+                            first.wechat_order_id
+                        ),
+                        None,
+                    )?;
+                }
             }
         }
     }
@@ -429,5 +667,6 @@ pub async fn run_delivery_submission_once(
         processed_shipments,
         submitted_shipments,
         failed_shipments,
+        blocked_shipments,
     })
 }

@@ -290,6 +290,256 @@ pub fn start_pipeline_driver(app: AppHandle) {
 /// 「超过两轮 tick 上限（约 10 分钟）未完成任何一轮推进」亮红灯提示疑似卡死。
 pub(in crate::commands) const DRIVER_HEARTBEAT_SETTING: &str = "driver.last_tick_at";
 
+// ============================================================================
+// 订单履约 driver（订单履约重设计 §4）：与 8s 铺货 driver 平行的第二循环。
+// 不复用铺货 driver 的理由：其 240s 预算已被铺货/审查吃满且有「审查饿死铺货」前科；
+// 分离后回滚=关一个开关（automation.order_automation_enabled），铺货链路零回归。
+// ============================================================================
+
+/// 订单 driver 心跳（语义同 DRIVER_HEARTBEAT_SETTING：写在 tick 结尾，防假绿灯）
+pub(in crate::commands) const ORDER_DRIVER_HEARTBEAT_SETTING: &str = "order_driver.last_tick_at";
+
+fn order_driver_next_due_key(step: &str) -> String {
+    format!("order_driver.next_due.{step}")
+}
+
+/// 计算下一个上海时间凌晨 3 点的 unix 秒（每日 create_time+status=20 补漏的对齐点）
+fn next_shanghai_3am(now_ts: i64) -> i64 {
+    let local = now_ts + 8 * 3600;
+    let day_start = local - local.rem_euclid(86_400);
+    let three_am_local = day_start + 3 * 3600;
+    let next_local = if local < three_am_local {
+        three_am_local
+    } else {
+        three_am_local + 86_400
+    };
+    next_local - 8 * 3600
+}
+
+/// 错误率自适应降频（订单履约重设计 §4.2）：api_call_logs 最近 5 分钟窗口
+/// 样本 ≥10 且错误率 >20% 时，本轮所有步骤周期 ×2（官方无 QPS 文档，唯一可靠的动态调参依据）。
+fn api_error_rate_degraded(conn: &Connection) -> AppResult<bool> {
+    let cutoff = format_shanghai(Utc::now() - Duration::minutes(5));
+    let (total, errors): (i64, i64) = conn.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END), 0)
+         FROM api_call_logs WHERE created_at > ?1",
+        params![cutoff],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok(total >= 10 && errors * 5 > total)
+}
+
+/// 启动订单履约 driver：30s 一跳、单 tick 120s 超时、独立心跳；
+/// 启动首轮忽略到期时间强制全步骤执行（对抗桌面应用关机盲区——改址 12h 自动同意）。
+pub fn start_order_driver(app: AppHandle) {
+    if let Ok(conn) = open_connection(&app) {
+        let _ = set_string_setting(&conn, ORDER_DRIVER_HEARTBEAT_SETTING, &now_shanghai());
+    }
+    tauri::async_runtime::spawn(async move {
+        let mut first_run = true;
+        loop {
+            let app_tick = app.clone();
+            let force_all = first_run;
+            first_run = false;
+            let handle = tauri::async_runtime::spawn(async move {
+                drive_order_fulfillment_once(&app_tick, force_all).await;
+            });
+            match tokio::time::timeout(std::time::Duration::from_secs(120), handle).await {
+                Ok(Ok(())) => {}
+                Ok(Err(join_err)) => {
+                    eprintln!("⚠️ 订单 driver tick 异常退出（已隔离，继续下一轮）：{join_err}");
+                }
+                Err(_) => {
+                    eprintln!("⚠️ 订单 driver tick 超时 120s（已跳过本轮，继续下一轮）");
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        }
+    });
+}
+
+/// 订单 driver 单轮 tick：轻量到期调度器——每步骤在 app_settings 存 next_due（unix 秒），
+/// tick 只跑到期步骤，跑完写 next_due=now+周期。手动按钮全部保留可独立触发同名命令。
+async fn drive_order_fulfillment_once(app: &AppHandle, force_all: bool) {
+    // L1 总开关：关 = 空转（写心跳证明 driver 活着，但不做任何事，系统回到全人工形态）
+    let settings = match open_connection(app).and_then(|conn| load_automation_settings(&conn)) {
+        Ok(settings) => settings,
+        Err(error) => {
+            eprintln!("订单 driver 读取设置失败：{error}");
+            return;
+        }
+    };
+    if !settings.order_automation_enabled {
+        if let Ok(conn) = open_connection(app) {
+            let _ = set_string_setting(&conn, ORDER_DRIVER_HEARTBEAT_SETTING, &now_shanghai());
+        }
+        return;
+    }
+
+    let degraded = open_connection(app)
+        .and_then(|conn| api_error_rate_degraded(&conn))
+        .unwrap_or(false);
+    if degraded {
+        eprintln!("[order-driver] 最近 5 分钟 API 错误率 >20%，本轮所有步骤周期 ×2");
+        if let Ok(conn) = open_connection(app) {
+            let _ = upsert_notification(
+                &conn,
+                "warning",
+                "order_driver",
+                "degraded",
+                None,
+                "订单自动化已降频",
+                "最近 5 分钟微信 API 错误率超过 20%，订单 driver 各步骤周期已临时翻倍；错误率回落后自动恢复。",
+                None,
+            );
+        }
+    }
+    let factor = if degraded { 2 } else { 1 };
+    let now_ts = Utc::now().timestamp();
+
+    // (step key, 周期秒, 是否启用)
+    let steps: [(&str, i64, bool); 8] = [
+        ("incremental_sync", 120, settings.order_sync_enabled),
+        ("detail_refresh", 60, settings.order_detail_sync_enabled),
+        ("negotiation_scan", 600, settings.negotiation_scan_enabled),
+        ("purchase_generation", 120, settings.purchase_task_enabled),
+        ("address_decode", 60, settings.address_decode_enabled),
+        ("delivery_submit", 120, settings.delivery_submission_enabled),
+        ("aftersale_sync", 600, settings.aftersale_sync_enabled),
+        ("guarantee_sync", 1800, settings.aftersale_sync_enabled),
+    ];
+
+    for (step, period, enabled) in steps {
+        if !enabled {
+            continue;
+        }
+        let due_key = order_driver_next_due_key(step);
+        let due = open_connection(app)
+            .ok()
+            .and_then(|conn| get_string_setting(&conn, &due_key).ok().flatten())
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(0);
+        if !force_all && now_ts < due {
+            continue;
+        }
+        // 审查修复（租约语义）：next_due 在执行「前」写入——tick 超时只 detach 不取消，
+        // 旧实现执行后才写 next_due，僵尸 tick 未写完时新 tick 会并发重跑同一步骤
+        // （发货步骤重跑=对同一订单重复 senddelivery）。前置写后最坏只是失败步骤延后一个周期。
+        if let Ok(conn) = open_connection(app) {
+            let _ = set_string_setting(
+                &conn,
+                &due_key,
+                &(now_ts + period * factor).to_string(),
+            );
+        }
+        let step_result: Result<(), String> = match step {
+            "incremental_sync" => run_order_sync_once(app.clone(), Some(1), Some(100), None)
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+            "detail_refresh" => run_order_detail_sync_once(app.clone(), Some(20))
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+            "negotiation_scan" => run_order_negotiation_scan_once(app.clone(), Some(100))
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+            "purchase_generation" => run_purchase_task_generation_once(app.clone(), Some(100))
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+            "address_decode" => run_address_decode_once(app.clone(), Some(5))
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+            "delivery_submit" => run_delivery_submission_once(app.clone(), Some(20))
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+            "aftersale_sync" => run_aftersale_sync_once(app.clone(), Some(24), Some(200))
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+            "guarantee_sync" => run_guarantee_sync_once(app.clone(), Some(24), Some(200))
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+            _ => Ok(()),
+        };
+        if let Err(error) = &step_result {
+            eprintln!("[order-driver] 步骤 {step} 出错：{error}");
+        }
+    }
+
+    // 每日步骤（凌晨 3 点对齐，审查修复后三重防线）：
+    // ① 错峰：补漏 3:00 / 虚拟号保活 3:10 / 解密明文 GC 3:20，不再挤同一时刻；
+    // ② 每 tick 至多执行一个每日步骤，剩下的留给下一 tick（防 120s tick 预算超载）；
+    // ③ 租约语义：next_due 在执行「前」写入，僵尸 tick 不会引发并发重跑（重复 delay 烧官方配额）。
+    // 首次（无 next_due）只对齐到下一个凌晨 3 点，不立即跑（「自动推进一轮」按钮已含兜底）。
+    let daily_steps: [(&str, i64, bool); 3] = [
+        ("daily_backfill", 0, settings.order_sync_enabled),
+        ("virtual_delay_scan", 600, true),
+        ("decoded_address_gc", 1200, true),
+    ];
+    let mut daily_executed = false;
+    for (daily_step, offset, enabled) in daily_steps {
+        if !enabled || daily_executed {
+            continue;
+        }
+        let due_key = order_driver_next_due_key(daily_step);
+        let due = open_connection(app)
+            .ok()
+            .and_then(|conn| get_string_setting(&conn, &due_key).ok().flatten())
+            .and_then(|value| value.parse::<i64>().ok());
+        match due {
+            None => {
+                if let Ok(conn) = open_connection(app) {
+                    let _ = set_string_setting(
+                        &conn,
+                        &due_key,
+                        &(next_shanghai_3am(now_ts) + offset).to_string(),
+                    );
+                }
+            }
+            Some(due) if now_ts >= due => {
+                daily_executed = true;
+                if let Ok(conn) = open_connection(app) {
+                    let _ = set_string_setting(
+                        &conn,
+                        &due_key,
+                        &(next_shanghai_3am(now_ts) + offset).to_string(),
+                    );
+                }
+                let step_result: Result<(), String> = match daily_step {
+                    "daily_backfill" => {
+                        run_order_sync_once(app.clone(), Some(7), Some(100), Some(20))
+                            .await
+                            .map(|_| ())
+                            .map_err(|error| error.to_string())
+                    }
+                    "virtual_delay_scan" => run_virtual_number_delay_scan_once(app.clone())
+                        .await
+                        .map(|_| ())
+                        .map_err(|error| error.to_string()),
+                    "decoded_address_gc" => run_decoded_address_gc_once(app.clone())
+                        .map(|_| ())
+                        .map_err(|error| error.to_string()),
+                    _ => Ok(()),
+                };
+                if let Err(error) = step_result {
+                    eprintln!("[order-driver] 每日步骤 {daily_step} 出错：{error}");
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // 心跳写在 tick 结尾（语义同铺货 driver：hang 死的 tick 到不了这里 → 前端红灯能真实触发）
+    if let Ok(conn) = open_connection(app) {
+        let _ = set_string_setting(&conn, ORDER_DRIVER_HEARTBEAT_SETTING, &now_shanghai());
+    }
+}
+
 async fn drive_pipeline_once(app: &AppHandle) {
     // 阶段顺序刻意把「铺货」排在「审查」之前：审查走 AI 子进程（每个商品约 20~30s），
     // 一旦 collecting 积压，单跳审查就会吃满 180s tick 预算，把无需 AI 的铺货链
@@ -394,6 +644,7 @@ pub async fn run_operational_automation_once(
     };
 
     if settings.order_sync_enabled {
+        // 增量主轴：update_time + 每店水位（不传 status，拉全状态变化）
         match run_order_sync_once(app.clone(), Some(1), Some(100), None).await {
             Ok(step_result) => {
                 result
@@ -402,6 +653,18 @@ pub async fn run_operational_automation_once(
                 result.order_sync = Some(step_result);
             }
             Err(error) => push_automation_error(&mut result, "orders.sync_shop_orders", error),
+        }
+        // 兜底补漏：create_time + status=20 待发货（对冲「增量不传 status 行为未明」的文档风险，
+        // 真机验证 V1 通过后可降为每日一次）
+        match run_order_sync_once(app.clone(), Some(1), Some(100), Some(20)).await {
+            Ok(_) => {
+                result
+                    .executed_steps
+                    .push("orders.sync_shop_orders.backfill".to_string());
+            }
+            Err(error) => {
+                push_automation_error(&mut result, "orders.sync_shop_orders.backfill", error)
+            }
         }
     } else {
         result

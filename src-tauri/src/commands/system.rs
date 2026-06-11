@@ -34,6 +34,8 @@ pub fn get_dashboard(app: AppHandle) -> AppResult<DashboardSummary> {
             row.get::<_, Option<String>>(0)
         })?
         .filter(|value| !value.trim().is_empty());
+    let order_driver_heartbeat_at =
+        get_string_setting(&conn, ORDER_DRIVER_HEARTBEAT_SETTING)?.filter(|v| !v.trim().is_empty());
 
     Ok(DashboardSummary {
         pending_order_count,
@@ -46,6 +48,7 @@ pub fn get_dashboard(app: AppHandle) -> AppResult<DashboardSummary> {
         now_shanghai: now_shanghai(),
         last_order_sync_at,
         last_publish_summary,
+        order_driver_heartbeat_at,
     })
 }
 

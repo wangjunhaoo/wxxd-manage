@@ -5,6 +5,7 @@ mod automation;
 mod collection;
 mod delivery;
 mod errors;
+mod fulfillment;
 mod jobs;
 mod order_price_adjustment;
 mod orders;
@@ -24,6 +25,7 @@ pub use automation::*;
 pub use collection::*;
 pub use delivery::*;
 pub use errors::*;
+pub use fulfillment::*;
 pub use jobs::*;
 pub use order_price_adjustment::*;
 pub use orders::*;
@@ -53,6 +55,11 @@ use crate::models::{
     CategoryCacheView,
     CategoryCatalogListResult, CategoryCatalogShopSummary, CategoryCatalogSyncResult,
     CategoryDetailPrewarmResult, CategoryRelationView, CategoryRuleSyncResult,
+    AddressDecodeBatchResult, DecodedOrderAddressView, NegotiationScanResult,
+    OrderRequestDecisionResult, OrderRequestListResult, OrderRequestView,
+    PurchaseTaskPurchasedResult,
+    CompensateDeliveryRequest, CompensateDeliveryResult, DeliveryChangeRequest,
+    DeliveryChangeResult, DecodedAddressGcResult, VirtualTelDelayScanResult,
     CleanupOrphanDraftsResult, CollectionImageRemoveRequest, CollectionImageUploadRequest,
     CollectionPublishRequest, CollectionPublishWorkspaceResetRequest,
     CollectionPublishWorkspaceResetResult, CollectionReviewBatchResult,
@@ -97,8 +104,9 @@ use crate::storage::{
     open_connection, AppError, AppResult,
 };
 use crate::wechat::{
-    MerchantAddressDetailSummary, OrderPriceUpdateInfo, ProductGetInfo, WechatApiError,
-    WechatCallMeta, WechatCallResult, WechatProductSnapshot, WechatRawCall, WechatShopClient,
+    MerchantAddressDetailSummary, OrderListTimeField, OrderPriceUpdateInfo, ProductGetInfo,
+    WechatApiError, WechatCallMeta, WechatCallResult, WechatProductSnapshot, WechatRawCall,
+    WechatShopClient,
 };
 use chrono::{DateTime, Duration, Utc};
 use image::{codecs::jpeg::JpegEncoder, DynamicImage, GenericImageView, ImageFormat};
@@ -119,6 +127,13 @@ use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 const AUTO_SEND_DELIVERY_SETTING: &str = "delivery.auto_send_delivery";
+// 订单履约三期：多运单拆包发货 feature 开关（默认关，关闭时多物流订单仍走人工确认整单发货）
+const MULTI_PACKAGE_SETTING: &str = "delivery.multi_package_enabled";
+// 订单履约二期：订单 driver L1 总开关 + 申请扫描/地址解密步骤开关 + 解密额度熔断日期
+const AUTOMATION_ORDER_DRIVER_SETTING: &str = "automation.order_automation_enabled";
+const AUTOMATION_NEGOTIATION_SCAN_SETTING: &str = "automation.negotiation_scan_enabled";
+const AUTOMATION_ADDRESS_DECODE_SETTING: &str = "automation.address_decode_enabled";
+const ORDER_DECODE_CIRCUIT_SETTING: &str = "orders.decode_circuit_open_date";
 const AUTOMATION_ORDER_SYNC_SETTING: &str = "automation.order_sync_enabled";
 const AUTOMATION_ORDER_DETAIL_SYNC_SETTING: &str = "automation.order_detail_sync_enabled";
 const AUTOMATION_AFTERSALE_SYNC_SETTING: &str = "automation.aftersale_sync_enabled";
@@ -518,6 +533,14 @@ struct ShipmentUpsertResult {
     message: String,
 }
 
+/// 多运单拆包结果（订单履约三期）：一单多供应商物流时按运单分组生成的多个 shipment 汇总。
+#[derive(Debug)]
+struct MultiShipmentUpsertResult {
+    status: String,
+    auto_send_enabled: bool,
+    message: String,
+}
+
 #[derive(Debug)]
 struct ShipmentCandidate {
     shipment_id: String,
@@ -527,6 +550,8 @@ struct ShipmentCandidate {
     delivery_id: Option<String>,
     waybill_id: Option<String>,
     deliver_type: i64,
+    /// 候选捞取时的状态（ready_to_send / blocked）：守卫拦截通知只在首次拦截时发
+    status: String,
 }
 
 #[derive(Debug)]

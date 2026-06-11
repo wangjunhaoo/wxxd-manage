@@ -9,6 +9,7 @@ import type {
   AftersaleEvidenceView,
   AftersaleRejectReasonView,
   AiProviderSettings,
+  AgentRunEventView,
   AgentRunView,
   AgentSkillSettingsRequest,
   AgentSkillTestResult,
@@ -253,6 +254,7 @@ export function createPreviewMode(deps: PreviewModeDeps) {
         now_shanghai: "2026-05-22T00:00:00+08:00",
         last_order_sync_at: previewLastOrderSyncAt.value,
         last_publish_summary: latestTaskId.value || null,
+        order_driver_heartbeat_at: "2026-05-22T00:00:00+08:00",
       } as T;
     }
     if (name === "list_shop_groups") {
@@ -801,6 +803,51 @@ export function createPreviewMode(deps: PreviewModeDeps) {
         )
         .slice(0, limit) as T;
     }
+    if (name === "list_agent_run_events") {
+      const runId = String(args?.runId || "");
+      const previewAgentRunEvents: AgentRunEventView[] = [
+        {
+          id: "agent-event-preview-1",
+          run_id: "agent-run-preview-1",
+          event_type: "input_prepared",
+          level: "info",
+          message: "采集审查 task_id=collection-preview-1 主图=5 详情图=8 类目候选=3",
+          data_json: JSON.stringify({
+            product: { title: "儿童夏季短袖上衣", sku_count: 3 },
+            category_candidates: 3,
+          }),
+          created_at: "2026-05-22T00:20:00+08:00",
+        },
+        {
+          id: "agent-event-preview-2",
+          run_id: "agent-run-preview-1",
+          event_type: "human_gate_required",
+          level: "info",
+          message: "Agent 输出需要人工确认",
+          data_json: JSON.stringify({ decision: "needs_review", issues: ["主图含水印"] }),
+          created_at: "2026-05-22T00:20:03+08:00",
+        },
+        {
+          id: "agent-event-preview-3",
+          run_id: "agent-run-preview-2",
+          event_type: "input_prepared",
+          level: "info",
+          message: "供应商 Agent 导出 status=all format=jsonl count=3",
+          data_json: null,
+          created_at: "2026-05-22T00:18:00+08:00",
+        },
+        {
+          id: "agent-event-preview-4",
+          run_id: "agent-run-preview-2",
+          event_type: "finished",
+          level: "info",
+          message: "Agent 输出已自动应用或进入下一状态",
+          data_json: JSON.stringify({ exported: 3 }),
+          created_at: "2026-05-22T00:18:00+08:00",
+        },
+      ];
+      return previewAgentRunEvents.filter((event) => event.run_id === runId) as T;
+    }
     if (name === "save_agent_skill_settings") {
       const request = args?.request as AgentSkillSettingsRequest | undefined;
       previewAgentSkills = previewAgentSkills.map((skill) => {
@@ -1310,6 +1357,55 @@ export function createPreviewMode(deps: PreviewModeDeps) {
       }
       return deliverySettings.value as T;
     }
+    if (name === "set_multi_package_enabled") {
+      deliverySettings.value.multi_package_enabled = Boolean(args?.enabled);
+      return deliverySettings.value as T;
+    }
+    if (name === "change_shipment_delivery_info") {
+      const request = (args?.request ?? {}) as {
+        order_id?: string;
+        old_waybill_id?: string | null;
+        delivery_id?: string;
+        delivery_name?: string | null;
+        waybill_id?: string;
+      };
+      const orderId = String(request.order_id || "");
+      previewShipments.value.forEach((shipment) => {
+        if (shipment.order_id === orderId) {
+          shipment.delivery_id = request.delivery_id ?? shipment.delivery_id;
+          shipment.delivery_name =
+            request.delivery_name ?? shipment.delivery_name;
+          shipment.waybill_id = request.waybill_id ?? shipment.waybill_id;
+          shipment.updated_at = "2026-05-22T00:12:00+08:00";
+        }
+      });
+      return {
+        order_id: orderId,
+        wechat_order_id: "3725000000000000000",
+        mode: request.old_waybill_id ? "package" : "whole_order",
+        delivery_change_count: 1,
+        message: "改运单成功（已用 1/3 次）",
+      } as T;
+    }
+    if (name === "compensate_order_delivery") {
+      const request = (args?.request ?? {}) as { order_id?: string };
+      return {
+        order_id: String(request.order_id || ""),
+        wechat_order_id: "3725000000000000000",
+        compensation_count: 1,
+        message: "补发提交成功（已用 1/10 个补发包裹）",
+      } as T;
+    }
+    if (name === "run_virtual_number_delay_scan_once") {
+      return {
+        scanned_orders: 0,
+        delayed_orders: 0,
+        failed_orders: 0,
+      } as T;
+    }
+    if (name === "run_decoded_address_gc_once") {
+      return { purged_addresses: 0 } as T;
+    }
     if (name === "list_delivery_shipments") {
       const status = String(args?.status || "all");
       const items =
@@ -1689,6 +1785,11 @@ export function createPreviewMode(deps: PreviewModeDeps) {
           order_created_at: null,
           order_updated_at: null,
           updated_at: item.updated_at,
+          address_under_review: false,
+          change_sku_state: null,
+          delivery_deadline: null,
+          customer_notes: null,
+          merchant_notes: null,
           items: [],
         };
       });
@@ -2429,6 +2530,7 @@ export function createPreviewMode(deps: PreviewModeDeps) {
           : "waiting_confirmation",
         error_code: null,
         error_summary: null,
+        blocked_reason: null,
         submitted_at: null,
         created_at: "2026-05-22T00:10:00+08:00",
         updated_at: "2026-05-22T00:10:00+08:00",
@@ -2446,6 +2548,59 @@ export function createPreviewMode(deps: PreviewModeDeps) {
           ? "采购物流已回填，等待提交微信发货"
           : "采购物流已回填，自动发货开关关闭，当前仅进入待确认发货",
       } as T;
+    }
+    // ===== 订单履约二期：浏览器预览兜底（空数据，仅保证 UI 可渲染）=====
+    if (name === "list_order_requests") {
+      // 预览演示一条待处理改址申请：让「发货拦截」告警条与同意/拒绝交互开箱可见
+      const state = String(args?.state || "pending");
+      const previewRequest = {
+        id: "order-request-preview-1",
+        shop_id: "shop-preview",
+        shop_name: "预览店铺",
+        order_id: "order-preview-1",
+        wechat_order_id: "420000000001",
+        kind: "address_change",
+        state: "pending",
+        deadline_at: Math.floor(Date.now() / 1000) + 5 * 3600,
+        payload_json: null,
+        resolution: null,
+        resolved_at: null,
+        created_at: "2026-05-22T00:05:00+08:00",
+        updated_at: "2026-05-22T00:05:00+08:00",
+        purchase_task_count: 1,
+      };
+      if (state === "all" || state === "pending") {
+        return { items: [previewRequest], total: 1 } as T;
+      }
+      return { items: [], total: 0 } as T;
+    }
+    if (name === "run_order_negotiation_scan_once") {
+      return {
+        task_id: `negotiation_scan_preview_${Date.now()}`,
+        processed_shops: 1,
+        address_requests: 0,
+        sku_requests: 0,
+        reconciled_requests: 0,
+        failed_shops: 0,
+      } as T;
+    }
+    if (name === "run_address_decode_once") {
+      return {
+        task_id: `address_decode_preview_${Date.now()}`,
+        processed_orders: 0,
+        decoded_orders: 0,
+        skipped_orders: 0,
+        failed_orders: 0,
+        circuit_open: false,
+      } as T;
+    }
+    if (
+      name === "decide_order_request" ||
+      name === "decode_order_address" ||
+      name === "get_decoded_order_address" ||
+      name === "mark_purchase_task_purchased"
+    ) {
+      throw new Error("浏览器预览不支持该操作，请在桌面应用内使用");
     }
     if (name === "run_order_sync_once") {
       const taskId = `order_sync_preview_${Date.now()}`;
@@ -2633,53 +2788,6 @@ export function createPreviewMode(deps: PreviewModeDeps) {
         skipped_items: 0,
       } as T;
     }
-    if (name === "record_order_shipment") {
-      const request = args?.request as
-        | {
-            order_id?: string;
-            shop_id?: string;
-            wechat_order_id?: string;
-            delivery_id?: string;
-            delivery_name?: string;
-            waybill_id?: string;
-            deliver_type?: number;
-          }
-        | undefined;
-      const orderId = request?.order_id || "order-preview";
-      const shipmentId = `shipment-preview-${orderId}`;
-      upsertPreviewShipment({
-        id: shipmentId,
-        order_id: orderId,
-        shop_id: request?.shop_id || "shop-preview",
-        shop_name:
-          previewShops.value.find((shop) => shop.id === request?.shop_id)
-            ?.name || "预览店铺",
-        wechat_order_id: request?.wechat_order_id || "420000000001",
-        delivery_id: request?.delivery_id || null,
-        delivery_name: request?.delivery_name || null,
-        waybill_id: request?.waybill_id || null,
-        deliver_type: request?.deliver_type || 1,
-        status: deliverySettings.value.auto_send_delivery
-          ? "ready_to_send"
-          : "waiting_confirmation",
-        error_code: null,
-        error_summary: null,
-        submitted_at: null,
-        created_at: "2026-05-22T00:09:00+08:00",
-        updated_at: "2026-05-22T00:09:00+08:00",
-      });
-      return {
-        shipment_id: shipmentId,
-        order_id: orderId,
-        status: deliverySettings.value.auto_send_delivery
-          ? "ready_to_send"
-          : "waiting_confirmation",
-        auto_send_enabled: deliverySettings.value.auto_send_delivery,
-        message: deliverySettings.value.auto_send_delivery
-          ? "物流已回填，等待提交微信发货"
-          : "物流已回填，自动发货开关关闭，当前仅进入待确认发货",
-      } as T;
-    }
     if (name === "run_delivery_submission_once") {
       const taskId = `delivery_submit_preview_${Date.now()}`;
       if (!deliverySettings.value.auto_send_delivery) {
@@ -2700,6 +2808,7 @@ export function createPreviewMode(deps: PreviewModeDeps) {
           processed_shipments: 0,
           submitted_shipments: 0,
           failed_shipments: 0,
+          blocked_shipments: 0,
         } as T;
       }
       const readyShipments = previewShipments.value.filter(
@@ -2730,6 +2839,7 @@ export function createPreviewMode(deps: PreviewModeDeps) {
         processed_shipments: readyShipments.length,
         submitted_shipments: readyShipments.length,
         failed_shipments: 0,
+        blocked_shipments: 0,
       } as T;
     }
     if (name === "run_publish_tasks_once") {

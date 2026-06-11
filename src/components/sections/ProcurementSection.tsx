@@ -7,6 +7,7 @@
    ============================================================================ */
 import { useState } from "react";
 import { useApp } from "../../runtime/AppContext";
+import { ElMessage } from "../../runtime/feedback";
 import {
   PageHead,
   Button,
@@ -15,9 +16,9 @@ import {
   Select,
   Switch,
   Segmented,
-  Empty,
+  Modal,
 } from "../primitives";
-import type { PurchaseTaskView } from "../../types/app";
+import type { PurchaseTaskView, ShipmentView } from "../../types/app";
 
 type PurchaseAction = "mapping" | "shipment" | "issue";
 
@@ -51,29 +52,128 @@ function deliveryStatusLabel(status: string): string {
   const labels: Record<string, string> = {
     waiting_confirmation: "待确认发货",
     ready_to_send: "待提交微信",
+    submitting: "提交中",
     send_failed: "发货失败",
+    blocked: "守卫拦截",
     wechat_shipped: "微信已发货",
   };
   return labels[status] || status;
 }
+
+// 补发原因官方枚举（delivery/compensation）
+const compensateReasonOptions = [
+  { value: 1, label: "漏发补寄" },
+  { value: 2, label: "拆包发货" },
+  { value: 3, label: "坏损补寄" },
+  { value: 4, label: "赠品" },
+];
 
 export default function ProcurementSection() {
   const ctx = useApp();
 
   const [activePurchaseAction, setActivePurchaseAction] =
     useState<PurchaseAction>("shipment");
+  // 处理弹窗：非空 = 弹窗打开并展示该任务的上下文
+  const [actionTask, setActionTask] = useState<PurchaseTaskView | null>(null);
+  const [actionSubmitting, setActionSubmitting] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+
+  // ---- 物流修正（三期 §8）：改运单（≤3 次）/ 补发（≤10 个包裹）----
+  const [logisticsFix, setLogisticsFix] = useState<{
+    mode: "change" | "compensate";
+    shipment: ShipmentView;
+  } | null>(null);
+  const [fixDeliveryId, setFixDeliveryId] = useState("");
+  const [fixWaybillId, setFixWaybillId] = useState("");
+  const [fixReason, setFixReason] = useState(1);
+  // 在途提交锁：改运单（≤3 次）/补发（≤10 个）烧的是微信侧不可恢复的硬配额，
+  // 双击重复调用会白耗配额并造成本地计数与官方错位
+  const [fixSubmitting, setFixSubmitting] = useState(false);
+
+  function openLogisticsFix(mode: "change" | "compensate", shipment: ShipmentView) {
+    setLogisticsFix({ mode, shipment });
+    setFixDeliveryId("");
+    setFixWaybillId("");
+    setFixReason(1);
+    setFixSubmitting(false);
+  }
+
+  // 改运单时新值与原运单完全一致 = 原样重报，白烧 1 次配额，直接禁用提交
+  const fixUnchanged =
+    logisticsFix?.mode === "change" &&
+    fixDeliveryId.trim() === (logisticsFix.shipment.delivery_id ?? "") &&
+    fixWaybillId.trim() === (logisticsFix.shipment.waybill_id ?? "");
+
+  async function submitLogisticsFix() {
+    if (!logisticsFix || fixSubmitting) return;
+    if (!fixDeliveryId.trim() || !fixWaybillId.trim() || fixUnchanged) {
+      return;
+    }
+    const companyName =
+      ctx.deliveryCompanyOptions.value.find(
+        (item) => item.value === fixDeliveryId,
+      )?.label ?? null;
+    const { mode, shipment } = logisticsFix;
+    setFixSubmitting(true);
+    try {
+      const result =
+        mode === "change"
+          ? await ctx.changeShipmentDeliveryInfo({
+              orderId: shipment.order_id,
+              oldDeliveryId: shipment.delivery_id,
+              oldWaybillId: shipment.waybill_id,
+              deliveryId: fixDeliveryId.trim(),
+              deliveryName: companyName,
+              waybillId: fixWaybillId.trim(),
+            })
+          : await ctx.compensateOrderDelivery({
+              orderId: shipment.order_id,
+              deliveryId: fixDeliveryId.trim(),
+              deliveryName: companyName,
+              waybillId: fixWaybillId.trim(),
+              reason: fixReason,
+            });
+      if (result) {
+        setLogisticsFix(null);
+      }
+    } finally {
+      setFixSubmitting(false);
+    }
+  }
 
   const tasks = ctx.purchaseTasks.value;
   const shipments = ctx.deliveryShipments.value;
+
+  // ---- 采购双节点（订单履约重设计 §7）：待下单 / 待回运单 两条队列（客户端按 purchased_at 拆分）----
+  const [purchaseQueue, setPurchaseQueue] = useState<
+    "all" | "to_buy" | "awaiting_waybill"
+  >("all");
+  const visibleTasks = tasks.filter((t) => {
+    if (purchaseQueue === "to_buy") {
+      return t.status === "pending_purchase" && !t.purchased_at;
+    }
+    if (purchaseQueue === "awaiting_waybill") {
+      return t.status === "pending_purchase" && !!t.purchased_at;
+    }
+    return true;
+  });
 
   // ---- 筛选胶囊选项 ----
   const purchaseStatusOptions = [
     { value: "all", label: "全部", count: tasks.length },
     {
-      value: "pending_purchase",
+      value: "to_buy",
       label: "待下单",
-      count: tasks.filter((t) => t.status === "pending_purchase").length,
+      count: tasks.filter(
+        (t) => t.status === "pending_purchase" && !t.purchased_at,
+      ).length,
+    },
+    {
+      value: "awaiting_waybill",
+      label: "待回运单",
+      count: tasks.filter(
+        (t) => t.status === "pending_purchase" && !!t.purchased_at,
+      ).length,
     },
     {
       value: "needs_mapping",
@@ -101,14 +201,16 @@ export default function ProcurementSection() {
     issue: tasks.filter((t) => supplierIssueStatuses.has(t.status)).length,
   };
 
-  const selectedPurchaseTaskId =
-    ctx.purchaseShipmentForm.purchase_task_id ||
-    ctx.purchaseMappingForm.purchase_task_id ||
-    ctx.purchaseIssueForm.purchase_task_id;
-
   // ---- 交互助手 ----
   async function setPurchaseFilter(status: string) {
-    ctx.purchaseStatusFilter.value = status;
+    // 双节点虚拟队列：后端仍按 pending_purchase 过滤，前端按 purchased_at 拆分
+    if (status === "to_buy" || status === "awaiting_waybill") {
+      setPurchaseQueue(status);
+      ctx.purchaseStatusFilter.value = "pending_purchase";
+    } else {
+      setPurchaseQueue("all");
+      ctx.purchaseStatusFilter.value = status;
+    }
     await ctx.refreshPurchaseTasks();
   }
 
@@ -124,19 +226,71 @@ export default function ProcurementSection() {
     window.open(url, "_blank", "noreferrer");
   }
 
+  // 点行内按钮 → 预填对应表单并弹出处理弹窗（actionTask 非空即弹窗打开）
   function startMapping(row: PurchaseTaskView) {
     ctx.selectPurchaseTaskMapping(row);
     setActivePurchaseAction("mapping");
+    setActionTask(row);
   }
 
   function startShipment(row: PurchaseTaskView) {
     ctx.selectPurchaseTaskShipment(row);
     setActivePurchaseAction("shipment");
+    setActionTask(row);
   }
 
   function startIssue(row: PurchaseTaskView) {
     ctx.selectPurchaseTaskIssue(row);
     setActivePurchaseAction("issue");
+    setActionTask(row);
+  }
+
+  // 弹窗内切换动作时，用当前任务重新预填目标表单，避免带出上一个任务的数据
+  function switchAction(v: PurchaseAction) {
+    if (actionTask) {
+      if (v === "mapping") ctx.selectPurchaseTaskMapping(actionTask);
+      else if (v === "shipment") ctx.selectPurchaseTaskShipment(actionTask);
+      else ctx.selectPurchaseTaskIssue(actionTask);
+    }
+    setActivePurchaseAction(v);
+  }
+
+  // 发货失败/被拦截的单子微信侧并未发货，「改运单」（官方已发货纠错接口）用不上；
+  // 正确路径 = 修改采购任务的运单号重新回填，旧失败行会被 supersede 自动作废
+  async function startFixWaybill(row: ShipmentView) {
+    let pool = ctx.purchaseTasks.value.filter((t) => t.order_id === row.order_id);
+    if (pool.length === 0) {
+      // 当前筛选可能不含该任务：切回全部再找一次
+      setPurchaseQueue("all");
+      ctx.purchaseStatusFilter.value = "all";
+      await ctx.refreshPurchaseTasks();
+      pool = ctx.purchaseTasks.value.filter((t) => t.order_id === row.order_id);
+    }
+    const matched =
+      pool.find(
+        (t) => t.supplier_waybill_id && t.supplier_waybill_id === row.waybill_id,
+      ) ?? (pool.length === 1 ? pool[0] : undefined);
+    if (matched) {
+      startShipment(matched);
+      return;
+    }
+    ElMessage.warning(
+      pool.length > 1
+        ? "该订单有多个采购任务且运单号未能对应，请在上方采购列表逐个核对修改"
+        : "未找到该订单的采购任务，请在上方采购列表核实后修改运单号",
+    );
+  }
+
+  // 提交锁防双击重复提交；成功后关闭弹窗
+  async function submitPurchaseAction(action: () => Promise<boolean>) {
+    if (actionSubmitting) return;
+    setActionSubmitting(true);
+    try {
+      const ok = await action();
+      if (ok) setActionTask(null);
+    } finally {
+      setActionSubmitting(false);
+    }
   }
 
   function handlePrimaryAction(row: PurchaseTaskView) {
@@ -183,7 +337,12 @@ export default function ProcurementSection() {
                 key={option.value}
                 label={option.label}
                 count={option.count}
-                active={ctx.purchaseStatusFilter.value === option.value}
+                active={
+                  option.value === "to_buy" || option.value === "awaiting_waybill"
+                    ? purchaseQueue === option.value
+                    : purchaseQueue === "all" &&
+                      ctx.purchaseStatusFilter.value === option.value
+                }
                 onClick={() => setPurchaseFilter(option.value)}
               />
             ))}
@@ -215,6 +374,7 @@ export default function ProcurementSection() {
                   <th>要买什么</th>
                   <th>去哪买</th>
                   <th>订单</th>
+                  <th>收货地址</th>
                   <th>数量/金额</th>
                   <th>供应商物流</th>
                   <th>现在该做</th>
@@ -222,7 +382,7 @@ export default function ProcurementSection() {
                 </tr>
               </thead>
               <tbody>
-                {tasks.map((row) => (
+                {visibleTasks.map((row) => (
                   <tr key={row.id}>
                     <td>
                       <div className="cell-main">
@@ -251,6 +411,26 @@ export default function ProcurementSection() {
                     </td>
                     <td>
                       <div className="cell-main">
+                        <strong>{row.decoded_region || (row.has_decoded_address ? "已解密" : "未解密")}</strong>
+                        {row.has_decoded_address ? (
+                          <button
+                            className="link-src"
+                            onClick={() => ctx.copyDecodedAddress(row.order_id)}
+                          >
+                            复制完整地址
+                          </button>
+                        ) : (
+                          <button
+                            className="link-src"
+                            onClick={() => ctx.decodeOrderAddressNow(row.order_id)}
+                          >
+                            解密地址
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                    <td>
+                      <div className="cell-main">
                         <strong>x{row.quantity}</strong>
                         <span className="mono">{ctx.formatCents(row.estimated_revenue)}</span>
                       </div>
@@ -265,7 +445,9 @@ export default function ProcurementSection() {
                     </td>
                     <td>
                       <Pill tone={ctx.statusType(row.status)}>
-                        {purchaseStatusLabel(row.status)}
+                        {row.status === "pending_purchase" && row.purchased_at
+                          ? "已下单，等快递单号"
+                          : purchaseStatusLabel(row.status)}
                       </Pill>
                       {row.error_summary && (
                         <small className="subtext">{row.error_summary}</small>
@@ -273,9 +455,22 @@ export default function ProcurementSection() {
                     </td>
                     <td>
                       <div className="row-actions">
+                        {row.status === "pending_purchase" && !row.purchased_at && (
+                          <Button
+                            size="sm"
+                            variant="accent"
+                            onClick={() => ctx.markPurchaseTaskPurchased(row.id, true)}
+                          >
+                            标记已下单
+                          </Button>
+                        )}
                         <Button
                           size="sm"
-                          variant="accent"
+                          variant={
+                            row.status === "pending_purchase" && !row.purchased_at
+                              ? "ghost"
+                              : "accent"
+                          }
                           onClick={() => handlePrimaryAction(row)}
                         >
                           {row.status === "needs_mapping"
@@ -284,6 +479,15 @@ export default function ProcurementSection() {
                               ? "处理异常"
                               : "填物流"}
                         </Button>
+                        {row.status === "pending_purchase" && row.purchased_at && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => ctx.markPurchaseTaskPurchased(row.id, false)}
+                          >
+                            撤销下单
+                          </Button>
+                        )}
                         <Button size="sm" onClick={() => startMapping(row)}>
                           补资料
                         </Button>
@@ -305,185 +509,175 @@ export default function ProcurementSection() {
           )}
         </div>
 
-        {/* ===== 处理选中的采购单 ===== */}
-        <div className="panel">
-          <div className="ph">
-            <div>
-              <h3>处理选中的采购单</h3>
-              <p>{selectedPurchaseTaskId || "先在上面的表格点“填物流 / 补货源 / 买不了”"}</p>
+        {/* ===== 处理采购单弹窗：点行内「填物流 / 补资料 / 买不了」即弹出 ===== */}
+        <Modal
+          open={!!actionTask}
+          title="处理采购单"
+          onClose={() => setActionTask(null)}
+        >
+          {actionTask && (
+            <div className="stack" style={{ gap: 16 }}>
+              <div className="cell-main">
+                <strong>{actionTask.title || "未同步商品标题"}</strong>
+                <span className="mono">
+                  {actionTask.shop_name} · {actionTask.wechat_order_id} · x
+                  {actionTask.quantity}
+                </span>
+                <span className="mono">{actionTask.id}</span>
+              </div>
+              <Segmented
+                options={[
+                  { label: "填物流", value: "shipment" },
+                  { label: "补资料", value: "mapping" },
+                  { label: "买不了", value: "issue" },
+                ]}
+                value={activePurchaseAction}
+                onChange={(v: string) => switchAction(v as PurchaseAction)}
+              />
+              {activePurchaseAction === "shipment" ? (
+                <div className="form-grid cols-2">
+                  <Select
+                    value={ctx.purchaseShipmentForm.deliver_type}
+                    onChange={(v: string) => {
+                      ctx.purchaseShipmentForm.deliver_type = Number(v);
+                    }}
+                    options={[
+                      { value: 1, label: "快递发货" },
+                      { value: 3, label: "无需物流" },
+                    ]}
+                    placeholder="发货方式"
+                  />
+                  <Select
+                    value={ctx.purchaseShipmentForm.delivery_id}
+                    onChange={(v: string) => {
+                      ctx.purchaseShipmentForm.delivery_id = v;
+                    }}
+                    options={ctx.deliveryCompanyOptions.value}
+                    placeholder="快递公司"
+                    disabled={ctx.purchaseShipmentForm.deliver_type !== 1}
+                  />
+                  <input
+                    className="inp"
+                    placeholder="物流单号"
+                    disabled={ctx.purchaseShipmentForm.deliver_type !== 1}
+                    value={ctx.purchaseShipmentForm.waybill_id}
+                    onChange={(e) => {
+                      ctx.purchaseShipmentForm.waybill_id = e.target.value;
+                    }}
+                  />
+                  <input
+                    className="inp"
+                    placeholder="采购成本，选填"
+                    value={ctx.purchaseShipmentForm.estimated_cost}
+                    onChange={(e) => {
+                      ctx.purchaseShipmentForm.estimated_cost = e.target.value;
+                    }}
+                  />
+                  <Button
+                    variant="accent"
+                    icon="upload"
+                    disabled={actionSubmitting}
+                    onClick={() =>
+                      submitPurchaseAction(() => ctx.recordPurchaseTaskShipment())
+                    }
+                  >
+                    {actionSubmitting ? "保存中…" : "保存物流"}
+                  </Button>
+                </div>
+              ) : activePurchaseAction === "mapping" ? (
+                <div className="form-grid cols-2">
+                  <input
+                    className="inp"
+                    placeholder="外部商品 ID"
+                    value={ctx.purchaseMappingForm.external_product_id}
+                    onChange={(e) => {
+                      ctx.purchaseMappingForm.external_product_id = e.target.value;
+                    }}
+                  />
+                  <input
+                    className="inp"
+                    placeholder="外部 SKU"
+                    value={ctx.purchaseMappingForm.external_sku_id}
+                    onChange={(e) => {
+                      ctx.purchaseMappingForm.external_sku_id = e.target.value;
+                    }}
+                  />
+                  <input
+                    className="inp"
+                    placeholder="货源链接，选填"
+                    value={ctx.purchaseMappingForm.source_url}
+                    onChange={(e) => {
+                      ctx.purchaseMappingForm.source_url = e.target.value;
+                    }}
+                  />
+                  <input
+                    className="inp"
+                    placeholder="供应商，选填"
+                    value={ctx.purchaseMappingForm.supplier_name}
+                    onChange={(e) => {
+                      ctx.purchaseMappingForm.supplier_name = e.target.value;
+                    }}
+                  />
+                  <input
+                    className="inp"
+                    placeholder="采购成本，选填"
+                    value={ctx.purchaseMappingForm.estimated_cost}
+                    onChange={(e) => {
+                      ctx.purchaseMappingForm.estimated_cost = e.target.value;
+                    }}
+                  />
+                  <input
+                    className="inp"
+                    placeholder="备注，选填"
+                    value={ctx.purchaseMappingForm.note}
+                    onChange={(e) => {
+                      ctx.purchaseMappingForm.note = e.target.value;
+                    }}
+                  />
+                  <Button
+                    variant="accent"
+                    icon="check"
+                    disabled={actionSubmitting}
+                    onClick={() =>
+                      submitPurchaseAction(() => ctx.resolvePurchaseTaskMapping())
+                    }
+                  >
+                    {actionSubmitting ? "保存中…" : "保存货源信息"}
+                  </Button>
+                </div>
+              ) : (
+                <div className="form-grid cols-2">
+                  <Select
+                    value={ctx.purchaseIssueForm.issue_type}
+                    onChange={(v: string) => {
+                      ctx.purchaseIssueForm.issue_type = v;
+                    }}
+                    options={ctx.purchaseIssueTypeOptions}
+                    placeholder="异常类型"
+                  />
+                  <input
+                    className="inp"
+                    placeholder="处理备注，选填"
+                    value={ctx.purchaseIssueForm.note}
+                    onChange={(e) => {
+                      ctx.purchaseIssueForm.note = e.target.value;
+                    }}
+                  />
+                  <Button
+                    variant="danger"
+                    icon="bell"
+                    disabled={actionSubmitting}
+                    onClick={() =>
+                      submitPurchaseAction(() => ctx.markPurchaseTaskIssue())
+                    }
+                  >
+                    {actionSubmitting ? "提交中…" : "标记买不了"}
+                  </Button>
+                </div>
+              )}
             </div>
-            <Segmented
-              options={[
-                { label: "填物流", value: "shipment" },
-                { label: "补货源", value: "mapping" },
-                { label: "买不了", value: "issue" },
-              ]}
-              value={activePurchaseAction}
-              onChange={(v: string) => setActivePurchaseAction(v as PurchaseAction)}
-            />
-          </div>
-
-          {selectedPurchaseTaskId ? (
-            activePurchaseAction === "shipment" ? (
-              <div className="form-grid cols-3">
-                <input
-                  className="inp"
-                  placeholder="采购任务 ID"
-                  value={ctx.purchaseShipmentForm.purchase_task_id}
-                  onChange={(e) => {
-                    ctx.purchaseShipmentForm.purchase_task_id = e.target.value;
-                  }}
-                />
-                <Select
-                  value={ctx.purchaseShipmentForm.deliver_type}
-                  onChange={(v: string) => {
-                    ctx.purchaseShipmentForm.deliver_type = Number(v);
-                  }}
-                  options={[
-                    { value: 1, label: "快递发货" },
-                    { value: 3, label: "无需物流" },
-                  ]}
-                  placeholder="发货方式"
-                />
-                <Select
-                  value={ctx.purchaseShipmentForm.delivery_id}
-                  onChange={(v: string) => {
-                    ctx.purchaseShipmentForm.delivery_id = v;
-                  }}
-                  options={ctx.deliveryCompanyOptions.value}
-                  placeholder="快递公司"
-                  disabled={ctx.purchaseShipmentForm.deliver_type !== 1}
-                />
-                <input
-                  className="inp"
-                  placeholder="物流单号"
-                  disabled={ctx.purchaseShipmentForm.deliver_type !== 1}
-                  value={ctx.purchaseShipmentForm.waybill_id}
-                  onChange={(e) => {
-                    ctx.purchaseShipmentForm.waybill_id = e.target.value;
-                  }}
-                />
-                <input
-                  className="inp"
-                  placeholder="采购成本，选填"
-                  value={ctx.purchaseShipmentForm.estimated_cost}
-                  onChange={(e) => {
-                    ctx.purchaseShipmentForm.estimated_cost = e.target.value;
-                  }}
-                />
-                <Button
-                  variant="accent"
-                  icon="upload"
-                  onClick={() => ctx.recordPurchaseTaskShipment()}
-                >
-                  保存物流
-                </Button>
-              </div>
-            ) : activePurchaseAction === "mapping" ? (
-              <div className="form-grid cols-3">
-                <input
-                  className="inp"
-                  placeholder="采购任务 ID"
-                  value={ctx.purchaseMappingForm.purchase_task_id}
-                  onChange={(e) => {
-                    ctx.purchaseMappingForm.purchase_task_id = e.target.value;
-                  }}
-                />
-                <input
-                  className="inp"
-                  placeholder="外部商品 ID"
-                  value={ctx.purchaseMappingForm.external_product_id}
-                  onChange={(e) => {
-                    ctx.purchaseMappingForm.external_product_id = e.target.value;
-                  }}
-                />
-                <input
-                  className="inp"
-                  placeholder="外部 SKU"
-                  value={ctx.purchaseMappingForm.external_sku_id}
-                  onChange={(e) => {
-                    ctx.purchaseMappingForm.external_sku_id = e.target.value;
-                  }}
-                />
-                <input
-                  className="inp"
-                  placeholder="货源链接，选填"
-                  value={ctx.purchaseMappingForm.source_url}
-                  onChange={(e) => {
-                    ctx.purchaseMappingForm.source_url = e.target.value;
-                  }}
-                />
-                <input
-                  className="inp"
-                  placeholder="供应商，选填"
-                  value={ctx.purchaseMappingForm.supplier_name}
-                  onChange={(e) => {
-                    ctx.purchaseMappingForm.supplier_name = e.target.value;
-                  }}
-                />
-                <input
-                  className="inp"
-                  placeholder="采购成本，选填"
-                  value={ctx.purchaseMappingForm.estimated_cost}
-                  onChange={(e) => {
-                    ctx.purchaseMappingForm.estimated_cost = e.target.value;
-                  }}
-                />
-                <input
-                  className="inp"
-                  placeholder="备注，选填"
-                  value={ctx.purchaseMappingForm.note}
-                  onChange={(e) => {
-                    ctx.purchaseMappingForm.note = e.target.value;
-                  }}
-                />
-                <Button
-                  variant="accent"
-                  icon="check"
-                  onClick={() => ctx.resolvePurchaseTaskMapping()}
-                >
-                  保存货源信息
-                </Button>
-              </div>
-            ) : (
-              <div className="form-grid cols-3">
-                <input
-                  className="inp"
-                  placeholder="采购任务 ID"
-                  value={ctx.purchaseIssueForm.purchase_task_id}
-                  onChange={(e) => {
-                    ctx.purchaseIssueForm.purchase_task_id = e.target.value;
-                  }}
-                />
-                <Select
-                  value={ctx.purchaseIssueForm.issue_type}
-                  onChange={(v: string) => {
-                    ctx.purchaseIssueForm.issue_type = v;
-                  }}
-                  options={ctx.purchaseIssueTypeOptions}
-                  placeholder="异常类型"
-                />
-                <input
-                  className="inp"
-                  placeholder="处理备注，选填"
-                  value={ctx.purchaseIssueForm.note}
-                  onChange={(e) => {
-                    ctx.purchaseIssueForm.note = e.target.value;
-                  }}
-                />
-                <Button
-                  variant="danger"
-                  icon="bell"
-                  onClick={() => ctx.markPurchaseTaskIssue()}
-                >
-                  标记买不了
-                </Button>
-              </div>
-            )
-          ) : (
-            <Empty>从上面的采购单选择一个动作后再填写。</Empty>
           )}
-        </div>
+        </Modal>
 
         {/* ===== 待发货队列 ===== */}
         <div className="panel">
@@ -501,6 +695,7 @@ export default function ProcurementSection() {
                   { value: "waiting_confirmation", label: "待确认" },
                   { value: "ready_to_send", label: "待提交" },
                   { value: "send_failed", label: "发货失败" },
+                  { value: "blocked", label: "守卫拦截" },
                   { value: "wechat_shipped", label: "已发货" },
                 ]}
                 width={140}
@@ -521,6 +716,14 @@ export default function ProcurementSection() {
                   ctx.setAutoSendDelivery(v);
                 }}
                 label={ctx.deliverySettings.value.auto_send_delivery ? "自动发货" : "只保存"}
+              />
+              <Switch
+                checked={ctx.deliverySettings.value.multi_package_enabled}
+                onChange={(v: boolean) => {
+                  ctx.deliverySettings.value.multi_package_enabled = v;
+                  ctx.setMultiPackageEnabled(v);
+                }}
+                label="多运单拆包"
               />
             </div>
           </div>
@@ -556,22 +759,135 @@ export default function ProcurementSection() {
                         </span>
                       </div>
                     </td>
-                    <td>{row.error_summary || row.error_code || "-"}</td>
+                    <td>
+                      {row.status === "blocked"
+                        ? row.blocked_reason || "守卫拦截"
+                        : row.error_summary || row.error_code || "-"}
+                    </td>
                     <td className="mono">{ctx.formatDateTime(row.updated_at)}</td>
                     <td>
-                      <Button
-                        size="sm"
-                        disabled={row.status === "wechat_shipped"}
-                        onClick={() => ctx.retryDeliveryShipment(row)}
-                      >
-                        重试
-                      </Button>
+                      <div className="row-actions">
+                        <Button
+                          size="sm"
+                          disabled={row.status === "wechat_shipped"}
+                          title="按当前单号原样重新提交微信发货"
+                          onClick={() => ctx.retryDeliveryShipment(row)}
+                        >
+                          重试
+                        </Button>
+                        {(row.status === "send_failed" ||
+                          row.status === "blocked") && (
+                          <Button
+                            size="sm"
+                            variant="accent"
+                            title="修改运单号后重新提交（单号填错/被其他订单占用时用这个）"
+                            onClick={() => startFixWaybill(row)}
+                          >
+                            改单号
+                          </Button>
+                        )}
+                        <Button
+                          size="sm"
+                          disabled={row.status !== "wechat_shipped"}
+                          title={
+                            row.status !== "wechat_shipped"
+                              ? "仅微信已发货的订单可改运单（官方接口前提）；未发货成功请用「改单号」"
+                              : "微信侧已发货后修改运单（官方限 3 次）"
+                          }
+                          onClick={() => openLogisticsFix("change", row)}
+                        >
+                          改运单
+                        </Button>
+                        <Button
+                          size="sm"
+                          disabled={row.status !== "wechat_shipped"}
+                          title={
+                            row.status !== "wechat_shipped"
+                              ? "仅微信已发货的订单可补发"
+                              : "漏发/坏损补寄一个新包裹（官方限 10 个）"
+                          }
+                          onClick={() => openLogisticsFix("compensate", row)}
+                        >
+                          补发
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+
+          {/* 物流修正表单：改运单走 deliveryinfo/update（≤3 次），补发走 delivery/compensation（≤10 个包裹） */}
+          {logisticsFix && (
+            <div className="subcard">
+              <div className="ph">
+                <div>
+                  <h3>
+                    {logisticsFix.mode === "change" ? "改运单" : "补发包裹"}：订单{" "}
+                    {logisticsFix.shipment.wechat_order_id}
+                  </h3>
+                  <p>
+                    {logisticsFix.mode === "change"
+                      ? `原运单 ${logisticsFix.shipment.waybill_id || "-"}（${
+                          logisticsFix.shipment.delivery_name ||
+                          logisticsFix.shipment.delivery_id ||
+                          "-"
+                        }）→ 新运单；微信限同一订单最多改 3 次`
+                      : "前置要求订单商品已全部发货且在售后期内；微信限同一订单最多补发 10 个包裹"}
+                  </p>
+                </div>
+              </div>
+              <div className="form-grid cols-3">
+                <Select
+                  value={fixDeliveryId}
+                  onChange={(v: string) => setFixDeliveryId(v)}
+                  options={ctx.deliveryCompanyOptions.value}
+                  placeholder={
+                    logisticsFix.mode === "change" ? "新快递公司" : "补发快递公司"
+                  }
+                />
+                <input
+                  className="inp"
+                  placeholder={
+                    logisticsFix.mode === "change" ? "新运单号" : "补发运单号"
+                  }
+                  value={fixWaybillId}
+                  onChange={(e) => setFixWaybillId(e.target.value)}
+                />
+                {logisticsFix.mode === "compensate" && (
+                  <Select
+                    value={fixReason}
+                    onChange={(v: string) => setFixReason(Number(v))}
+                    options={compensateReasonOptions}
+                    placeholder="补发原因"
+                  />
+                )}
+                <div className="row-actions">
+                  <Button
+                    variant="accent"
+                    icon="upload"
+                    disabled={
+                      fixSubmitting ||
+                      !fixDeliveryId.trim() ||
+                      !fixWaybillId.trim() ||
+                      fixUnchanged
+                    }
+                    onClick={() => submitLogisticsFix()}
+                  >
+                    {fixSubmitting
+                      ? "提交中…"
+                      : logisticsFix.mode === "change"
+                        ? "提交改运单"
+                        : "提交补发"}
+                  </Button>
+                  <Button disabled={fixSubmitting} onClick={() => setLogisticsFix(null)}>
+                    取消
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="toolbar">
             <Pill tone="info">

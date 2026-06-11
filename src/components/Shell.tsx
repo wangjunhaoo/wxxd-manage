@@ -24,7 +24,7 @@ export const NAV_ITEMS: NavItem[] = [
   { key: "price", label: "价格调整", desc: "订单改价", icon: "tag" },
   { key: "exceptions", label: "异常处理", desc: "通知与售后", icon: "alert" },
   { key: "analytics", label: "经营分析", desc: "动销库存利润", icon: "chart" },
-  { key: "skills", label: "Agent 技能", desc: "技能管理", icon: "sparkles" },
+  { key: "skills", label: "AI 记录", desc: "Agent 执行流程", icon: "sparkles" },
   { key: "settings", label: "系统设置", desc: "低频配置", icon: "settings" },
 ];
 
@@ -37,7 +37,7 @@ export const SECTION_META: Record<string, { eyebrow: string; title: string }> = 
   price: { eyebrow: "价格调整", title: "未付款订单批量改价" },
   exceptions: { eyebrow: "异常处理", title: "通知、售后与纠纷" },
   analytics: { eyebrow: "经营分析", title: "动销、库存和利润" },
-  skills: { eyebrow: "Agent 技能", title: "AI 技能管理与试跑" },
+  skills: { eyebrow: "AI 使用记录", title: "Agent 执行流程与技能" },
   settings: { eyebrow: "系统设置", title: "配置、集成与任务日志" },
 };
 

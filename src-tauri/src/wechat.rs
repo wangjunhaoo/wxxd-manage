@@ -20,6 +20,27 @@ const CATEGORY_PRECHECK_URL: &str =
 const ORDER_LIST_URL: &str = "https://api.weixin.qq.com/channels/ec/order/list/get";
 const ORDER_GET_URL: &str = "https://api.weixin.qq.com/channels/ec/order/get";
 const ORDER_PRICE_UPDATE_URL: &str = "https://api.weixin.qq.com/channels/ec/order/price/update";
+const ORDER_SEARCH_URL: &str = "https://api.weixin.qq.com/channels/ec/order/search";
+const ORDER_SENSITIVE_DECODE_URL: &str =
+    "https://api.weixin.qq.com/channels/ec/order/sensitiveinfo/decode";
+const ORDER_CHANGESKU_GET_URL: &str =
+    "https://api.weixin.qq.com/channels/ec/order/preshipmentchangesku/get";
+const ORDER_CHANGESKU_APPROVE_URL: &str =
+    "https://api.weixin.qq.com/channels/ec/order/preshipmentchangesku/approve";
+const ORDER_CHANGESKU_REJECT_URL: &str =
+    "https://api.weixin.qq.com/channels/ec/order/preshipmentchangesku/reject";
+const ORDER_ADDRESS_MODIFY_ACCEPT_URL: &str =
+    "https://api.weixin.qq.com/channels/ec/order/addressmodify/accept";
+const ORDER_ADDRESS_MODIFY_REJECT_URL: &str =
+    "https://api.weixin.qq.com/channels/ec/order/addressmodify/reject";
+const ORDER_DELIVERY_COMPENSATION_URL: &str =
+    "https://api.weixin.qq.com/channels/ec/order/delivery/compensation";
+const ORDER_DELIVERY_INFO_UPDATE_URL: &str =
+    "https://api.weixin.qq.com/channels/ec/order/deliveryinfo/update";
+const ORDER_MERCHANT_NOTES_URL: &str =
+    "https://api.weixin.qq.com/channels/ec/order/merchantnotes/update";
+const ORDER_VIRTUAL_TEL_DELAY_URL: &str =
+    "https://api.weixin.qq.com/channels/ec/order/virtualnumber/delay";
 const SEND_DELIVERY_URL: &str = "https://api.weixin.qq.com/channels/ec/order/delivery/send";
 const DELIVERY_COMPANY_LIST_URL: &str =
     "https://api.weixin.qq.com/channels/ec/order/deliverycompanylist/new/get";
@@ -486,9 +507,19 @@ struct CategoryPrecheckResponse {
     extra: serde_json::Map<String, serde_json::Value>,
 }
 
+/// 订单列表的时间过滤轴。官方文档：create_time_range / update_time_range 二选一至少传一个，
+/// 单窗跨度 ≤7 天。增量同步走 Update（状态变化/改价/取消/完成都体现在 update_time 上），
+/// 每日补漏兜底走 Create（对冲「不传 status 行为未明」的风险）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderListTimeField {
+    Create,
+    Update,
+}
+
 #[derive(Debug, Serialize)]
 struct OrderListRequest<'a> {
-    create_time_range: TimeRange,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    create_time_range: Option<TimeRange>,
     #[serde(skip_serializing_if = "Option::is_none")]
     update_time_range: Option<TimeRange>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -842,8 +873,15 @@ struct StockBatchData {
 
 impl Default for WechatShopClient {
     fn default() -> Self {
+        // 审查修复：无超时的 Client 在 TCP 黑洞（丢包不 RST）时会无限 hang，
+        // driver tick 超时只 detach 不取消 → 僵尸任务无限存活并与新 tick 并发。
+        // 120s 总超时取「覆盖最慢的素材上传」与「限制僵尸存活时间」的折中。
         Self {
-            http: Client::new(),
+            http: Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(15))
+                .timeout(std::time::Duration::from_secs(120))
+                .build()
+                .unwrap_or_else(|_| Client::new()),
         }
     }
 }
@@ -1508,22 +1546,28 @@ impl WechatShopClient {
     pub async fn get_order_list(
         &self,
         access_token: &str,
+        time_field: OrderListTimeField,
         start_time: i64,
         end_time: i64,
         status: Option<i64>,
         page_size: i64,
         next_key: &str,
     ) -> AppResult<OrderListCall> {
+        let range = TimeRange {
+            start_time,
+            end_time,
+        };
+        let (create_time_range, update_time_range) = match time_field {
+            OrderListTimeField::Create => (Some(range), None),
+            OrderListTimeField::Update => (None, Some(range)),
+        };
         let response: OrderListResponse = self
             .post_json(
                 ORDER_LIST_URL,
                 access_token,
                 &OrderListRequest {
-                    create_time_range: TimeRange {
-                        start_time,
-                        end_time,
-                    },
-                    update_time_range: None,
+                    create_time_range,
+                    update_time_range,
                     status,
                     page_size,
                     next_key,
@@ -1718,6 +1762,191 @@ impl WechatShopClient {
             },
             result: raw_wechat_result(response),
         })
+    }
+
+    /// 通用原始订单系调用：POST 任意端点、返回原始 payload。
+    /// 解密/搜索/换SKU/改址裁决等轻接口共用（返回结构由调用方按文档解析）。
+    async fn post_order_raw(
+        &self,
+        endpoint: &'static str,
+        access_token: &str,
+        payload: &serde_json::Value,
+    ) -> AppResult<WechatRawCall> {
+        let response: RawWechatResponse = self.post_json(endpoint, access_token, payload).await?;
+        Ok(WechatRawCall {
+            meta: WechatCallMeta {
+                endpoint,
+                method: "POST",
+            },
+            result: raw_wechat_result(response),
+        })
+    }
+
+    /// 解密订单收货信息（sensitiveinfo/decode）。注意官方约束：有每日/每月解密额度、
+    /// 同一订单多次调用仅计一次额度、10020198 为限速错误码（调用方需退避）。
+    pub async fn decode_order_sensitive_info(
+        &self,
+        access_token: &str,
+        order_id: &str,
+    ) -> AppResult<WechatRawCall> {
+        self.post_order_raw(
+            ORDER_SENSITIVE_DECODE_URL,
+            access_token,
+            &serde_json::json!({ "order_id": order_id }),
+        )
+        .await
+    }
+
+    /// 订单搜索（order/search）。search_condition 至少含一个字段；
+    /// 本系统主要用 {address_under_review: true} 批量发现改址待审单（官方唯一批量入口）。
+    pub async fn search_orders(
+        &self,
+        access_token: &str,
+        search_condition: &serde_json::Value,
+        status: Option<i64>,
+        page_size: i64,
+        next_key: &str,
+    ) -> AppResult<WechatRawCall> {
+        let mut payload = serde_json::json!({
+            "search_condition": search_condition,
+            "page_size": page_size,
+            "next_key": next_key
+        });
+        if let Some(status) = status {
+            payload["status"] = serde_json::json!(status);
+        }
+        self.post_order_raw(ORDER_SEARCH_URL, access_token, &payload)
+            .await
+    }
+
+    /// 获取待处理的发货前换SKU申请（仅返回订单号列表，详情须回刷 order/get 取 change_sku_info）。
+    pub async fn preshipment_changesku_get(
+        &self,
+        access_token: &str,
+        page_size: i64,
+        next_key: &str,
+    ) -> AppResult<WechatRawCall> {
+        self.post_order_raw(
+            ORDER_CHANGESKU_GET_URL,
+            access_token,
+            &serde_json::json!({ "page_size": page_size, "next_key": next_key }),
+        )
+        .await
+    }
+
+    /// 同意/拒绝发货前换SKU申请（整单粒度）。超时默认=拒绝。
+    pub async fn preshipment_changesku_decide(
+        &self,
+        access_token: &str,
+        order_id: &str,
+        approve: bool,
+    ) -> AppResult<WechatRawCall> {
+        let endpoint = if approve {
+            ORDER_CHANGESKU_APPROVE_URL
+        } else {
+            ORDER_CHANGESKU_REJECT_URL
+        };
+        self.post_order_raw(
+            endpoint,
+            access_token,
+            &serde_json::json!({ "order_id": order_id }),
+        )
+        .await
+    }
+
+    /// 同意/拒绝买家修改收货地址申请。注意：12 小时不处理=系统自动同意（对商家不利方向）。
+    pub async fn address_modify_decide(
+        &self,
+        access_token: &str,
+        order_id: &str,
+        approve: bool,
+    ) -> AppResult<WechatRawCall> {
+        let endpoint = if approve {
+            ORDER_ADDRESS_MODIFY_ACCEPT_URL
+        } else {
+            ORDER_ADDRESS_MODIFY_REJECT_URL
+        };
+        self.post_order_raw(
+            endpoint,
+            access_token,
+            &serde_json::json!({ "order_id": order_id }),
+        )
+        .await
+    }
+
+    /// 补发包裹（delivery/compensation）。官方约束：order_id 为数字类型；
+    /// deliver_type 枚举为 1=快递/6=无需物流（与 send 的 1/3 不同）；
+    /// 前置要求 SKU 已全部发货且在售后期内；一单 ≤10 个补发包裹。
+    pub async fn compensate_delivery(
+        &self,
+        access_token: &str,
+        order_id: i64,
+        delivery_list: &serde_json::Value,
+        reason: i64,
+    ) -> AppResult<WechatRawCall> {
+        self.post_order_raw(
+            ORDER_DELIVERY_COMPENSATION_URL,
+            access_token,
+            &serde_json::json!({
+                "order_id": order_id,
+                "delivery_list": delivery_list,
+                "reason": reason
+            }),
+        )
+        .await
+    }
+
+    /// 修改运单信息（deliveryinfo/update）。双模式互斥：
+    /// delivery_list=整单重报（拆单发货的单不支持）；change_infos=包裹级 old→new 替换。
+    /// 官方限制未完成单 ≤3 次（超限报 606041），调用方需本地计数提前禁用。
+    pub async fn update_delivery_info(
+        &self,
+        access_token: &str,
+        order_id: i64,
+        delivery_list: Option<&serde_json::Value>,
+        change_infos: Option<&serde_json::Value>,
+    ) -> AppResult<WechatRawCall> {
+        let mut payload = serde_json::json!({ "order_id": order_id });
+        if let Some(list) = delivery_list {
+            payload["delivery_list"] = list.clone();
+        }
+        if let Some(infos) = change_infos {
+            payload["change_infos"] = infos.clone();
+        }
+        self.post_order_raw(ORDER_DELIVERY_INFO_UPDATE_URL, access_token, &payload)
+            .await
+    }
+
+    /// 更新订单商家备注（merchantnotes/update）。发货成功后用于把采购单号+运单摘要
+    /// 镜像进微信侧备注；失败不影响主流程（调用方 best-effort）。
+    pub async fn update_merchant_notes(
+        &self,
+        access_token: &str,
+        order_id: &str,
+        merchant_notes: &str,
+    ) -> AppResult<WechatRawCall> {
+        self.post_order_raw(
+            ORDER_MERCHANT_NOTES_URL,
+            access_token,
+            &serde_json::json!({ "order_id": order_id, "merchant_notes": merchant_notes }),
+        )
+        .await
+    }
+
+    /// 延长虚拟号有效期（virtualnumber/delay）。注意官方语义：order/get 的
+    /// tel_number_ext_info.has_delay_times 是「已延期次数」（非剩余次数），
+    /// 剩余可延次数以本接口返回的 available_extend_num 为准；每单可延次数有限。
+    pub async fn delay_virtual_tel_number(
+        &self,
+        access_token: &str,
+        order_id: &str,
+    ) -> AppResult<WechatRawCall> {
+        self.post_order_raw(
+            ORDER_VIRTUAL_TEL_DELAY_URL,
+            access_token,
+            &serde_json::json!({ "order_id": order_id }),
+        )
+        .await
     }
 
     pub async fn get_aftersale_list(

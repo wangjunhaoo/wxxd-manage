@@ -9,6 +9,8 @@ export type DashboardSummary = {
   now_shanghai: string;
   last_order_sync_at: string | null;
   last_publish_summary: string | null;
+  /** 订单 driver 最近一次 tick 完成时间（超过 90 秒未更新视为停摆） */
+  order_driver_heartbeat_at: string | null;
 };
 
 export type ShopGroup = {
@@ -568,6 +570,12 @@ export type PurchaseTaskView = {
   supplier_deliver_type: number | null;
   supplier_shipped_at: string | null;
   error_summary: string | null;
+  /** 已在上游下单时间（双节点：null=待采购队列，非 null=待回运单队列） */
+  purchased_at: string | null;
+  /** 解密地址是否可用（完整地址用 get_decoded_order_address 取） */
+  has_decoded_address: boolean;
+  /** 解密地址省市区摘要 */
+  decoded_region: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -843,6 +851,13 @@ export type OrderManagementView = {
   order_created_at: number | null;
   order_updated_at: number | null;
   updated_at: string | null;
+  /** 协商/时效镜像（三期工作台角标）：改址审核中、换SKU 状态（3=待处理）、最晚发货时间 */
+  address_under_review: boolean;
+  change_sku_state: number | null;
+  delivery_deadline: number | null;
+  /** 买家留言 / 商家备注（详情回刷镜像） */
+  customer_notes: string | null;
+  merchant_notes: string | null;
   items: OrderManagementItemView[];
 };
 
@@ -853,6 +868,8 @@ export type OrderManagementListResult = {
 
 export type DeliverySettings = {
   auto_send_delivery: boolean;
+  /** 多运单拆包发货（三期）：开 = 多供应商物流自动拆包聚合提交 */
+  multi_package_enabled: boolean;
 };
 
 export type DeliveryCompanyView = {
@@ -988,14 +1005,6 @@ export type CollectionPublishWorkspaceResetResult = {
   message: string;
 };
 
-export type ShipmentRecordResult = {
-  shipment_id: string;
-  order_id: string;
-  status: string;
-  auto_send_enabled: boolean;
-  message: string;
-};
-
 export type ShipmentView = {
   id: string;
   order_id: string;
@@ -1009,9 +1018,28 @@ export type ShipmentView = {
   status: string;
   error_code: string | null;
   error_summary: string | null;
+  /** 发货守卫拦截原因（status=blocked 时非空，条件解除后自动恢复提交） */
+  blocked_reason: string | null;
   submitted_at: string | null;
   created_at: string;
   updated_at: string;
+};
+
+/** 改运单结果（≤3 次，本地计数前移拦截） */
+export type DeliveryChangeResult = {
+  order_id: string;
+  wechat_order_id: string;
+  mode: string;
+  delivery_change_count: number;
+  message: string;
+};
+
+/** 补发结果（≤10 个补发包裹） */
+export type CompensateDeliveryResult = {
+  order_id: string;
+  wechat_order_id: string;
+  compensation_count: number;
+  message: string;
 };
 
 export type ShipmentListResult = {
@@ -1031,6 +1059,8 @@ export type DeliverySubmitBatchResult = {
   processed_shipments: number;
   submitted_shipments: number;
   failed_shipments: number;
+  /** 被发货前置守卫拦截的物流单数 */
+  blocked_shipments: number;
 };
 
 export type OperationalAutomationSettings = {
@@ -1042,6 +1072,84 @@ export type OperationalAutomationSettings = {
   /** 铺货自动化总开关：driver 与运营自动化的铺货全链路整体开/关 */
   publish_enabled: boolean;
   price_confirm_enabled: boolean;
+  /** 订单自动化 L1 总开关（30s 订单 driver；默认关闭灰度） */
+  order_automation_enabled: boolean;
+  /** 改址/换SKU 申请扫描 */
+  negotiation_scan_enabled: boolean;
+  /** 收货地址自动解密 */
+  address_decode_enabled: boolean;
+};
+
+// ===== 订单履约二期：申请收件箱 / 地址解密 / 采购双节点 =====
+
+export type OrderRequestView = {
+  id: string;
+  shop_id: string;
+  shop_name: string;
+  order_id: string | null;
+  wechat_order_id: string;
+  kind: string;
+  state: string;
+  deadline_at: number | null;
+  payload_json: string | null;
+  resolution: string | null;
+  resolved_at: string | null;
+  created_at: string;
+  updated_at: string;
+  /** 该订单未取消的采购任务数（>0 时改址默认建议拒绝） */
+  purchase_task_count: number;
+};
+
+export type OrderRequestListResult = {
+  items: OrderRequestView[];
+  total: number;
+};
+
+export type NegotiationScanResult = {
+  task_id: string;
+  processed_shops: number;
+  address_requests: number;
+  sku_requests: number;
+  reconciled_requests: number;
+  failed_shops: number;
+};
+
+export type AddressDecodeBatchResult = {
+  task_id: string;
+  processed_orders: number;
+  decoded_orders: number;
+  skipped_orders: number;
+  failed_orders: number;
+  circuit_open: boolean;
+};
+
+export type DecodedOrderAddressView = {
+  order_id: string;
+  wechat_order_id: string;
+  user_name: string | null;
+  tel_number: string | null;
+  detail_info: string | null;
+  province: string | null;
+  city: string | null;
+  county: string | null;
+  virtual_number: string | null;
+  virtual_extension: string | null;
+  virtual_expiration: number | null;
+  decode_error: string | null;
+  decode_skip_reason: string | null;
+  decoded_at: string | null;
+};
+
+export type OrderRequestDecisionResult = {
+  request_id: string;
+  kind: string;
+  state: string;
+  message: string;
+};
+
+export type PurchaseTaskPurchasedResult = {
+  task_id: string;
+  purchased_at: string | null;
 };
 
 export type AutomationStepError = {

@@ -21,22 +21,45 @@ pub(in crate::commands) fn load_order_sync_shops(
     Ok(shops)
 }
 
+/// 详情回刷候选（订单履约重设计 §3.3）——替换旧的「detail_synced_at IS NULL 拉一次就永不重拉」。
+/// 四档优先级：
+///   0 新单（详情从未拉过）
+///   1 增量同步命中的脏单（detail_dirty=1，含取消/改价/退款等一切 update_time 变化）
+///   2 发货前敏感单 30 分钟回刷（改址 12h 自动同意、换SKU 有 ddl，风险集中在发货前）
+///   3 其余非终态单 6 小时安全网
+/// 终态单（completed/cancelled）只会经 0/1 档最后回刷一次锁定最终金额，之后不再进入候选。
 pub(in crate::commands) fn load_order_detail_sync_items(
     conn: &Connection,
     limit: i64,
 ) -> AppResult<Vec<OrderDetailSyncItem>> {
+    let sensitive_cutoff = format_shanghai(Utc::now() - Duration::minutes(30));
+    let stale_cutoff = format_shanghai(Utc::now() - Duration::hours(6));
     let mut stmt = conn.prepare(
-        "SELECT id, shop_id, wechat_order_id
+        "SELECT id, shop_id, wechat_order_id,
+           CASE
+             WHEN detail_synced_at IS NULL OR detail_synced_at = '' THEN 0
+             WHEN detail_dirty = 1 THEN 1
+             WHEN status IN ('pending_shipment', 'pending_purchase', 'supplier_shipped',
+                             'partially_shipped', 'shipping_submitted', 'exception')
+                  AND detail_synced_at < ?1 THEN 2
+             ELSE 3
+           END AS priority
          FROM orders
          WHERE wechat_order_id IS NOT NULL
            AND shop_id IS NOT NULL
-           AND status IN ('unpaid', 'pending_shipment', 'synced', 'pending_purchase')
-           AND (detail_synced_at IS NULL OR detail_synced_at = '')
-         ORDER BY synced_at ASC, created_at ASC
-         LIMIT ?1",
+           AND (
+             (detail_synced_at IS NULL OR detail_synced_at = '')
+             OR detail_dirty = 1
+             OR (status IN ('pending_shipment', 'pending_purchase', 'supplier_shipped',
+                            'partially_shipped', 'shipping_submitted', 'exception')
+                 AND detail_synced_at < ?1)
+             OR (status NOT IN ('completed', 'cancelled') AND detail_synced_at < ?2)
+           )
+         ORDER BY priority ASC, COALESCE(detail_synced_at, '') ASC, synced_at ASC, created_at ASC
+         LIMIT ?3",
     )?;
     let items = stmt
-        .query_map([limit], |row| {
+        .query_map(params![sensitive_cutoff, stale_cutoff, limit], |row| {
             Ok(OrderDetailSyncItem {
                 order_id: row.get(0)?,
                 shop_id: row.get(1)?,
@@ -560,12 +583,18 @@ pub(in crate::commands) fn load_purchase_task_views(
            pt.supplier_deliver_type,
            pt.supplier_shipped_at,
            pt.error_summary,
+           pt.purchased_at,
+           CASE WHEN d.decoded_at IS NOT NULL THEN 1 ELSE 0 END,
+           CASE WHEN d.decoded_at IS NOT NULL
+                THEN TRIM(COALESCE(d.province, '') || ' ' || COALESCE(d.city, '') || ' ' || COALESCE(d.county, ''))
+                ELSE NULL END,
            pt.created_at,
            pt.updated_at
          FROM purchase_tasks pt
          JOIN orders o ON o.id = pt.order_id
          JOIN order_items oi ON oi.id = pt.order_item_id
          LEFT JOIN shops s ON s.id = pt.shop_id
+         LEFT JOIN order_decoded_addresses d ON d.order_id = pt.order_id
          {}
          ORDER BY pt.created_at DESC
          LIMIT ?{}",
@@ -603,8 +632,13 @@ pub(in crate::commands) fn load_purchase_task_views(
             supplier_deliver_type: row.get(21)?,
             supplier_shipped_at: row.get(22)?,
             error_summary: row.get(23)?,
-            created_at: row.get(24)?,
-            updated_at: row.get(25)?,
+            purchased_at: row.get(24)?,
+            has_decoded_address: row.get::<_, i64>(25)? == 1,
+            decoded_region: row
+                .get::<_, Option<String>>(26)?
+                .filter(|value| !value.trim().is_empty()),
+            created_at: row.get(27)?,
+            updated_at: row.get(28)?,
         })
     };
     let rows = if let Some(status) = status {
@@ -1254,6 +1288,34 @@ pub(in crate::commands) fn upsert_notification(
     Ok(())
 }
 
+/// 国内常用快递公司白名单（微信 delivery_id），按常用程度排序。
+/// 微信接口会返回全球 1500+ 家快递公司且无国内/国际标志，
+/// 业务只做国内代发，故读取时按此名单过滤（库中仍保留全量原始数据）。
+const DOMESTIC_DELIVERY_IDS: &[&str] = &[
+    "SF",    // 顺丰速运
+    "ZTO",   // 中通快递
+    "YTO",   // 圆通速递
+    "STO",   // 申通快递
+    "YUNDA", // 韵达速递
+    "JTSD",  // 极兔速递
+    "JD",    // 京东快递
+    "EMS",   // 中国邮政
+    "YZPY",  // 邮政快递包裹
+    "YZBK",  // 邮政国内标快
+    "CNSD",  // 菜鸟速递(丹鸟)
+    "DNWL",  // 丹鸟物流
+    "DBKD",  // 德邦快递
+    "KYSY",  // 跨越速运
+    "ZJS",   // 宅急送
+    "SXJD",  // 顺心捷达
+    "ZTOKY", // 中通快运
+    "YDKY",  // 韵达快运
+    "JDKY",  // 京东快运
+    "FWX",   // 丰网速运
+    "SURE",  // 速尔快递
+    "UC",    // 优速快递
+];
+
 pub(in crate::commands) fn load_delivery_company_views(
     conn: &Connection,
     shop_id: Option<&str>,
@@ -1269,13 +1331,20 @@ pub(in crate::commands) fn load_delivery_company_views(
          ORDER BY delivery_name ASC, delivery_id ASC"
     };
     let mut stmt = conn.prepare(sql)?;
-    let rows = if let Some(shop_id) = shop_id {
+    let mut rows = if let Some(shop_id) = shop_id {
         stmt.query_map([shop_id], delivery_company_from_row)?
             .collect::<Result<Vec<_>, _>>()?
     } else {
         stmt.query_map([], delivery_company_from_row)?
             .collect::<Result<Vec<_>, _>>()?
     };
+    rows.retain(|company| DOMESTIC_DELIVERY_IDS.contains(&company.delivery_id.as_str()));
+    rows.sort_by_key(|company| {
+        DOMESTIC_DELIVERY_IDS
+            .iter()
+            .position(|id| *id == company.delivery_id)
+            .unwrap_or(usize::MAX)
+    });
     Ok(rows)
 }
 

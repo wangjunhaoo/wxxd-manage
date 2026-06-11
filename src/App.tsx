@@ -12,7 +12,7 @@ import ProcurementSection from "./components/sections/ProcurementSection";
 import PriceUpdateSection from "./components/sections/PriceUpdateSection";
 import OperationsExceptionsSection from "./components/sections/OperationsExceptionsSection";
 import OperationsAnalyticsSection from "./components/sections/OperationsAnalyticsSection";
-import AgentSkillsSection from "./components/sections/AgentSkillsSection";
+import AiActivitySection from "./components/sections/AiActivitySection";
 import SystemSettingsSection from "./components/sections/SystemSettingsSection";
 
 export default function App() {
@@ -28,7 +28,7 @@ export default function App() {
       {section === "price" && <PriceUpdateSection />}
       {section === "exceptions" && <OperationsExceptionsSection />}
       {section === "analytics" && <OperationsAnalyticsSection />}
-      {section === "skills" && <AgentSkillsSection />}
+      {section === "skills" && <AiActivitySection />}
       {section === "settings" && <SystemSettingsSection />}
     </AppShell>
   );

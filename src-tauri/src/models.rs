@@ -12,6 +12,8 @@ pub struct DashboardSummary {
     pub now_shanghai: String,
     pub last_order_sync_at: Option<String>,
     pub last_publish_summary: Option<String>,
+    /// 订单 driver 最近一次 tick 完成时间（写在 tick 结尾；超过 90s 未更新视为停摆）
+    pub order_driver_heartbeat_at: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -469,6 +471,10 @@ pub struct AgentRunEventView {
     pub created_at: String,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct OperationalAutomationSettings {
     pub order_sync_enabled: bool,
@@ -479,6 +485,157 @@ pub struct OperationalAutomationSettings {
     /// 铺货自动化总开关：driver 与运营自动化的铺货 7 阶段整体开/关
     pub publish_enabled: bool,
     pub price_confirm_enabled: bool,
+    /// 订单自动化 L1 总开关（30s 订单 driver；默认关闭灰度上线，关=driver 空转回到全人工形态）
+    #[serde(default)]
+    pub order_automation_enabled: bool,
+    /// 改址/换SKU 申请扫描（漏掉会错发，建议常开）
+    #[serde(default = "default_true")]
+    pub negotiation_scan_enabled: bool,
+    /// 收货地址自动解密（订单进入待采购时解密落加密专表）
+    #[serde(default = "default_true")]
+    pub address_decode_enabled: bool,
+}
+
+// ===== 订单履约二期：申请收件箱 / 地址解密 / 采购双节点 =====
+
+#[derive(Debug, Serialize)]
+pub struct OrderRequestView {
+    pub id: String,
+    pub shop_id: String,
+    pub shop_name: String,
+    pub order_id: Option<String>,
+    pub wechat_order_id: String,
+    pub kind: String,
+    pub state: String,
+    pub deadline_at: Option<i64>,
+    pub payload_json: Option<String>,
+    pub resolution: Option<String>,
+    pub resolved_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    /// 该订单未取消的采购任务数（>0 时改址申请默认建议拒绝）
+    pub purchase_task_count: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OrderRequestListResult {
+    pub items: Vec<OrderRequestView>,
+    pub total: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct NegotiationScanResult {
+    pub task_id: String,
+    pub processed_shops: i64,
+    pub address_requests: i64,
+    pub sku_requests: i64,
+    pub reconciled_requests: i64,
+    pub failed_shops: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AddressDecodeBatchResult {
+    pub task_id: String,
+    pub processed_orders: i64,
+    pub decoded_orders: i64,
+    pub skipped_orders: i64,
+    pub failed_orders: i64,
+    /// 当日解密额度熔断中（次日 0 点自动恢复）
+    pub circuit_open: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DecodedOrderAddressView {
+    pub order_id: String,
+    pub wechat_order_id: String,
+    pub user_name: Option<String>,
+    pub tel_number: Option<String>,
+    pub detail_info: Option<String>,
+    pub province: Option<String>,
+    pub city: Option<String>,
+    pub county: Option<String>,
+    pub virtual_number: Option<String>,
+    pub virtual_extension: Option<String>,
+    pub virtual_expiration: Option<i64>,
+    pub decode_error: Option<String>,
+    pub decode_skip_reason: Option<String>,
+    pub decoded_at: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OrderRequestDecisionResult {
+    pub request_id: String,
+    pub kind: String,
+    pub state: String,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PurchaseTaskPurchasedResult {
+    pub task_id: String,
+    pub purchased_at: Option<String>,
+}
+
+/// 改运单请求（订单履约三期）：old_waybill_id 给出时走包裹级 change_infos 模式，
+/// 否则走整单 delivery_list 模式（官方约束：拆单发货的订单不支持整单模式）。
+#[derive(Debug, Deserialize)]
+pub struct DeliveryChangeRequest {
+    pub order_id: String,
+    pub old_delivery_id: Option<String>,
+    pub old_waybill_id: Option<String>,
+    pub delivery_id: String,
+    pub delivery_name: Option<String>,
+    pub waybill_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeliveryChangeResult {
+    pub order_id: String,
+    pub wechat_order_id: String,
+    pub mode: String,
+    pub delivery_change_count: i64,
+    pub message: String,
+}
+
+/// 补发请求（订单履约三期）：reason 官方枚举 1漏发/2拆包/3坏损/4赠品；
+/// product_infos 不传时默认整单商品（官方前置要求 SKU 已全部发货）。
+#[derive(Debug, Deserialize)]
+pub struct CompensateDeliveryRequest {
+    pub order_id: String,
+    pub delivery_id: String,
+    pub delivery_name: Option<String>,
+    pub waybill_id: String,
+    pub reason: i64,
+    pub product_infos: Option<Vec<CompensateProductInfo>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CompensateProductInfo {
+    pub product_id: String,
+    pub sku_id: String,
+    pub product_cnt: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CompensateDeliveryResult {
+    pub order_id: String,
+    pub wechat_order_id: String,
+    pub compensation_count: i64,
+    pub message: String,
+}
+
+/// 虚拟号保活巡检结果（driver 每日一次：过期前 7 天窗口自动延期）
+#[derive(Debug, Serialize)]
+pub struct VirtualTelDelayScanResult {
+    pub scanned_orders: i64,
+    pub delayed_orders: i64,
+    pub failed_orders: i64,
+}
+
+/// 解密地址明文 GC 结果（driver 每日一次：终态 30 天后清密文，保留审计行）
+#[derive(Debug, Serialize)]
+pub struct DecodedAddressGcResult {
+    pub purged_addresses: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -794,6 +951,12 @@ pub struct PurchaseTaskView {
     pub supplier_deliver_type: Option<i64>,
     pub supplier_shipped_at: Option<String>,
     pub error_summary: Option<String>,
+    /// 已在上游下单的时间（双节点：NULL=待采购队列，非 NULL=待回运单队列）
+    pub purchased_at: Option<String>,
+    /// 解密地址是否可用（行内展示完整地址用 get_decoded_order_address 取）
+    pub has_decoded_address: bool,
+    /// 解密地址的省市区摘要（明文部分，展示分组用）
+    pub decoded_region: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -1243,6 +1406,13 @@ pub struct OrderManagementView {
     pub order_created_at: Option<i64>,
     pub order_updated_at: Option<i64>,
     pub updated_at: Option<String>,
+    /// 协商/时效镜像（三期工作台）：改址审核中、换SKU 状态（3=待处理）、最晚发货时间
+    pub address_under_review: bool,
+    pub change_sku_state: Option<i64>,
+    pub delivery_deadline: Option<i64>,
+    /// 买家留言 / 商家备注（详情回刷镜像）
+    pub customer_notes: Option<String>,
+    pub merchant_notes: Option<String>,
     pub items: Vec<OrderManagementItemView>,
 }
 
@@ -1581,6 +1751,7 @@ pub struct ShipmentView {
     pub status: String,
     pub error_code: Option<String>,
     pub error_summary: Option<String>,
+    pub blocked_reason: Option<String>,
     pub submitted_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -1597,6 +1768,8 @@ pub struct ShipmentRetryResult {
 #[derive(Debug, Serialize)]
 pub struct DeliverySettings {
     pub auto_send_delivery: bool,
+    /// 多运单拆包发货（三期）：开 = 多供应商物流自动拆包聚合提交；关 = 保持人工确认整单
+    pub multi_package_enabled: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -1621,6 +1794,9 @@ pub struct DeliverySubmitBatchResult {
     pub processed_shipments: i64,
     pub submitted_shipments: i64,
     pub failed_shipments: i64,
+    /// 被发货前置守卫拦截的物流单数（有改址/换SKU/售后在途，错误码前移不盲调 API）
+    #[serde(default)]
+    pub blocked_shipments: i64,
 }
 
 #[derive(Debug, Serialize)]

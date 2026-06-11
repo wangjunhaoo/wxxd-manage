@@ -121,6 +121,30 @@ export default function TasksSection() {
           {/* 自动化开关条 */}
           <div className="automation-switches" style={{ display: "flex", flexWrap: "wrap", gap: "12px 24px", marginBottom: result ? 12 : 0 }}>
             <Switch
+              checked={ctx.automationSettings.value.order_automation_enabled}
+              label="订单自动化（后台30秒推进）"
+              onChange={(v) => {
+                ctx.automationSettings.value.order_automation_enabled = v;
+                ctx.saveAutomationSettings();
+              }}
+            />
+            <Switch
+              checked={ctx.automationSettings.value.negotiation_scan_enabled}
+              label="改址/换SKU申请扫描"
+              onChange={(v) => {
+                ctx.automationSettings.value.negotiation_scan_enabled = v;
+                ctx.saveAutomationSettings();
+              }}
+            />
+            <Switch
+              checked={ctx.automationSettings.value.address_decode_enabled}
+              label="收货地址解密"
+              onChange={(v) => {
+                ctx.automationSettings.value.address_decode_enabled = v;
+                ctx.saveAutomationSettings();
+              }}
+            />
+            <Switch
               checked={ctx.automationSettings.value.order_sync_enabled}
               label="同步订单"
               onChange={(v) => {

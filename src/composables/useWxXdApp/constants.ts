@@ -10,7 +10,28 @@ export const defaultAutomationSettings = (): OperationalAutomationSettings => ({
   delivery_submission_enabled: true,
   publish_enabled: true,
   price_confirm_enabled: true,
+  // 订单自动化 L1 总开关默认关闭（灰度），打开后 30s 订单 driver 自动推进全链路
+  order_automation_enabled: false,
+  negotiation_scan_enabled: true,
+  address_decode_enabled: true,
 });
+
+/** 申请收件箱：类型与状态中文标签 */
+export const orderRequestKindLabels: Record<string, string> = {
+  address_change: "买家改址",
+  sku_change: "换SKU",
+  delivery_negotiation: "发货协商",
+  real_number: "真实号申请",
+};
+
+export const orderRequestStateLabels: Record<string, string> = {
+  pending: "待处理",
+  accepted: "已同意",
+  rejected: "已拒绝",
+  resolved_external: "已被外部定性",
+  user_cancelled: "买家已取消",
+  auto_timeout: "已超时",
+};
 
 export const defaultPublishPricingStrategy = (): PublishPricingStrategy => ({
   sale_price_markup_rate: 1.6,
@@ -175,6 +196,10 @@ export const statusTone: Record<string, string> = {
   ready_to_send: "primary",
   wechat_shipped: "success",
   send_failed: "danger",
+  blocked: "danger",
+  submitting: "primary",
+  partially_shipped: "warning",
+  shipping_submitted: "primary",
   aftersale_active: "danger",
   MERCHANT_PROCESSING: "warning",
   MERCHANT_REFUND_SUCCESS: "success",

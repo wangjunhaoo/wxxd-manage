@@ -805,6 +805,24 @@ pub fn record_purchase_task_shipment(
 
     let mut conn = open_connection(&app)?;
     let purchase = load_purchase_task_shipment_ref(&conn, purchase_task_id)?;
+    // 审查修复：已提交/已发货订单的回填会把 shipment 重置回待提交造成重复 send，
+    // 守卫前移——改运单走「改运单」流程，补寄走「补发」流程
+    let order_status: String = conn.query_row(
+        "SELECT status FROM orders WHERE id = ?1",
+        [purchase.order.order_id.as_str()],
+        |row| row.get(0),
+    )?;
+    match order_status.as_str() {
+        "shipping_submitted" | "wechat_shipped" | "completed" => {
+            return Err(AppError::Validation(
+                "订单已提交微信发货，不能重复回填物流；修改运单请到待发货队列使用「改运单」，漏发补寄请使用「补发」".to_string(),
+            ));
+        }
+        "cancelled" => {
+            return Err(AppError::Validation("订单已取消，无需回填物流".to_string()));
+        }
+        _ => {}
+    }
     let fields = normalize_shipment_fields(
         request.deliver_type,
         request.delivery_id.as_deref(),
@@ -873,6 +891,20 @@ pub fn record_purchase_task_shipment(
     let distinct_logistics =
         count_distinct_order_purchase_logistics(&tx, &purchase.order.order_id)?;
     if distinct_logistics > 1 {
+        // 三期：多运单拆包开关开启时自动拆为多包裹（一次 send 多元素 delivery_list），不再卡人工
+        if get_bool_setting(&tx, MULTI_PACKAGE_SETTING, false)? {
+            let multi = upsert_order_shipments_multi(&tx, &purchase.order)?;
+            tx.commit()?;
+            return Ok(PurchaseTaskShipmentResult {
+                purchase_task_id: purchase.purchase_task_id,
+                order_id: purchase.order.order_id,
+                purchase_status: "supplier_shipped".to_string(),
+                shipment_id: None,
+                shipment_status: Some(multi.status),
+                auto_send_enabled: multi.auto_send_enabled,
+                message: multi.message,
+            });
+        }
         upsert_notification(
             &tx,
             "warning",

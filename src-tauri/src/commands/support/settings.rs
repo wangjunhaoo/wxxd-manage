@@ -224,6 +224,10 @@ pub(in crate::commands) fn default_automation_settings() -> OperationalAutomatio
         delivery_submission_enabled: true,
         publish_enabled: true,
         price_confirm_enabled: true,
+        // L1 总开关默认关闭：灰度上线，打开后订单 driver 才开始自动推进
+        order_automation_enabled: false,
+        negotiation_scan_enabled: true,
+        address_decode_enabled: true,
     }
 }
 
@@ -267,6 +271,21 @@ pub(in crate::commands) fn load_automation_settings(
             AUTOMATION_PRICE_CONFIRM_SETTING,
             defaults.price_confirm_enabled,
         )?,
+        order_automation_enabled: get_bool_setting(
+            conn,
+            AUTOMATION_ORDER_DRIVER_SETTING,
+            defaults.order_automation_enabled,
+        )?,
+        negotiation_scan_enabled: get_bool_setting(
+            conn,
+            AUTOMATION_NEGOTIATION_SCAN_SETTING,
+            defaults.negotiation_scan_enabled,
+        )?,
+        address_decode_enabled: get_bool_setting(
+            conn,
+            AUTOMATION_ADDRESS_DECODE_SETTING,
+            defaults.address_decode_enabled,
+        )?,
     })
 }
 
@@ -308,6 +327,21 @@ pub(in crate::commands) fn save_automation_settings(
         conn,
         AUTOMATION_PRICE_CONFIRM_SETTING,
         settings.price_confirm_enabled,
+    )?;
+    set_bool_setting(
+        conn,
+        AUTOMATION_ORDER_DRIVER_SETTING,
+        settings.order_automation_enabled,
+    )?;
+    set_bool_setting(
+        conn,
+        AUTOMATION_NEGOTIATION_SCAN_SETTING,
+        settings.negotiation_scan_enabled,
+    )?;
+    set_bool_setting(
+        conn,
+        AUTOMATION_ADDRESS_DECODE_SETTING,
+        settings.address_decode_enabled,
     )?;
     Ok(())
 }

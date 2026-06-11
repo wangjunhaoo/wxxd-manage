@@ -9,6 +9,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             storage::initialize(&app.handle())?;
             if let Err(error) = commands::run_startup_database_backup(app.handle().clone()) {
@@ -16,6 +17,7 @@ pub fn run() {
             }
             commands::trigger_collection_worker(app.handle().clone());
             commands::start_pipeline_driver(app.handle().clone());
+            commands::start_order_driver(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -61,6 +63,17 @@ pub fn run() {
             commands::run_operational_automation_once,
             commands::run_order_sync_once,
             commands::run_order_detail_sync_once,
+            commands::run_order_negotiation_scan_once,
+            commands::run_address_decode_once,
+            commands::decode_order_address,
+            commands::get_decoded_order_address,
+            commands::list_order_requests,
+            commands::decide_order_request,
+            commands::mark_purchase_task_purchased,
+            commands::change_shipment_delivery_info,
+            commands::compensate_order_delivery,
+            commands::run_virtual_number_delay_scan_once,
+            commands::run_decoded_address_gc_once,
             commands::list_aftersales,
             commands::list_aftersale_evidence,
             commands::record_aftersale_evidence,
@@ -97,6 +110,7 @@ pub fn run() {
             commands::list_delivery_companies,
             commands::sync_delivery_companies,
             commands::set_auto_send_delivery,
+            commands::set_multi_package_enabled,
             commands::record_order_shipment,
             commands::list_delivery_shipments,
             commands::retry_delivery_shipment,

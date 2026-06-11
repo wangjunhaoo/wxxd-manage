@@ -2,12 +2,23 @@
    今日工作台（workbench）—— Soft 居中英雄 + 4 KPI 磁贴 + 3 待办泳道 + 最近提醒
    忠实保留真实 IA（先铺货→采购→改价），套用 Soft 视觉。
    ============================================================================ */
+import { useEffect } from "react";
 import { useApp } from "../../runtime/AppContext";
 import { Tile, Pill, Button } from "../primitives";
 
 export default function OperationsDashboardSection() {
   const ctx = useApp();
   const d = ctx.dashboard.value;
+
+  // 心跳灯需要持续刷新才有监控意义（driver 停摆后快照冻结会让绿灯永远亮着）：
+  // 每 30 秒轻量刷新 get_dashboard，仅在本页挂载期间运行
+  useEffect(() => {
+    const timer = setInterval(() => {
+      void ctx.refreshDashboardOnly();
+    }, 30_000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ---- 本地派生计数 ----
   const collections = ctx.collectionTasks.value;
@@ -41,6 +52,26 @@ export default function OperationsDashboardSection() {
 
   const salesTotals = ctx.productSalesAnalysisTotals.value;
   const latestNotifications = ctx.notifications.value.slice(0, 5);
+
+  // ---- 订单 driver 心跳灯 ----
+  // 阈值 300s = 两轮 tick 上限（单 tick 120s + 30s sleep）×2：心跳写在 tick 结尾，
+  // 首轮全步骤/凌晨补漏等合法繁忙 tick 可超 60s，阈值过低会狼来了式误报「已停摆」
+  const orderDriverEnabled =
+    ctx.automationSettings.value.order_automation_enabled;
+  const heartbeatAt = d?.order_driver_heartbeat_at ?? null;
+  const heartbeatFresh = (() => {
+    if (!heartbeatAt || !d?.now_shanghai) return false;
+    const beat = Date.parse(heartbeatAt);
+    const now = Date.parse(d.now_shanghai);
+    return Number.isFinite(beat) && Number.isFinite(now) && now - beat < 300_000;
+  })();
+  const driverPill: { tone: string; text: string } = !heartbeatAt
+    ? { tone: "info", text: "订单 driver · 未启动" }
+    : !heartbeatFresh
+      ? { tone: "danger", text: "订单 driver · 已停摆（心跳超时）" }
+      : orderDriverEnabled
+        ? { tone: "success", text: "订单自动化 · 运行中" }
+        : { tone: "info", text: "订单自动化 · 已关闭（driver 待命）" };
 
   // ---- 导航助手 ----
   const showSection = (s: string) => {
@@ -93,6 +124,24 @@ export default function OperationsDashboardSection() {
             <Button icon="refresh" onClick={() => ctx.refreshAll()}>
               刷新数据
             </Button>
+          </div>
+          {/* 驾驶舱条：订单 driver 心跳 + 最近一次跳动时间（关机盲区可视化） */}
+          <div
+            style={{
+              display: "flex",
+              gap: 8,
+              justifyContent: "center",
+              alignItems: "center",
+              marginBottom: 24,
+              flexWrap: "wrap",
+            }}
+          >
+            <Pill tone={driverPill.tone}>{driverPill.text}</Pill>
+            {heartbeatAt && (
+              <span className="text-muted" style={{ fontSize: 12 }}>
+                上次心跳 {ctx.formatDateTime(heartbeatAt)}
+              </span>
+            )}
           </div>
         </div>
 

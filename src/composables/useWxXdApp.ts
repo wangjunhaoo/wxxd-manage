@@ -28,6 +28,13 @@ import type {
   OrderPriceAdjustmentJobView,
   OrderSyncBatchResult,
   OrderDetailSyncBatchResult,
+  OrderRequestView,
+  OrderRequestListResult,
+  OrderRequestDecisionResult,
+  NegotiationScanResult,
+  AddressDecodeBatchResult,
+  DecodedOrderAddressView,
+  PurchaseTaskPurchasedResult,
   AftersaleSyncBatchResult,
   AftersaleView,
   AftersaleListResult,
@@ -70,6 +77,8 @@ import type {
   OrderManagementView,
   OrderManagementListResult,
   OrderProfitAdjustmentResult,
+  CompensateDeliveryResult,
+  DeliveryChangeResult,
   DeliverySettings,
   DeliveryCompanyView,
   DeliveryCompanySyncResult,
@@ -86,7 +95,6 @@ import type {
   BackupCreateResult,
   BackupRestoreResult,
   CollectionPublishWorkspaceResetResult,
-  ShipmentRecordResult,
   ShipmentView,
   ShipmentListResult,
   ShipmentRetryResult,
@@ -214,6 +222,10 @@ export function useWxXdApp() {
   const orderManagementStatusFilter = ref("all");
   const orderManagementShopFilter = ref("all");
   const orderManagementKeyword = ref("");
+  // 申请收件箱（改址/换SKU 等待办）
+  const orderRequests = ref<OrderRequestView[]>([]);
+  const orderRequestTotal = ref(0);
+  const orderRequestStateFilter = ref("pending");
   const inventoryRisks = ref<InventoryRiskView[]>([]);
   const inventoryRiskTotal = ref(0);
   const inventoryRiskStatusFilter = ref("all");
@@ -259,7 +271,10 @@ export function useWxXdApp() {
   );
   const automationRunning = ref(false);
   const lastAutomationResult = ref<OperationalAutomationRunResult | null>(null);
-  const deliverySettings = ref<DeliverySettings>({ auto_send_delivery: false });
+  const deliverySettings = ref<DeliverySettings>({
+    auto_send_delivery: false,
+    multi_package_enabled: false,
+  });
   const deliveryCompanies = ref<DeliveryCompanyView[]>([]);
   const deliveryShipments = ref<ShipmentView[]>([]);
   const deliveryShipmentTotal = ref(0);
@@ -679,18 +694,10 @@ export function useWxXdApp() {
     app_secret: "",
     group_id: "group-default",
   });
-  const shipmentForm = reactive({
-    order_id: "",
-    shop_id: "shop-preview",
-    wechat_order_id: "",
-    delivery_id: "SF",
-    waybill_id: "SF1234567890",
-    deliver_type: 1,
-  });
   const purchaseShipmentForm = reactive({
     purchase_task_id: "",
-    delivery_id: "SF",
-    waybill_id: "SF1234567890",
+    delivery_id: "",
+    waybill_id: "",
     deliver_type: 1,
     estimated_cost: "",
   });
@@ -851,9 +858,6 @@ export function useWxXdApp() {
       if (!shopForm.group_id && groups.value.length > 0) {
         shopForm.group_id = groups.value[0].id;
       }
-      if (!shipmentForm.shop_id && shops.value.length > 0) {
-        shipmentForm.shop_id = shops.value[0].id;
-      }
       if (
         (!selectedCategoryShopId.value ||
           !shops.value.some(
@@ -875,6 +879,7 @@ export function useWxXdApp() {
         refreshDeliveryShipments(),
         refreshOrderProfits(),
         refreshOrderManagementItems(),
+        refreshOrderRequests(),
         refreshInventoryRisks(),
         refreshProductSalesAnalysis(),
         refreshProductManagementItems(),
@@ -1279,7 +1284,16 @@ export function useWxXdApp() {
           `凭证验证失败：${result.errmsg || result.errcode || "未知错误"}`,
         );
       }
-      await refreshAll();
+      // 就地更新店铺行（shops 无单项刷新）：失败分支后端不清旧 token，不动到期时间
+      const target = shops.value.find((item) => item.id === result.shop_id);
+      if (target) {
+        target.status = result.status;
+        if (result.status === "active") {
+          target.token_expires_at = result.expires_at;
+        }
+      }
+      // dashboard 的异常店铺计数依赖 shops.status
+      await refreshDashboardOnly();
     } catch (error) {
       ElMessage.error(String(error));
     }
@@ -1327,10 +1341,14 @@ export function useWxXdApp() {
       );
       if (result.errcode === null) {
         ElMessage.success(`额度剩余：${result.remain ?? "-"}`);
+        // 就地更新额度展示（shops 无单项刷新）；失败时后端不写快照，无需更新
+        const target = shops.value.find((item) => item.id === shop.id);
+        if (target) {
+          target.last_quota_remain = result.remain ?? null;
+        }
       } else {
         ElMessage.error(`额度查询失败：${result.errmsg || result.errcode}`);
       }
-      await refreshAll();
     } catch (error) {
       ElMessage.error(String(error));
     }
@@ -1678,7 +1696,14 @@ export function useWxXdApp() {
       ElMessage.success("自动推进设置已保存");
     } catch (error) {
       ElMessage.error(String(error));
-      await refreshAll();
+      // 保存失败可能部分落库（10 个键非事务写入），回读数据库真实值做回滚
+      try {
+        automationSettings.value = await command<OperationalAutomationSettings>(
+          "get_automation_settings",
+        );
+      } catch {
+        // 回读也失败时保持现状，等下次 refreshAll 校正
+      }
     }
   }
 
@@ -1921,7 +1946,13 @@ export function useWxXdApp() {
           `待付款订单同步完成：店铺 ${result.processed_shops} 个，订单 ${result.synced_orders} 个，失败店铺 ${result.failed_shops} 个`,
         );
       }
-      await refreshAll();
+      // 精确刷新：增量同步只写 orders/notifications，影响利润与看板
+      await Promise.all([
+        refreshOrderManagementItems(),
+        refreshOrderProfits(),
+        refreshNotifications(),
+        refreshDashboardOnly(),
+      ]);
     } catch (error) {
       ElMessage.error(String(error));
     }
@@ -1940,7 +1971,185 @@ export function useWxXdApp() {
           `订单详情同步完成：订单 ${result.synced_orders} 个，订单项 ${result.created_items} 个，失败 ${result.failed_orders} 个`,
         );
       }
-      await refreshAll();
+      // 精确刷新：详情落库写 orders/order_items/purchase_tasks/notifications，
+      // 连带影响利润、库存预留与销售分析
+      await Promise.all([
+        refreshOrderManagementItems(),
+        refreshOrderProfits(),
+        refreshPurchaseTasks(),
+        refreshNotifications(),
+        refreshDashboardOnly(),
+        refreshProductSalesAnalysis(),
+        refreshInventoryRisks(),
+      ]);
+    } catch (error) {
+      ElMessage.error(String(error));
+    }
+  }
+
+  // ===== 订单履约二期：申请收件箱 / 地址解密 / 采购双节点 =====
+
+  async function refreshOrderRequests() {
+    const state = orderRequestStateFilter.value;
+    const result = await command<OrderRequestListResult>(
+      "list_order_requests",
+      {
+        state: state === "all" ? null : state,
+        limit: 200,
+      },
+    );
+    orderRequests.value = result.items;
+    orderRequestTotal.value = result.total;
+  }
+
+  async function runNegotiationScanOnce() {
+    try {
+      const result = await command<NegotiationScanResult>(
+        "run_order_negotiation_scan_once",
+        { pageSize: 100 },
+      );
+      ElMessage.success(
+        `申请扫描完成：改址 ${result.address_requests} 条、换SKU ${result.sku_requests} 条新申请，` +
+          `${result.reconciled_requests} 条已定性，失败店铺 ${result.failed_shops} 个`,
+      );
+      await Promise.all([refreshOrderRequests(), refreshNotifications()]);
+    } catch (error) {
+      ElMessage.error(String(error));
+    }
+  }
+
+  async function decideOrderRequest(request: OrderRequestView, approve: boolean) {
+    // 改址 + 已有采购任务 = 错发高危：同意前二次确认
+    if (
+      request.kind === "address_change" &&
+      approve &&
+      request.purchase_task_count > 0
+    ) {
+      try {
+        await ElMessageBox.confirm(
+          `该订单已生成 ${request.purchase_task_count} 个采购任务，同意改址后上游包裹可能仍发往旧地址造成错发。确认同意？`,
+          "高危操作确认",
+          { confirmButtonText: "仍然同意", cancelButtonText: "取消", type: "warning" },
+        );
+      } catch {
+        return;
+      }
+    }
+    try {
+      const result = await command<OrderRequestDecisionResult>(
+        "decide_order_request",
+        { requestId: request.id, approve },
+      );
+      ElMessage.success(result.message);
+      await Promise.all([refreshOrderRequests(), refreshOrderManagementItems()]);
+    } catch (error) {
+      ElMessage.error(String(error));
+    }
+  }
+
+  async function markPurchaseTaskPurchased(taskId: string, purchased: boolean) {
+    try {
+      await command<PurchaseTaskPurchasedResult>(
+        "mark_purchase_task_purchased",
+        { taskId, purchased },
+      );
+      ElMessage.success(purchased ? "已标记为已下单（进入待回运单队列）" : "已取消下单标记");
+      await refreshPurchaseTasks();
+    } catch (error) {
+      ElMessage.error(String(error));
+    }
+  }
+
+  /** 写文本进系统剪贴板：Tauri 内 WKWebView 的 navigator.clipboard 受权限策略限制
+   *  （报 NotAllowedError），必须走 Tauri 剪贴板插件；浏览器预览保留 Web API。 */
+  async function copyTextToClipboard(text: string) {
+    if (isTauriRuntime) {
+      const { writeText } = await import("@tauri-apps/plugin-clipboard-manager");
+      await writeText(text);
+      return;
+    }
+    await navigator.clipboard.writeText(text);
+  }
+
+  /** 读取解密地址并复制到剪贴板（明文不落界面常驻状态）。
+   *  电话选取优先级（官方 decodesensitiveinfo 语义）：买家开启号码保护时
+   *  tel_number 只会是脱敏号（187****7735），可拨打的是虚拟号+分机号——
+   *  明文电话 > 虚拟号-分机号 > 脱敏号兜底。 */
+  async function copyDecodedAddress(orderId: string) {
+    try {
+      const view = await command<DecodedOrderAddressView>(
+        "get_decoded_order_address",
+        { orderId },
+      );
+      const telMasked = !!view.tel_number && view.tel_number.includes("*");
+      let phone = "";
+      let usedVirtual = false;
+      if (view.tel_number && !telMasked) {
+        phone = view.tel_number;
+      } else if (view.virtual_number) {
+        usedVirtual = true;
+        phone = view.virtual_extension
+          ? `${view.virtual_number}-${view.virtual_extension}`
+          : view.virtual_number;
+      } else {
+        phone = view.tel_number ?? "";
+      }
+      const text = [
+        view.user_name ?? "",
+        phone,
+        [view.province, view.city, view.county, view.detail_info]
+          .filter(Boolean)
+          .join(" "),
+      ]
+        .filter(Boolean)
+        .join("，");
+      await copyTextToClipboard(text);
+      if (usedVirtual) {
+        const expire = view.virtual_expiration
+          ? `，有效期至 ${formatUnixTime(view.virtual_expiration)}`
+          : "";
+        ElMessage.success(
+          `收货信息已复制（电话为微信虚拟号，分机号用“-”分隔，主叫需实名认证${expire}）：${text}`,
+        );
+      } else if (telMasked && !view.virtual_number) {
+        ElMessage.warning(
+          `已复制，但该订单电话仅有脱敏号且无虚拟号，请在微信小店后台核实联系方式：${text}`,
+        );
+      } else {
+        ElMessage.success(`收货信息已复制：${text}`);
+      }
+    } catch (error) {
+      ElMessage.error(String(error));
+    }
+  }
+
+  /** 手动解密单个订单（队列兜底按钮） */
+  async function decodeOrderAddressNow(orderId: string) {
+    try {
+      await command<DecodedOrderAddressView>("decode_order_address", {
+        orderId,
+      });
+      ElMessage.success("收货信息解密成功");
+      await refreshPurchaseTasks();
+    } catch (error) {
+      ElMessage.error(String(error));
+    }
+  }
+
+  async function runAddressDecodeOnce() {
+    try {
+      const result = await command<AddressDecodeBatchResult>(
+        "run_address_decode_once",
+        { limit: 10 },
+      );
+      if (result.circuit_open) {
+        ElMessage.warning("今日解密额度已熔断，可到微信商家后台申请临时额度，次日自动恢复");
+      } else {
+        ElMessage.success(
+          `地址解密完成：成功 ${result.decoded_orders}，跳过 ${result.skipped_orders}，失败 ${result.failed_orders}`,
+        );
+      }
+      await refreshPurchaseTasks();
     } catch (error) {
       ElMessage.error(String(error));
     }
@@ -2137,7 +2346,8 @@ export function useWxXdApp() {
         ElMessage.success(`售后拒绝原因已同步：${result.synced_reasons} 条`);
       }
       aftersaleActionForm.shop_id = shopId;
-      await refreshAll();
+      // 精确刷新：只写 aftersale_reject_reasons 表
+      await refreshAftersaleRejectReasons();
     } catch (error) {
       ElMessage.error(String(error));
     }
@@ -2475,7 +2685,18 @@ export function useWxXdApp() {
           `采购任务生成完成：处理 ${result.processed_items} 项，生成 ${result.created_tasks} 项，跳过 ${result.skipped_items} 项`,
         );
       }
-      await refreshAll();
+      // 精确刷新：生成采购任务写 purchase_tasks/orders/order_requests/notifications，
+      // 连带影响利润、销售分析与商品管理聚合
+      await Promise.all([
+        refreshPurchaseTasks(),
+        refreshNotifications(),
+        refreshOrderManagementItems(),
+        refreshDashboardOnly(),
+        refreshOrderProfits(),
+        refreshOrderRequests(),
+        refreshProductSalesAnalysis(),
+        refreshProductManagementItems(),
+      ]);
     } catch (error) {
       ElMessage.error(String(error));
     }
@@ -2558,7 +2779,18 @@ export function useWxXdApp() {
         await refreshAgentRuns();
       } else {
         ElMessage.success(`已写回 ${result.succeeded} 条供应商 agent 结果`);
-        await refreshAll();
+        // 精确刷新：批量写回等价于多次「保存物流/补货源」，覆盖采购/发货/订单域
+        await Promise.all([
+          refreshPurchaseTasks(),
+          refreshOrderManagementItems(),
+          refreshDeliveryShipments(),
+          refreshOrderProfits(),
+          refreshNotifications(),
+          refreshAgentRuns(),
+          refreshDashboardOnly(),
+          refreshInventoryRisks(),
+          refreshProductSalesAnalysis(),
+        ]);
       }
     } catch (error) {
       ElMessage.error(String(error));
@@ -2579,17 +2811,18 @@ export function useWxXdApp() {
     purchaseMappingForm.note = task.error_summary || "";
   }
 
-  async function resolvePurchaseTaskMapping() {
+  // 返回是否成功：采购弹窗据此决定提交后是否自动关闭
+  async function resolvePurchaseTaskMapping(): Promise<boolean> {
     if (!purchaseMappingForm.purchase_task_id.trim()) {
       ElMessage.warning("先选择或填写采购任务 ID");
-      return;
+      return false;
     }
     if (
       !purchaseMappingForm.external_product_id.trim() ||
       !purchaseMappingForm.external_sku_id.trim()
     ) {
       ElMessage.warning("外部商品 ID 和外部 SKU 必填");
-      return;
+      return false;
     }
     const estimatedCost = purchaseMappingForm.estimated_cost.trim()
       ? Number(purchaseMappingForm.estimated_cost)
@@ -2599,7 +2832,7 @@ export function useWxXdApp() {
       (!Number.isFinite(estimatedCost) || estimatedCost < 0)
     ) {
       ElMessage.warning("采购成本必须是非负数字");
-      return;
+      return false;
     }
     try {
       const result = await command<PurchaseTaskMappingResult>(
@@ -2624,25 +2857,23 @@ export function useWxXdApp() {
         refreshNotifications(),
         refreshDashboardOnly(),
       ]);
+      return true;
     } catch (error) {
       ElMessage.error(String(error));
+      return false;
     }
   }
 
   function selectPurchaseTaskShipment(task: PurchaseTaskView) {
+    // 无条件重填：任务没有的字段必须清空，否则上一个任务的运单号会残留串单
     purchaseShipmentForm.purchase_task_id = task.id;
-    if (task.supplier_delivery_id) {
-      purchaseShipmentForm.delivery_id = task.supplier_delivery_id;
-    }
-    if (task.supplier_waybill_id) {
-      purchaseShipmentForm.waybill_id = task.supplier_waybill_id;
-    }
-    if (task.supplier_deliver_type) {
-      purchaseShipmentForm.deliver_type = task.supplier_deliver_type;
-    }
-    if (task.estimated_cost !== null && task.estimated_cost !== undefined) {
-      purchaseShipmentForm.estimated_cost = String(task.estimated_cost);
-    }
+    purchaseShipmentForm.delivery_id = task.supplier_delivery_id || "";
+    purchaseShipmentForm.waybill_id = task.supplier_waybill_id || "";
+    purchaseShipmentForm.deliver_type = task.supplier_deliver_type || 1;
+    purchaseShipmentForm.estimated_cost =
+      task.estimated_cost !== null && task.estimated_cost !== undefined
+        ? String(task.estimated_cost)
+        : "";
   }
 
   function selectPurchaseTaskIssue(task: PurchaseTaskView) {
@@ -2661,10 +2892,11 @@ export function useWxXdApp() {
     purchaseIssueForm.note = task.error_summary || "";
   }
 
-  async function markPurchaseTaskIssue() {
+  // 返回是否成功：采购弹窗据此决定提交后是否自动关闭
+  async function markPurchaseTaskIssue(): Promise<boolean> {
     if (!purchaseIssueForm.purchase_task_id.trim()) {
       ElMessage.warning("先选择或填写采购任务 ID");
-      return;
+      return false;
     }
     try {
       const result = await command<PurchaseTaskIssueResult>(
@@ -2683,8 +2915,10 @@ export function useWxXdApp() {
         refreshNotifications(),
         refreshDashboardOnly(),
       ]);
+      return true;
     } catch (error) {
       ElMessage.error(String(error));
+      return false;
     }
   }
 
@@ -2723,10 +2957,11 @@ export function useWxXdApp() {
     }
   }
 
-  async function recordPurchaseTaskShipment() {
+  // 返回是否成功：采购弹窗据此决定提交后是否自动关闭
+  async function recordPurchaseTaskShipment(): Promise<boolean> {
     if (!purchaseShipmentForm.purchase_task_id.trim()) {
       ElMessage.warning("先选择或填写采购任务 ID");
-      return;
+      return false;
     }
     if (
       purchaseShipmentForm.deliver_type === 1 &&
@@ -2734,7 +2969,7 @@ export function useWxXdApp() {
         !purchaseShipmentForm.waybill_id.trim())
     ) {
       ElMessage.warning("自寄快递必须填写快递公司和快递单号");
-      return;
+      return false;
     }
     const selectedCompany = deliveryCompanyOptions.value.find(
       (item) => item.value === purchaseShipmentForm.delivery_id,
@@ -2747,7 +2982,7 @@ export function useWxXdApp() {
       (!Number.isFinite(estimatedCost) || estimatedCost < 0)
     ) {
       ElMessage.warning("采购成本必须是非负数字");
-      return;
+      return false;
     }
     try {
       const result = await command<PurchaseTaskShipmentResult>(
@@ -2773,9 +3008,28 @@ export function useWxXdApp() {
         },
       );
       ElMessage.success(result.message);
-      await refreshAll();
+      // 精确刷新：命令写 purchase_tasks/orders/shipments/包裹/通知，连带影响利润、
+      // 库存预留（reserved 按 supplier_shipped 聚合）与销售分析的成本字段；不刷全站
+      await Promise.all([
+        refreshPurchaseTasks(),
+        refreshDeliveryShipments(),
+        refreshOrderManagementItems(),
+        refreshOrderProfits(),
+        refreshNotifications(),
+        refreshDashboardOnly(),
+        refreshInventoryRisks(),
+        refreshProductSalesAnalysis(),
+      ]);
+      // 换号即发：自动发货开着且该订单已全部回填就绪（shipment 进 ready_to_send）时，
+      // 立即触发一次微信发货提交，不必等 driver 下一轮 tick 或人工再点「提交微信发货」。
+      // waiting_confirmation（自动发货关）/None（同单尚有未回填任务）不触发。
+      if (result.shipment_status === "ready_to_send") {
+        await runDeliverySubmissionOnce();
+      }
+      return true;
     } catch (error) {
       ElMessage.error(String(error));
+      return false;
     }
   }
 
@@ -2787,7 +3041,11 @@ export function useWxXdApp() {
         { enabled },
       );
       ElMessage.success(enabled ? "自动微信发货已开启" : "自动微信发货已关闭");
-      await refreshAll();
+      // 开关本身已就地写回 deliverySettings；只影响发货队列推进与订单聚合视图
+      await Promise.all([
+        refreshDeliveryShipments(),
+        refreshOrderManagementItems(),
+      ]);
     } catch (error) {
       deliverySettings.value.auto_send_delivery =
         !deliverySettings.value.auto_send_delivery;
@@ -2795,8 +3053,103 @@ export function useWxXdApp() {
     }
   }
 
+  async function setMultiPackageEnabled(value: boolean | string | number) {
+    try {
+      const enabled = Boolean(value);
+      deliverySettings.value = await command<DeliverySettings>(
+        "set_multi_package_enabled",
+        { enabled },
+      );
+      ElMessage.success(
+        enabled
+          ? "多运单拆包发货已开启：多供应商物流将自动拆包聚合提交"
+          : "多运单拆包发货已关闭：多供应商物流保持人工确认整单",
+      );
+    } catch (error) {
+      deliverySettings.value.multi_package_enabled =
+        !deliverySettings.value.multi_package_enabled;
+      ElMessage.error(String(error));
+    }
+  }
+
+  /** 改运单（≤3 次）：oldWaybillId 给出走包裹级修改（支持拆单），否则整单重报 */
+  async function changeShipmentDeliveryInfo(params: {
+    orderId: string;
+    oldDeliveryId?: string | null;
+    oldWaybillId?: string | null;
+    deliveryId: string;
+    deliveryName?: string | null;
+    waybillId: string;
+  }) {
+    try {
+      const result = await command<DeliveryChangeResult>(
+        "change_shipment_delivery_info",
+        {
+          request: {
+            order_id: params.orderId,
+            old_delivery_id: params.oldDeliveryId ?? null,
+            old_waybill_id: params.oldWaybillId ?? null,
+            delivery_id: params.deliveryId,
+            delivery_name: params.deliveryName ?? null,
+            waybill_id: params.waybillId,
+          },
+        },
+      );
+      ElMessage.success(result.message);
+      // 精确刷新：改运单写 shipments/orders/purchase_tasks 运单字段，影响利润与看板
+      await Promise.all([
+        refreshDeliveryShipments(),
+        refreshOrderManagementItems(),
+        refreshPurchaseTasks(),
+        refreshOrderProfits(),
+        refreshDashboardOnly(),
+      ]);
+      return result;
+    } catch (error) {
+      ElMessage.error(String(error));
+      return null;
+    }
+  }
+
+  /** 补发包裹（≤10 次）：reason 1漏发/2拆包/3坏损/4赠品；不传商品明细默认整单 */
+  async function compensateOrderDelivery(params: {
+    orderId: string;
+    deliveryId: string;
+    deliveryName?: string | null;
+    waybillId: string;
+    reason: number;
+  }) {
+    try {
+      const result = await command<CompensateDeliveryResult>(
+        "compensate_order_delivery",
+        {
+          request: {
+            order_id: params.orderId,
+            delivery_id: params.deliveryId,
+            delivery_name: params.deliveryName ?? null,
+            waybill_id: params.waybillId,
+            reason: params.reason,
+            product_infos: null,
+          },
+        },
+      );
+      ElMessage.success(result.message);
+      // 精确刷新：补发写 shipments/orders，影响利润与看板
+      await Promise.all([
+        refreshOrderManagementItems(),
+        refreshDeliveryShipments(),
+        refreshOrderProfits(),
+        refreshDashboardOnly(),
+      ]);
+      return result;
+    } catch (error) {
+      ElMessage.error(String(error));
+      return null;
+    }
+  }
+
   async function syncDeliveryCompanies() {
-    const shopId = shipmentForm.shop_id.trim() || shops.value[0]?.id || "";
+    const shopId = shops.value[0]?.id || "";
     if (!shopId) {
       ElMessage.warning("先添加店铺，再同步快递公司");
       return;
@@ -2814,54 +3167,8 @@ export function useWxXdApp() {
       } else {
         ElMessage.success(`快递公司已同步：${result.synced_companies} 家`);
       }
-      await refreshAll();
-    } catch (error) {
-      ElMessage.error(String(error));
-    }
-  }
-
-  async function recordOrderShipment() {
-    const selectedCompany = deliveryCompanyOptions.value.find(
-      (item) => item.value === shipmentForm.delivery_id,
-    );
-    if (
-      !shipmentForm.order_id.trim() &&
-      (!shipmentForm.shop_id.trim() || !shipmentForm.wechat_order_id.trim())
-    ) {
-      ElMessage.warning("填写本地订单 ID，或填写店铺 ID + 微信订单号");
-      return;
-    }
-    if (
-      shipmentForm.deliver_type === 1 &&
-      (!shipmentForm.delivery_id.trim() || !shipmentForm.waybill_id.trim())
-    ) {
-      ElMessage.warning("自寄快递必须填写快递公司和快递单号");
-      return;
-    }
-    try {
-      const result = await command<ShipmentRecordResult>(
-        "record_order_shipment",
-        {
-          request: {
-            order_id: shipmentForm.order_id.trim() || null,
-            shop_id: shipmentForm.shop_id.trim() || null,
-            wechat_order_id: shipmentForm.wechat_order_id.trim() || null,
-            delivery_id:
-              shipmentForm.deliver_type === 1 ? shipmentForm.delivery_id : null,
-            delivery_name:
-              shipmentForm.deliver_type === 1
-                ? selectedCompany?.label || null
-                : null,
-            waybill_id:
-              shipmentForm.deliver_type === 1
-                ? shipmentForm.waybill_id.trim()
-                : null,
-            deliver_type: shipmentForm.deliver_type,
-          },
-        },
-      );
-      ElMessage.success(result.message);
-      await refreshAll();
+      // 精确刷新：只写 delivery_companies 表
+      await Promise.all([refreshDeliveryCompanies(), refreshDashboardOnly()]);
     } catch (error) {
       ElMessage.error(String(error));
     }
@@ -2884,7 +3191,14 @@ export function useWxXdApp() {
           `微信发货完成：处理 ${result.processed_shipments} 单，成功 ${result.submitted_shipments} 单，失败 ${result.failed_shipments} 单`,
         );
       }
-      await refreshAll();
+      // 精确刷新：发货批次写 shipments/orders/notifications，影响利润与看板
+      await Promise.all([
+        refreshDeliveryShipments(),
+        refreshOrderManagementItems(),
+        refreshNotifications(),
+        refreshOrderProfits(),
+        refreshDashboardOnly(),
+      ]);
     } catch (error) {
       ElMessage.error(String(error));
     }
@@ -3256,7 +3570,18 @@ export function useWxXdApp() {
       return;
     }
     selectedSection.value = "workbench";
-    await refreshAll();
+    // 兜底分支承接订单同步/driver/地址解密/导入去重等十余种通知：
+    // 函数自身零写库，只需刷新工作台与这些通知关联的队列视图
+    await Promise.all([
+      refreshNotifications(),
+      refreshDashboardOnly(),
+      refreshOrderManagementItems(),
+      refreshOrderRequests(),
+      refreshPurchaseTasks(),
+      refreshDeliveryShipments(),
+      refreshCollectionTasks(),
+      refreshProductSalesAnalysis(),
+    ]);
   }
 
   function profitStatusLabel(status: string) {
@@ -3291,9 +3616,23 @@ export function useWxXdApp() {
   }
 
   function orderManagementStatusLabel(status: string) {
+    // 队列选项之外的原始履约状态兜底（management_status 会透传 orders.status）
+    const fulfillmentLabels: Record<string, string> = {
+      synced: "已同步",
+      unpaid: "待付款",
+      pending_shipment: "待发货",
+      pending_purchase: "待采购",
+      supplier_shipped: "供应商已发",
+      partially_shipped: "部分发货",
+      shipping_submitted: "发货已提交",
+      wechat_shipped: "已发货",
+      exception: "异常",
+    };
     return (
       orderManagementStatusOptions.find((item) => item.value === status)
-        ?.label || status
+        ?.label ||
+      fulfillmentLabels[status] ||
+      status
     );
   }
 
@@ -3317,7 +3656,9 @@ export function useWxXdApp() {
       pending: "待处理",
       waiting_confirmation: "待确认",
       ready_to_send: "待提交",
+      submitting: "提交中",
       send_failed: "发货失败",
+      blocked: "守卫拦截",
       wechat_shipped: "已发货",
     };
     return labels[status] ?? status;
@@ -3578,7 +3919,6 @@ export function useWxXdApp() {
     recordAftersaleResponsibility,
     recordGuaranteeFollowup,
     recordOrderProfitAdjustment,
-    recordOrderShipment,
     recordPurchaseTaskShipment,
     recordSupplierAftersaleFollowup,
     resetCollectionPublishWorkspace,
@@ -3599,6 +3939,16 @@ export function useWxXdApp() {
     refreshNotifications,
     refreshOrderManagementItems,
     refreshOrderProfits,
+    refreshOrderRequests,
+    orderRequests,
+    orderRequestTotal,
+    orderRequestStateFilter,
+    runNegotiationScanOnce,
+    decideOrderRequest,
+    markPurchaseTaskPurchased,
+    copyDecodedAddress,
+    decodeOrderAddressNow,
+    runAddressDecodeOnce,
     refreshProductManagementItems,
     refreshProductSalesAnalysis,
     refreshPurchaseTasks,
@@ -3671,8 +4021,10 @@ export function useWxXdApp() {
     selectPurchaseTaskShipment,
     selectSupplierFollowupTarget,
     setAutoSendDelivery,
+    setMultiPackageEnabled,
+    changeShipmentDeliveryInfo,
+    compensateOrderDelivery,
     setDefaultFreightTemplate,
-    shipmentForm,
     shopForm,
     shops,
     startCollectionPolling,

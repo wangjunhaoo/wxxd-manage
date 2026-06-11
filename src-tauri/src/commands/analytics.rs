@@ -464,6 +464,11 @@ pub fn list_order_management_items(
                 order_created_at: meta.order_created_at,
                 order_updated_at: meta.order_updated_at,
                 updated_at: profit.updated_at.or(meta.updated_at),
+                address_under_review: meta.address_under_review,
+                change_sku_state: meta.change_sku_state,
+                delivery_deadline: meta.delivery_deadline,
+                customer_notes: meta.customer_notes,
+                merchant_notes: meta.merchant_notes,
                 items: order_items,
             }
         })
@@ -521,6 +526,11 @@ struct OrderManagementMeta {
     synced_at: Option<String>,
     order_created_at: Option<i64>,
     order_updated_at: Option<i64>,
+    address_under_review: bool,
+    change_sku_state: Option<i64>,
+    delivery_deadline: Option<i64>,
+    customer_notes: Option<String>,
+    merchant_notes: Option<String>,
     detail_error: Option<String>,
     updated_at: Option<String>,
 }
@@ -540,6 +550,7 @@ struct OrderManagementShipmentAggregate {
     waiting_count: i64,
     ready_count: i64,
     failed_count: i64,
+    blocked_count: i64,
     shipped_count: i64,
 }
 
@@ -665,7 +676,12 @@ fn load_order_management_meta(
            order_created_at,
            order_updated_at,
            detail_error,
-           updated_at
+           updated_at,
+           COALESCE(address_under_review, 0),
+           change_sku_state,
+           delivery_deadline,
+           customer_notes,
+           merchant_notes
          FROM orders",
     )?;
     let rows = stmt
@@ -679,6 +695,11 @@ fn load_order_management_meta(
                     order_updated_at: row.get(4)?,
                     detail_error: row.get(5)?,
                     updated_at: row.get(6)?,
+                    address_under_review: row.get::<_, i64>(7)? == 1,
+                    change_sku_state: row.get(8)?,
+                    delivery_deadline: row.get(9)?,
+                    customer_notes: row.get(10)?,
+                    merchant_notes: row.get(11)?,
                 },
             ))
         })?
@@ -773,6 +794,7 @@ fn load_order_management_shipment_aggregates(
            COALESCE(SUM(CASE WHEN status = 'waiting_confirmation' THEN 1 ELSE 0 END), 0),
            COALESCE(SUM(CASE WHEN status = 'ready_to_send' THEN 1 ELSE 0 END), 0),
            COALESCE(SUM(CASE WHEN status = 'send_failed' THEN 1 ELSE 0 END), 0),
+           COALESCE(SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END), 0),
            COALESCE(SUM(CASE WHEN status = 'wechat_shipped' THEN 1 ELSE 0 END), 0)
          FROM shipments
          GROUP BY order_id",
@@ -786,7 +808,8 @@ fn load_order_management_shipment_aggregates(
                     waiting_count: row.get(2)?,
                     ready_count: row.get(3)?,
                     failed_count: row.get(4)?,
-                    shipped_count: row.get(5)?,
+                    blocked_count: row.get(5)?,
+                    shipped_count: row.get(6)?,
                 },
             ))
         })?
@@ -795,16 +818,29 @@ fn load_order_management_shipment_aggregates(
 }
 
 fn load_order_management_aftersale_counts(conn: &Connection) -> AppResult<BTreeMap<String, i64>> {
+    // 售后 + 纠纷一并计为「售后活跃」：旧实现靠 orders.status='aftersale_active' 间接覆盖纠纷，
+    // 重构后该状态不再写入（改为 has_active_aftersale 标志），这里直接把纠纷单纳入计数。
     let mut stmt = conn.prepare(
-        "SELECT order_id, COUNT(*)
-         FROM aftersales
-         WHERE order_id IS NOT NULL
-           AND UPPER(status) NOT IN (
-             'USER_CANCELD', 'USER_CANCELLED', 'RETURN_CLOSED',
-             'MERCHANT_REFUND_SUCCESS', 'MERCHANT_RETURN_SUCCESS',
-             'MERCHANT_REFUND_RETRY_FAIL', 'MERCHANT_FAIL',
-             'MERCHANT_EXCHANGE_SUCCESS', 'SYNC_FAILED'
-           )
+        "SELECT order_id, SUM(cnt) FROM (
+           SELECT order_id, COUNT(*) AS cnt
+           FROM aftersales
+           WHERE order_id IS NOT NULL
+             AND UPPER(status) NOT IN (
+               'USER_CANCELD', 'USER_CANCELLED', 'RETURN_CLOSED',
+               'MERCHANT_REFUND_SUCCESS', 'MERCHANT_RETURN_SUCCESS',
+               'MERCHANT_REFUND_RETRY_FAIL', 'MERCHANT_FAIL',
+               'MERCHANT_EXCHANGE_SUCCESS', 'SYNC_FAILED'
+             )
+           GROUP BY order_id
+           UNION ALL
+           SELECT order_id, COUNT(*) AS cnt
+           FROM guarantee_orders
+           WHERE order_id IS NOT NULL
+             AND UPPER(status) NOT IN (
+               'STATUS_NO_NEED_PAY', 'STATUS_PAY_SUCC', 'STATUS_USER_CANCEL', 'SYNC_FAILED'
+             )
+           GROUP BY order_id
+         )
          GROUP BY order_id",
     )?;
     let rows = stmt
@@ -872,6 +908,9 @@ fn derive_shipment_management_status(aggregate: &OrderManagementShipmentAggregat
         "none"
     } else if aggregate.failed_count > 0 {
         "send_failed"
+    } else if aggregate.blocked_count > 0 {
+        // 守卫拦截（改址/换SKU/售后在途）：优先于待提交展示，提醒先去收件箱裁决
+        "blocked"
     } else if aggregate.ready_count > 0 {
         "ready_to_send"
     } else if aggregate.waiting_count > 0 {
@@ -910,7 +949,10 @@ fn derive_order_management_status(
     ) {
         return "needs_purchase".to_string();
     }
-    if order_status == "pending_shipment" && shipment_status != "wechat_shipped" {
+    // partially_shipped（官方 21 部分发货）仍有剩余商品待发，与待发货同入「需发货」队列
+    if matches!(order_status, "pending_shipment" | "partially_shipped")
+        && shipment_status != "wechat_shipped"
+    {
         return "needs_shipment".to_string();
     }
     if active_aftersale_count > 0 || order_status == "aftersale_active" {
